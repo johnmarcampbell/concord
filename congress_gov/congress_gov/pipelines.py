@@ -1,3 +1,4 @@
+import json
 # -*- coding: utf-8 -*-
 
 # Define your item pipelines here
@@ -8,4 +9,8 @@
 
 class CongressGovPipeline(object):
     def process_item(self, item, spider):
+        with open('output.json','a') as f:
+            line = json.dumps(dict(item)) + '\n'
+            f.write(line)
+
         return item
