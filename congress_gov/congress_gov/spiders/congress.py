@@ -67,12 +67,14 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
 
     def parse_item_page(self, response):
-        text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/text()'
+        raw_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/text()'
+        linked_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/a/text()'
         date_path = '//div[contains(@class, "cr-issue")]/h3/text()'
         blurb_path = '//div[contains(@class, "cr-issue")]/h4/text()'
         title_path = '//div[contains(@class, "wrapper_std")]/h2/text()'
 
         text = response.xpath(text_path).extract()
+        linked_text = response.xpath(linked_text_path).extract()
         date = response.xpath(date_path).extract_first()
         blurb = response.xpath(blurb_path).extract()
         title = response.xpath(title_path).extract_first()
@@ -108,14 +110,36 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         (congress, session) = get_nth_congress_session(nth_congress_session)
         (volume, number) = get_volume_number(issue_vol)
 
+        def get_page_range(linked_text):
+            regex_string = 'Page[s]* ([A-Z][0-9]+)\-?([A-Z][0-9]+)?'
+            for text in linked_text:
+                match = re.search(regex_string, text)
+                if match:
+                    (first, last) = match.groups()
+                    if last is None:
+                        last = first
+                    return (first, last)
+
+
+
+        (start, end) = get_page_range(linked_text)
+        print('{} {}'.format(start, end))
+
         item = CongressItem(
             url=response.url,
+
             title=title,
             date=date,
+
             congress=congress,
             session=session,
+
             number=number,
             volume=volume,
+
+            start_page=start,
+            end_page=end,
+
             text=text
         )
 
