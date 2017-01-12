@@ -67,13 +67,12 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
 
     def parse_item_page(self, response):
-        raw_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/text()'
+        raw_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]'
         linked_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/a/text()'
         date_path = '//div[contains(@class, "cr-issue")]/h3/text()'
         blurb_path = '//div[contains(@class, "cr-issue")]/h4/text()'
         title_path = '//div[contains(@class, "wrapper_std")]/h2/text()'
 
-        text = response.xpath(text_path).extract()
         linked_text = response.xpath(linked_text_path).extract()
         date = response.xpath(date_path).extract_first()
         blurb = response.xpath(blurb_path).extract()
@@ -123,7 +122,17 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
 
         (start, end) = get_page_range(linked_text)
-        print('{} {}'.format(start, end))
+
+        def get_clean_text(raw_text):
+            clean = ''
+            for text in raw_text.xpath('.//text()').extract():
+                clean += text
+
+            return clean
+
+        text = get_clean_text(response.xpath(raw_text_path))
+
+
 
         item = CongressItem(
             url=response.url,
