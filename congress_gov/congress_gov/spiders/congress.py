@@ -9,7 +9,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
     name = 'congress'
     base_URL = 'https://www.congress.gov'
 
-    def __init__(self, date=None, date_format='MM/DD/YYYY', item_limit=1):
+    def __init__(self, **kwargs):
         """Congressional Record Spider
         
         Arguments:
@@ -23,26 +23,30 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         Example command: scrapy crawl congress -a date='10/13/2016'
         
         """
-        if date is None:
-            a = arrow.utcnow().replace(days=-1)
-        else:
-            a = arrow.get(date, date_format)
+        self.set = self.get_settings(**kwargs)
 
-        self.url_date = '{}/{}/{}'.format(a.year, a.month, a.day)
+        if self.set['start_date'] is None:
+            first = arrow.utcnow().replace(days=-1)
+        else:
+            first = arrow.get(self.set['start_date'], self.set['date_format'])
+        if self.set['end_date'] is None:
+            last = arrow.utcnow().replace(days=-1)
+        else:
+            last = arrow.get(self.set['end_date'], self.set['date_format'])
+
+        self.dates = arrow.Arrow.range('day', first, last)
 
         self.item_count = 0
-        self.item_limit = int(item_limit)
+        self.item_limit = int(self.set['item_limit'])
 
     def start_requests(self):
-        sections = ['senate-section',
-                    'house-section', 
-                    'extensions-of-remarks-section'
-                    ]
 
-        for section in sections:
-            url_mask = '{}/congressional-record/{}/{}/'
-            url = url_mask.format(self.base_URL, self.url_date, section)
-            yield scrapy.Request(url=url, callback=self.parse_landing_page)
+        for date in self.dates:
+            date_URL = '{}/{}/{}'.format(date.year, date.month, date.day)
+            for section in self.set['sections']:
+                url_mask = '{}/congressional-record/{}/{}/'
+                url = url_mask.format(self.base_URL, date_URL, section)
+                yield scrapy.Request(url=url, callback=self.parse_landing_page)
 
 
     def parse_landing_page(self, response):
@@ -97,14 +101,6 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         (congress, session) = get_nth_congress_session(nth_congress_session)
         (volume, number) = get_volume_number(issue_vol)
 
-        # print('-----')
-        # print(title)
-        # print(date)
-        # print(nth_congress_session + " " + congress + " " + session)
-        # print(issue_vol + " " + volume + " " + number)
-        # print(text)
-        # print('-----')
-
         item = CongressItem(
             url=response.url,
             title=title,
@@ -117,3 +113,27 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         )
 
         return item
+
+    def get_settings(self, **kwargs):
+        '''Turn a set of keywords arguments into a dictionary of settings
+        '''
+        # Dictionary with default values
+        settings = dict(
+            item_limit=10,
+            start_date=None,
+            end_date=None,
+            date_format='MM/DD/YYYY',
+            sections=['senate-section', 'house-section', 
+                        'extensions-of-remarks-section'],
+        )
+
+        badargs = set(kwargs) - set(settings)
+
+        if badargs:
+            err = 'CongressSpider() got unexpected keyword arguments: {}.'
+            raise TypeError( err.format(list(badargs)) )
+        else:
+            settings.update(kwargs)
+
+        print(settings)
+        return settings

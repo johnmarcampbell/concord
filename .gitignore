@@ -10,3 +10,5 @@ __pycache__/
 # Test output files
 *.json
 *.html
+*.txt
+

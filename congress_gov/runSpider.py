@@ -10,12 +10,9 @@ settings['LOG_FILE'] = 'log.txt'
 
 process = CrawlerProcess(settings)
 
-date_format = 'MM/DD/YYYY'
-start_date = arrow.get('01/01/2016',date_format)
-end_date = arrow.get('01/31/2016', date_format)
+start = '01/01/2016'
+end = '01/10/2016'
+limit = 999
 
-for day in arrow.Arrow.range('day', start_date, end_date):
-
-    process.crawl(cs, date=day.format(date_format), item_limit=999)
-
+process.crawl(cs, start_date=start, end_date=end, item_limit=limit)
 process.start()
