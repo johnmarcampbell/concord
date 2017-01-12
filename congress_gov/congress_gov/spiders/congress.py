@@ -1,6 +1,7 @@
 import scrapy
 from congress_gov.items import CongressItem
 import arrow
+import re
 
 class CongressSpider(scrapy.spiders.CrawlSpider):
     """Spider for crawling congress.gov"""
@@ -67,21 +68,51 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         nth_congress_session = blurb[0]
         issue_vol = blurb[1]
 
+        def get_nth_congress_session(the_string):
+            regex_string = '([0-9]+).* Congress, ([0-9]+).* Session'
+
+            match = re.search(regex_string, the_string)
+
+            if match:
+                (congress, session) = match.groups()
+            else:
+                (congress, session) = (None, None)
+
+            return (congress, session)
+
+        def get_volume_number(the_string):
+            regex_string = '([0-9]+).* Congress, ([0-9]+).* Session'
+            regex_string = 'Issue: Vol\. ([0-9]+), No\. ([0-9]+)'
+
+            match = re.search(regex_string, the_string)
+
+            if match:
+                (volume, number) = match.groups()
+            else:
+                (volume, number) = (None, None)
+
+            return (volume, number)
+
+
+        (congress, session) = get_nth_congress_session(nth_congress_session)
+        (volume, number) = get_volume_number(issue_vol)
+
         # print('-----')
         # print(title)
         # print(date)
-        # print(nth_congress_session)
-        # print(issue_vol)
-        # # print(text)
+        # print(nth_congress_session + " " + congress + " " + session)
+        # print(issue_vol + " " + volume + " " + number)
+        # print(text)
         # print('-----')
 
         item = CongressItem(
+            url=response.url,
             title=title,
             date=date,
-            congress=1,
-            session=2,
-            issue=3,
-            volume=4,
+            congress=congress,
+            session=session,
+            number=number,
+            volume=volume,
             text=text
         )
 
