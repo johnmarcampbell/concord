@@ -1,4 +1,5 @@
 import scrapy
+from congress_gov.items import CongressItem
 import arrow
 
 class CongressSpider(scrapy.spiders.CrawlSpider):
@@ -66,9 +67,22 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         nth_congress_session = blurb[0]
         issue_vol = blurb[1]
 
-        print('-----')
-        print(title)
-        print(date)
-        print(nth_congress_session)
-        print(issue_vol)
-        print('-----')
+        # print('-----')
+        # print(title)
+        # print(date)
+        # print(nth_congress_session)
+        # print(issue_vol)
+        # # print(text)
+        # print('-----')
+
+        item = CongressItem(
+            title=title,
+            date=date,
+            congress=1,
+            session=2,
+            issue=3,
+            volume=4,
+            text=text
+        )
+
+        return item

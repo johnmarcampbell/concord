@@ -8,7 +8,11 @@
 import scrapy
 
 
-class CongressGovItem(scrapy.Item):
-    # define the fields for your item here like:
-    # name = scrapy.Field()
-    pass
+class CongressItem(scrapy.Item):
+    title = scrapy.Field()
+    date = scrapy.Field()
+    congress = scrapy.Field()
+    session = scrapy.Field()
+    issue = scrapy.Field()
+    volume = scrapy.Field()
+    text = scrapy.Field()
