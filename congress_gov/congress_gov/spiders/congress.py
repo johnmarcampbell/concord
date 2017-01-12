@@ -5,6 +5,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
     """Spider for crawling congress.gov"""
 
     name = 'congress'
+    base_URL = 'https://www.congress.gov'
 
     def __init__(self, date=None, date_format='MM/DD/YYYY'):
         """Congressional Record Spider
@@ -28,18 +29,23 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         self.url_date = '{}/{}/{}'.format(a.year, a.month, a.day)
 
     def start_requests(self):
-        base_URL = 'https://www.congress.gov/congressional-record'
         sections = ['senate-section',
                     'house-section', 
                     'extensions-of-remarks-section'
                     ]
 
         for section in sections:
-            url = '{}/{}/{}/'.format(base_URL, self.url_date, section)
+            url_mask = '{}/congressional-record/{}/{}/'
+            url = url_mask.format(self.base_URL, self.url_date, section)
             yield scrapy.Request(url=url, callback=self.parse_landing_page)
 
 
     def parse_landing_page(self, response):
-        print('-----')
+       item_path = '//table/tbody/tr/td/a[contains(@href, "article")]/@href'
+
+       for item_URL in response.xpath(item_path).extract():
+           url = '{}/{}'.format(self.base_URL, item_URL)
+           yield scrapy.Request(url=url, callback=self.parse_item_page)
+
+    def parse_item_page(self, response):
         print(response.url)
-        print('-----')
