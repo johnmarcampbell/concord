@@ -42,14 +42,21 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
     def start_requests(self):
 
         for date in self.dates:
-            date_URL = '{}/{}/{}'.format(date.year, date.month, date.day)
-            for section in self.set['sections']:
-                url_mask = '{}/congressional-record/{}/{}/'
-                url = url_mask.format(self.base_URL, date_URL, section)
-                yield scrapy.Request(url=url, callback=self.parse_landing_page)
-
+            date_URL = '{}/{}/{}'.format(
+                date.year, str(date.month).zfill(2), str(date.day).zfill(2))
+            url_mask = '{}/congressional-record/{}'
+            url = url_mask.format(self.base_URL, date_URL)
+            yield scrapy.Request(url=url, callback=self.parse_landing_page)
 
     def parse_landing_page(self, response):
+        url_mask = response.url[len('https://www.congress.gov'):]
+        for section in self.set['sections']:
+            partial_url = '{}/{}'.format(url_mask, section)
+            if partial_url in response.xpath('//a/@href').extract():
+                url = 'https://www.congress.gov{}'.format(partial_url)
+                yield scrapy.Request(url=url, callback=self.parse_section_page)
+
+    def parse_section_page(self, response):
        item_path = '//table/tbody/tr/td/a[contains(@href, "article")]/@href'
 
        for item_URL in response.xpath(item_path).extract():
@@ -135,5 +142,4 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         else:
             settings.update(kwargs)
 
-        print(settings)
         return settings
