@@ -7,7 +7,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
     name = 'congress'
     base_URL = 'https://www.congress.gov'
 
-    def __init__(self, date=None, date_format='MM/DD/YYYY'):
+    def __init__(self, date=None, date_format='MM/DD/YYYY', item_limit=1):
         """Congressional Record Spider
         
         Arguments:
@@ -28,6 +28,9 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
         self.url_date = '{}/{}/{}'.format(a.year, a.month, a.day)
 
+        self.item_count = 0
+        self.item_limit = int(item_limit)
+
     def start_requests(self):
         sections = ['senate-section',
                     'house-section', 
@@ -45,7 +48,10 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
        for item_URL in response.xpath(item_path).extract():
            url = '{}/{}'.format(self.base_URL, item_URL)
-           yield scrapy.Request(url=url, callback=self.parse_item_page)
+           if(self.item_count < self.item_limit):
+               yield scrapy.Request(url=url, callback=self.parse_item_page)
+               self.item_count += 1
+
 
     def parse_item_page(self, response):
         text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/text()'
