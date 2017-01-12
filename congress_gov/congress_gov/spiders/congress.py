@@ -18,7 +18,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         date_format -- a date format for specifying the date_string. 
         See http://crsmithdev.com/arrow/#tokens for more info.
 
-        Example command: scrapy crawl congress -a date='10/12/2016'
+        Example command: scrapy crawl congress -a date='10/13/2016'
         
         """
         if date is None:
@@ -48,4 +48,5 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
            yield scrapy.Request(url=url, callback=self.parse_item_page)
 
     def parse_item_page(self, response):
-        print(response.url)
+        text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/text()'
+        text = response.xpath(text_path).extract()
