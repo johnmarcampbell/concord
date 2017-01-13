@@ -60,7 +60,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
        item_path = '//table/tbody/tr/td/a[contains(@href, "article")]/@href'
 
        for item_URL in response.xpath(item_path).extract():
-           url = '{}/{}'.format(self.base_URL, item_URL)
+           url = '{}{}'.format(self.base_URL, item_URL)
            if(self.item_count < self.item_limit):
                yield scrapy.Request(url=url, callback=self.parse_item_page)
                self.item_count += 1
@@ -74,7 +74,8 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         title_path = '//div[contains(@class, "wrapper_std")]/h2/text()'
 
         linked_text = response.xpath(linked_text_path).extract()
-        date = response.xpath(date_path).extract_first()
+        raw_date = response.xpath(date_path).extract_first()
+        date = arrow.get(raw_date, 'MMMM D, YYYY ').format(self.set['date_format'])
         blurb = response.xpath(blurb_path).extract()
         title = response.xpath(title_path).extract_first()
         nth_congress_session = blurb[0]
