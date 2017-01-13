@@ -5,7 +5,7 @@
 - [Scrapy 1.3.0](https://doc.scrapy.org/en/1.3/index.html)  
 
 ## What is the *Congressional Record*?  
-From the (legistlative glossary)[https://www.congress.gov/help/legislative-glossary]:  
+From the [legistlative glossary](https://www.congress.gov/help/legislative-glossary):  
 
 > The Congressional Record is the official record of the proceedings and 
 > debates of the U.S. Congress. For every day Congress is in session, an 
@@ -48,7 +48,7 @@ The `congress` spider can take the following arguments:
 - `item_limit`: A limit on the number of items to download.  
 ` `start_date`: Spider begins parsing records at this date. If none is provided, this will automatically set to *yesterday's* date  
 - `end_date`: Spider stops parsing records after this date. If none is provided, this will automatically set to *yesterday's* date  
-- `date_format`: A date format for specifying the date_string.  See (`arrow` documentation)[http://crsmithdev.com/arrow/#tokens] for more info. 
+- `date_format`: A date format for specifying the date_string.  See [`arrow` documentation](http://crsmithdev.com/arrow/#tokens) for more info. 
 
 - `sections`: A list of sections to crawl. Must be selected from `senate-section`, `house-section`, or `extensions-of-remarks-section`  
 
