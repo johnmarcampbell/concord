@@ -4,25 +4,31 @@ import arrow
 import re
 
 class CongressSpider(scrapy.spiders.CrawlSpider):
-    """Spider for crawling congress.gov"""
+    """Spider for crawling congress.gov
+    
+    Keyword arguments:
+    item_limit -- A limit on the number of items to download.
+
+    start_date -- Spider begins parsing records at this date. If none
+    is provided, this will automatically set to *yesterday's* date
+
+    end_date -- Spider stops parsing records after this date. If none
+    is provided, this will automatically set to *yesterday's* date
+
+    date_format -- a date format for specifying the date_string.  See
+    http://crsmithdev.com/arrow/#tokens for more info.
+
+    sections -- A list of sections to crawl. Must be selected from:
+        [senate-section, house-section, extensions-of-remarks-section]
+
+    Example command: scrapy crawl congress -a date='10/13/2016'
+        
+    """
 
     name = 'congress'
     base_URL = 'https://www.congress.gov'
 
     def __init__(self, **kwargs):
-        """Congressional Record Spider
-        
-        Arguments:
-        date -- A string representing the date of the records to
-        up. If none is provided, the spider will automatically try to
-        look up *yesterday's* records
-
-        date_format -- a date format for specifying the date_string. 
-        See http://crsmithdev.com/arrow/#tokens for more info.
-
-        Example command: scrapy crawl congress -a date='10/13/2016'
-        
-        """
         self.set = self.get_settings(**kwargs)
 
         if self.set['start_date'] is None:
@@ -40,15 +46,15 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         self.item_limit = int(self.set['item_limit'])
 
     def start_requests(self):
-
         for date in self.dates:
             date_URL = '{}/{}/{}'.format(
                 date.year, str(date.month).zfill(2), str(date.day).zfill(2))
             url_mask = '{}/congressional-record/{}'
             url = url_mask.format(self.base_URL, date_URL)
-            yield scrapy.Request(url=url, callback=self.parse_landing_page)
+            yield scrapy.Request(url=url, callback=self.parse_daily_page)
 
-    def parse_landing_page(self, response):
+    def parse_daily_page(self, response):
+        """Parse a page corresponding to a given date"""
         url_mask = response.url[len('https://www.congress.gov'):]
         for section in self.set['sections']:
             partial_url = '{}/{}'.format(url_mask, section)
@@ -57,9 +63,10 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
                 yield scrapy.Request(url=url, callback=self.parse_section_page)
 
     def parse_section_page(self, response):
-       item_path = '//table/tbody/tr/td/a[contains(@href, "article")]/@href'
+        """Parse a house/senate/remarks page looking for links to item pages"""
+        item_path = '//table/tbody/tr/td/a[contains(@href, "article")]/@href'
 
-       for item_URL in response.xpath(item_path).extract():
+        for item_URL in response.xpath(item_path).extract():
            url = '{}{}'.format(self.base_URL, item_URL)
            if(self.item_count < self.item_limit):
                yield scrapy.Request(url=url, callback=self.parse_item_page)
@@ -67,6 +74,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
 
     def parse_item_page(self, response):
+        """Parse and item page to scrape individual CongressItem's"""
         raw_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]'
         linked_text_path = '//div[contains(@class, "txt-box")]/pre[contains(@class, "styled")]/a/text()'
         date_path = '//div[contains(@class, "cr-issue")]/h3/text()'
@@ -149,8 +157,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
         return item
 
     def get_settings(self, **kwargs):
-        '''Turn a set of keywords arguments into a dictionary of settings
-        '''
+        """Turn a set of keywords arguments into a dictionary of settings """
         # Dictionary with default values
         settings = dict(
             item_limit=10,
