@@ -93,22 +93,22 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
             return (congress, session)
 
-        def get_volume_number(the_string):
+        def get_volume_issue(the_string):
             regex_string = '([0-9]+).* Congress, ([0-9]+).* Session'
             regex_string = 'Issue: Vol\. ([0-9]+), No\. ([0-9]+)'
 
             match = re.search(regex_string, the_string)
 
             if match:
-                (volume, number) = match.groups()
+                (volume, issue) = match.groups()
             else:
-                (volume, number) = (None, None)
+                (volume, issue) = (None, None)
 
-            return (volume, number)
+            return (volume, issue)
 
 
         (congress, session) = get_nth_congress_session(nth_congress_session)
-        (volume, number) = get_volume_number(issue_vol)
+        (volume, issue) = get_volume_issue(issue_vol)
 
         def get_page_range(linked_text):
             regex_string = 'Page[s]* ([A-Z][0-9]+)\-?([A-Z][0-9]+)?'
@@ -133,23 +133,16 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
         text = get_clean_text(response.xpath(raw_text_path))
 
-
-
         item = CongressItem(
             url=response.url,
-
             title=title,
             date=date,
-
             congress=congress,
             session=session,
-
-            number=number,
+            issue=issue,
             volume=volume,
-
             start_page=start,
             end_page=end,
-
             text=text
         )
 

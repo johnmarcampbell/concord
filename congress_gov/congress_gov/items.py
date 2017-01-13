@@ -17,10 +17,10 @@ class CongressItem(scrapy.Item):
     congress = scrapy.Field()
     session = scrapy.Field()
 
-    number = scrapy.Field()
+    issue = scrapy.Field()
     volume = scrapy.Field()
-
-    text = scrapy.Field()
 
     start_page = scrapy.Field()
     end_page = scrapy.Field()
+
+    text = scrapy.Field()
