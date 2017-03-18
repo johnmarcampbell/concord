@@ -11,4 +11,17 @@ class Member(object):
         self.death_year = death_year
         self.appointments = appointments
         """Set some values"""
+
+    def __str__(self):
+        """String representation of a Member object"""
+        # Set middle name to empty string if there isn't one
+        if self.middle_name:
+            m = ' {}'.format(self.middle_name)
+        else:
+            m = ''
+        
+        mask = '{}, {}{} [{}] - ({}-{})'
+        return mask.format(self.last_name, self.first_name, m, self.bioguide_id,
+                           self.birth_year, self.death_year)
+
     
