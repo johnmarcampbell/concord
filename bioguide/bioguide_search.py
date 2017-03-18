@@ -22,13 +22,33 @@ class BioguideSearch(object):
         results_table = self.soup.findAll('table')[1]
 
         def get_bioguide_id(cell):
-           link = cell.find('a').get('href') 
+           """Take a cell with a link to a bioguide page, and return the ID"""
            url_base = 'http://bioguide.congress.gov/scripts/biodisplay.pl\?index=' 
            bioguide_id_mask = '([A-Z][0-9]{6})'
            regex_search_string = '{}{}'.format(url_base, bioguide_id_mask)
 
+           link = cell.find('a').get('href') 
            match = re.search(regex_search_string, link)
            return match.group(1)
+
+        def get_name(cell):
+            """Take a cell with name in it, and return the first and last name"""
+            first = '([A-Za-z]+)' 
+            middle = '([A-Za-z]+)'
+            last = '([A-Z]+)'
+
+            # Middle name is optional, don't capture space between 
+            # first and middle name
+            regex_search_string = '{}, {}(?: {})?'.format(last, first, middle)
+            
+            match = re.search(regex_search_string, cell.text)
+            print(match.groups())
+
+        def get_birth_death(cell):
+            """Take a cell with birth/death years, and return the years"""
+            regex_search_string = '([0-9]{4})-([0-9]{4})?'
+            match = re.search(regex_search_string, cell.text)
+            print(match.groups())
 
         for row in results_table.findAll('tr'):
             # Using findAll('td') skips the table headers, which are
@@ -37,6 +57,8 @@ class BioguideSearch(object):
             if cells:
                 if cells[0].text != ' ':
                     get_bioguide_id(cells[0])
+                    get_name(cells[0])
+                    get_birth_death(cells[1])
                 # print(cells[0].text)
         
 
