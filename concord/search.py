@@ -1,3 +1,5 @@
+from .member import Member
+from .appointment import Appointment
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -15,10 +17,11 @@ class BioguideSearch(object):
         self.request = requests.get(
             url=self.settings['url'], data=self.get_payload())
         self.soup = BeautifulSoup(self.request.text, 'lxml')
-        self.parse_results()
+        return self.parse_results()
 
     def parse_results(self):
         """Parse the results of the bioguide search"""
+        results = []
         results_table = self.soup.findAll('table')[1]
 
         def get_bioguide_id(cell):
@@ -76,21 +79,35 @@ class BioguideSearch(object):
             # referenced by 'th'
             cells = row.findAll('td')
             if cells:
-                position = cells[2].text
-                party = cells[3].text
-                state = cells[4].text
-                (congress, begin_year, end_year) = get_congress_and_year(cells[5])
-                appointment = (position, party, state, congress, begin_year, end_year)
-
                 # Check to see if this row starts a new member
                 (last, first, middle) = get_name(cells[0])
                 if last:
                     bioguide_id = get_bioguide_id(cells[0])
                     (birth_year, death_year) = get_birth_death(cells[1])
-                    member = (last, first, middle, bioguide_id, 
-                        birth_year, death_year)
-                    print('{}, {} {} [{}] ({}-{})'.format(*member))
-                print('\t{} : {} : {} : {},{}-{}'.format(*appointment))
+                    member = dict(last_name=last,
+                                first_name=first,
+                                middle_name=middle,
+                                bioguide_id=bioguide_id, 
+                                birth_year=birth_year,
+                                death_year=death_year,
+                                appointments=[])
+                    m = Member(**member)
+                    results.append(m)
+
+                position = cells[2].text
+                party = cells[3].text
+                state = cells[4].text
+                (congress, begin_year, end_year) = get_congress_and_year(cells[5])
+                app = dict(position=position, 
+                           party=party,
+                           state=state,
+                           congress=congress,
+                           begin_year=begin_year,
+                           end_year=end_year)
+
+                a = Appointment(**app)
+                m.appointments.append(a)
+        return results
         
 
     def get_payload(self):
