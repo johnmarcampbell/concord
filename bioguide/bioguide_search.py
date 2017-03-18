@@ -8,18 +8,23 @@ class BioguideSearch(object):
         """Set some defaults"""
         self.settings = self.get_settings(**kwargs)
 
+    def search(self):
+        """Function that performs the bioguide search"""
+        self.request = requests.get(
+            url=self.settings['url'], data=self.get_payload())
+
     def get_payload(self):
         """This function goes through the self.settings dictionary and
         picks out the settings that correspond to a payload of search
         parameters"""
 
         payload = dict(
-            first_name=self.settings['first_name'],
-            last_name=self.settings['last_name'],
+            firstname=self.settings['first_name'],
+            lastname=self.settings['last_name'],
             position=self.settings['position'],
             state=self.settings['state'],
             party=self.settings['party'],
-            year_or_congress=self.settings['year_or_congress']
+            congress=self.settings['year_or_congress']
             )
 
         return payload
