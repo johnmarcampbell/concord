@@ -22,14 +22,17 @@ class BioguideSearch(object):
         results_table = self.soup.findAll('table')[1]
 
         def get_bioguide_id(cell):
-           """Take a cell with a link to a bioguide page, and return the ID"""
-           url_base = 'http://bioguide.congress.gov/scripts/biodisplay.pl\?index=' 
-           bioguide_id_mask = '([A-Z][0-9]{6})'
-           regex_search_string = '{}{}'.format(url_base, bioguide_id_mask)
+            """Take a cell with a link to a bioguide page, and return the ID"""
+            url_base = 'http://bioguide.congress.gov/scripts/biodisplay.pl\?index=' 
+            bioguide_id_mask = '([A-Z][0-9]{6})'
+            regex_search_string = '{}{}'.format(url_base, bioguide_id_mask)
 
-           link = cell.find('a').get('href') 
-           match = re.search(regex_search_string, link)
-           return match.group(1)
+            link = cell.find('a').get('href') 
+            match = re.search(regex_search_string, link)
+            if(match):
+                return match.group(1)
+            else:
+                return None
 
         def get_name(cell):
             """Take a cell with name in it, and return the first and last name"""
@@ -42,13 +45,19 @@ class BioguideSearch(object):
             regex_search_string = '{}, {}(?: {})?'.format(last, first, middle)
             
             match = re.search(regex_search_string, cell.text)
-            print(match.groups())
+            if(match):
+                return match.groups()
+            else:
+                return (None, None, None)
 
         def get_birth_death(cell):
             """Take a cell with birth/death years, and return the years"""
             regex_search_string = '([0-9]{4})-([0-9]{4})?'
             match = re.search(regex_search_string, cell.text)
-            print(match.groups())
+            if(match):
+                return match.groups()
+            else:
+                return (None, None)
 
         def get_congress_and_year(cell):
             """Take a cell with congress info and parse it"""
@@ -56,7 +65,10 @@ class BioguideSearch(object):
             years = '([0-9]{4})-([0-9]{4})'
             regex_search_string = r'{}(?:\({}\))?'.format(congress, years)
             match = re.search(regex_search_string, cell.text)
-            print(match.groups())
+            if(match):
+                return match.groups()
+            else:
+                return (None, None, None)
             
 
         for row in results_table.findAll('tr'):
@@ -64,12 +76,21 @@ class BioguideSearch(object):
             # referenced by 'th'
             cells = row.findAll('td')
             if cells:
-                if cells[0].text != ' ':
-                    get_bioguide_id(cells[0])
-                    get_name(cells[0])
-                    get_birth_death(cells[1])
-                    get_congress_and_year(cells[5])
-                # print(cells[0].text)
+                position = cells[2].text
+                party = cells[3].text
+                state = cells[4].text
+                (congress, begin_year, end_year) = get_congress_and_year(cells[5])
+                appointment = (position, party, state, congress, begin_year, end_year)
+
+                # Check to see if this row starts a new member
+                (last, first, middle) = get_name(cells[0])
+                if last:
+                    bioguide_id = get_bioguide_id(cells[0])
+                    (birth_year, death_year) = get_birth_death(cells[1])
+                    member = (last, first, middle, bioguide_id, 
+                        birth_year, death_year)
+                    print('{}, {} {} [{}] ({}-{})'.format(*member))
+                print('\t{} : {} : {} : {},{}-{}'.format(*appointment))
         
 
     def get_payload(self):
