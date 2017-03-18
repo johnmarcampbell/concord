@@ -1,4 +1,5 @@
 import requests
+from bs4 import BeautifulSoup
 
 class BioguideSearch(object):
     """An object that will perform searches on the Biographical
@@ -12,6 +13,20 @@ class BioguideSearch(object):
         """Function that performs the bioguide search"""
         self.request = requests.get(
             url=self.settings['url'], data=self.get_payload())
+        self.soup = BeautifulSoup(self.request.text, 'lxml')
+        self.parse_results()
+
+    def parse_results(self):
+        """Parse the results of the bioguide search"""
+        results_table = self.soup.findAll('table')[1]
+
+        for row in results_table.findAll('tr'):
+            # Using findAll('td') skips the table headers, which are
+            # referenced by 'th'
+            cells = row.findAll('td')
+            if cells:
+                print(cells[0].text)
+        
 
     def get_payload(self):
         """This function goes through the self.settings dictionary and
@@ -45,7 +60,7 @@ class BioguideSearch(object):
         badargs = set(kwargs) - set(settings)
 
         if badargs:
-            err = 'BiogiodeSearch() got unexpected keyword arguments: {}.'
+            err = 'BioguideSearch() got unexpected keyword arguments: {}.'
             raise TypeError( err.format(list(badargs)) )
         else:
             settings.update(kwargs)
