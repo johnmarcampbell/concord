@@ -6,25 +6,28 @@ class RecordParser(object):
 
     def __init__(self, text):
         """Docstring"""
-        self.text = text
+        self.raw_text = text
+        self.clean_text = self.remove_page_breaks(self.raw_text)
+        self.clean_text = self.remove_midline_returns(self.clean_text)
+        self.sections = self.get_sections(self.clean_text)
 
-    def remove_page_breaks(self):
+    def remove_page_breaks(self, raw_text):
         page_break = '\n\[+Pages?.*\]+\n'
-        clean_text = re.sub(page_break, '\n', self.text)
-        self.text = clean_text
+        clean_text = re.sub(page_break, '\n', raw_text)
+        return clean_text
 
     # Remove line breaks that cut paragraphs in half
-    def remove_midline_returns(self):
+    def remove_midline_returns(self, raw_text):
         mid_line_returns = '\n(\w)'
-        clean_text = re.sub(mid_line_returns, '\\1', self.text)
-        self.text = clean_text
+        clean_text = re.sub(mid_line_returns, '\\1', raw_text)
+        return clean_text
 
     # Split document around blank lines
     # to get multi-paragraph sections
-    def get_sections(self):
+    def get_sections(self, text):
         sections = []
         paragraph = ''
-        for line in self.text.splitlines():
+        for line in text.splitlines():
             paragraph += line
             if line == '':
                 sections.append(paragraph)
