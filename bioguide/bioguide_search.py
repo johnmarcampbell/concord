@@ -1,5 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
+import re
 
 class BioguideSearch(object):
     """An object that will perform searches on the Biographical
@@ -20,12 +21,23 @@ class BioguideSearch(object):
         """Parse the results of the bioguide search"""
         results_table = self.soup.findAll('table')[1]
 
+        def get_bioguide_id(cell):
+           link = cell.find('a').get('href') 
+           url_base = 'http://bioguide.congress.gov/scripts/biodisplay.pl\?index=' 
+           bioguide_id_mask = '([A-Z][0-9]{6})'
+           regex_search_string = '{}{}'.format(url_base, bioguide_id_mask)
+
+           match = re.search(regex_search_string, link)
+           return match.group(1)
+
         for row in results_table.findAll('tr'):
             # Using findAll('td') skips the table headers, which are
             # referenced by 'th'
             cells = row.findAll('td')
             if cells:
-                print(cells[0].text)
+                if cells[0].text != ' ':
+                    get_bioguide_id(cells[0])
+                # print(cells[0].text)
         
 
     def get_payload(self):
