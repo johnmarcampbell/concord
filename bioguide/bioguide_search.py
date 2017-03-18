@@ -50,6 +50,15 @@ class BioguideSearch(object):
             match = re.search(regex_search_string, cell.text)
             print(match.groups())
 
+        def get_congress_and_year(cell):
+            """Take a cell with congress info and parse it"""
+            congress = '([0-9]{1,3})'
+            years = '([0-9]{4})-([0-9]{4})'
+            regex_search_string = r'{}(?:\({}\))?'.format(congress, years)
+            match = re.search(regex_search_string, cell.text)
+            print(match.groups())
+            
+
         for row in results_table.findAll('tr'):
             # Using findAll('td') skips the table headers, which are
             # referenced by 'th'
@@ -59,6 +68,7 @@ class BioguideSearch(object):
                     get_bioguide_id(cells[0])
                     get_name(cells[0])
                     get_birth_death(cells[1])
+                    get_congress_and_year(cells[5])
                 # print(cells[0].text)
         
 
