@@ -74,39 +74,42 @@ class BioguideSearch(object):
                 return (None, None, None)
             
 
-        for row in results_table.findAll('tr'):
-            # Using findAll('td') skips the table headers, which are
-            # referenced by 'th'
+
+        # Skip rows that don't have '<td>' cells
+        all_rows = results_table.findAll('tr') 
+        data_rows = [row for row in all_rows if len(row.findAll('td'))]
+        for row in data_rows:
+            # Check to see if this row starts a new member
+            # If it does, grab the member data and create new Member object
             cells = row.findAll('td')
-            if cells:
-                # Check to see if this row starts a new member
-                (last, first, middle) = get_name(cells[0])
-                if last:
-                    bioguide_id = get_bioguide_id(cells[0])
-                    (birth_year, death_year) = get_birth_death(cells[1])
-                    member = dict(last_name=last,
-                                first_name=first,
-                                middle_name=middle,
-                                bioguide_id=bioguide_id, 
-                                birth_year=birth_year,
-                                death_year=death_year,
-                                appointments=[])
-                    m = Member(**member)
-                    results.append(m)
+            (last, first, middle) = get_name(cells[0])
+            if last:
+                bioguide_id = get_bioguide_id(cells[0])
+                (birth_year, death_year) = get_birth_death(cells[1])
+                member = dict(last_name=last,
+                            first_name=first,
+                            middle_name=middle,
+                            bioguide_id=bioguide_id, 
+                            birth_year=birth_year,
+                            death_year=death_year,
+                            appointments=[])
+                m = Member(**member)
+                results.append(m)
 
-                position = cells[2].text
-                party = cells[3].text
-                state = cells[4].text
-                (congress, begin_year, end_year) = get_congress_and_year(cells[5])
-                app = dict(position=position, 
-                           party=party,
-                           state=state,
-                           congress=congress,
-                           begin_year=begin_year,
-                           end_year=end_year)
+            # Get the Appointment data
+            position = cells[2].text
+            party = cells[3].text
+            state = cells[4].text
+            (congress, begin_year, end_year) = get_congress_and_year(cells[5])
+            app = dict(position=position, 
+                       party=party,
+                       state=state,
+                       congress=congress,
+                       begin_year=begin_year,
+                       end_year=end_year)
 
-                a = Appointment(**app)
-                m.appointments.append(a)
+            a = Appointment(**app)
+            m.appointments.append(a)
         return results
         
 
