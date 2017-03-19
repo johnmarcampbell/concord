@@ -1,14 +1,21 @@
 import json
 import re
 
-def clean_record(text, page_breaks=True, midline_returns=True):
+def clean_record(text, 
+                 page_breaks=True,
+                 midline_returns=True,
+                 time_marks=True):
     """This function wraps several others and allows them to be turned 
     on or off using keyword arguments"""
+    clean_text = text
     if(page_breaks):
-        clean_text = remove_page_breaks(text)
+        clean_text = remove_page_breaks(clean_text)
     if(midline_returns):
-        text = remove_midline_returns(text)
-    return text
+        clean_text = remove_midline_returns(clean_text)
+    if(time_marks):
+        clean_text = remove_time_marks(clean_text)
+        
+    return clean_text
 
 def remove_page_breaks(raw_text):
     page_break = '\n\[+Pages?.*\]+\n'
@@ -20,6 +27,12 @@ def remove_midline_returns(raw_text):
     mid_line_returns = '\n(\w)'
     clean_text = re.sub(mid_line_returns, '\\1', raw_text)
     return clean_text
+
+def remove_time_marks(raw_text):
+    time_marks = '\{time\}.*\n'
+    clean_text = re.sub(time_marks, '', raw_text)
+    return clean_text
+    
 
 # Split document around blank lines
 # to get multi-paragraph sections
