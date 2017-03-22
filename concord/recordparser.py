@@ -18,8 +18,8 @@ def clean_record(text,
     return clean_text
 
 def remove_page_breaks(raw_text):
-    page_break = '\n\[+Pages?.*\]+\n'
-    clean_text = re.sub(page_break, '\n', raw_text)
+    page_break = '\n\[+Pages?.*\]+\n{1,2}'
+    clean_text = re.sub(page_break, '', raw_text)
     return clean_text
 
 # Remove line breaks that cut paragraphs in half
@@ -29,7 +29,7 @@ def remove_midline_returns(raw_text):
     return clean_text
 
 def remove_time_marks(raw_text):
-    time_marks = '\{time\}.*\n'
+    time_marks = '\W*\{time\}.*\n'
     clean_text = re.sub(time_marks, '', raw_text)
     return clean_text
     
@@ -40,10 +40,13 @@ def get_sections(text):
     sections = []
     paragraph = ''
     for line in text.splitlines():
-        paragraph += line
-        if line == '':
+        new_section = (line == '' or get_speaker(line))
+        if new_section and paragraph != '':
             sections.append(paragraph)
             paragraph = ''
+        paragraph += line
+
+    sections.append(paragraph)
 
     # Throw away empty sections
     sections = [val for val in sections if val != '']
