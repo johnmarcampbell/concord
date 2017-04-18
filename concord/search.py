@@ -9,25 +9,20 @@ class BioguideSearch(object):
     """An object that will perform searches on the Biographical
     Directory of the US Congress"""
 
-    _defaults = dict(
-        first_name='',
-        last_name='',
+    url='http://bioguide.congress.gov/biosearch/biosearch1.asp'
+    _default_payload = dict(
+        firstname='',
+        lastname='',
         position='',
         state='',
         party='',
-        year_or_congress='',
-        url='http://bioguide.congress.gov/biosearch/biosearch1.asp'
+        year_or_congress=''
     )
 
-    @defaultkwargs()
-    def __init__(self, **kwargs):
-        """Set some defaults"""
-        self.settings = kwargs
-
-    def search(self):
+    @defaultkwargs('_default_payload')
+    def search(self, **payload):
         """Function that performs the bioguide search"""
-        self.request = requests.get(
-            url=self.settings['url'], data=self.get_payload())
+        self.request = requests.get( url=self.url, data=payload)
         self.soup = BeautifulSoup(self.request.text, 'lxml')
         return self.parse_results()
 
@@ -129,20 +124,3 @@ class BioguideSearch(object):
             a = Appointment(**app)
             m.appointments.append(a)
         return results
-        
-
-    def get_payload(self):
-        """This function goes through the self.settings dictionary and
-        picks out the settings that correspond to a payload of search
-        parameters"""
-
-        payload = dict(
-            firstname=self.settings['first_name'],
-            lastname=self.settings['last_name'],
-            position=self.settings['position'],
-            state=self.settings['state'],
-            party=self.settings['party'],
-            congress=self.settings['year_or_congress']
-            )
-
-        return payload
