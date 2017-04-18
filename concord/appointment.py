@@ -3,11 +3,10 @@ class Appointment(object):
 
     def __init__(self, position='', party='', state='', congress='', 
         begin_year='', end_year=''):
+        """Set some values"""
         self.position = position
         self.party = party
         self.state = state
         self.congress = congress
         self.begin_year = begin_year
         self.end_year = end_year,
-        """Set some values"""
-    

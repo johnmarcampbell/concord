@@ -3,6 +3,7 @@ class Member(object):
 
     def __init__(self, last_name='', first_name='', middle_name='',
         bioguide_id='', birth_year='', death_year='',  appointments=[]):
+        """Set some values"""
         self.last_name = last_name
         self.first_name = first_name
         self.middle_name = middle_name
@@ -10,7 +11,6 @@ class Member(object):
         self.birth_year = birth_year
         self.death_year = death_year
         self.appointments = appointments
-        """Set some values"""
 
     def __str__(self):
         """String representation of a Member object"""
@@ -23,5 +23,3 @@ class Member(object):
         mask = '{}, {}{} [{}] - ({}-{})'
         return mask.format(self.last_name, self.first_name, m, self.bioguide_id,
                            self.birth_year, self.death_year)
-
-    
