@@ -1,6 +1,6 @@
 from .member import Member
-from .appointment import Appointment
 from .utils import defaultkwargs
+
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -122,6 +122,5 @@ class BioguideSearch(object):
                        begin_year=begin_year,
                        end_year=end_year)
 
-            a = Appointment(**app)
-            m.appointments.append(a)
+            m.appointments.append(app)
         return results
