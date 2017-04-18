@@ -94,11 +94,12 @@ class BioguideSearch(object):
         for row in data_rows:
             # Check to see if this row starts a new member
             # If it does, grab the member data and create new Member object
-            cells = row.findAll('td')
-            (last, first, middle) = get_name(cells[0])
+            (name_cell, birthdeath_cell, position_cell,
+                party_cell, state_cell, congress_cell) = row.findAll('td')
+            (last, first, middle) = get_name(name_cell)
             if last:
-                bioguide_id = get_bioguide_id(cells[0])
-                (birth_year, death_year) = get_birth_death(cells[1])
+                bioguide_id = get_bioguide_id(name_cell)
+                (birth_year, death_year) = get_birth_death(birthdeath_cell)
                 member = dict(last_name=last,
                             first_name=first,
                             middle_name=middle,
@@ -110,10 +111,10 @@ class BioguideSearch(object):
                 results.append(m)
 
             # Get the Appointment data
-            position = cells[2].text
-            party = cells[3].text
-            state = cells[4].text
-            (congress, begin_year, end_year) = get_congress_and_year(cells[5])
+            (position, party, state) = ( position_cell.text, 
+                                         party_cell.text, 
+                                         state_cell.text)
+            (congress, begin_year, end_year) = get_congress_and_year(congress_cell)
             app = dict(position=position, 
                        party=party,
                        state=state,
