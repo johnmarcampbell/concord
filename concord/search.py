@@ -22,7 +22,6 @@ class BioguideSearch(object):
     def parse_results(self):
         """Parse the results of the bioguide search"""
         results = []
-        results_table = self.soup.findAll('table')[1]
 
         def get_bioguide_id(cell):
             """Take a cell with a link to a bioguide page, and return the ID"""
@@ -75,9 +74,16 @@ class BioguideSearch(object):
             
 
 
-        # Skip rows that don't have '<td>' cells
-        all_rows = results_table.findAll('tr') 
-        data_rows = [row for row in all_rows if len(row.findAll('td'))]
+        # If the search yielded a table of search results, get all the
+        # rows with data in them. Otherwise return an empty list.
+        if (len(self.soup.findAll('table')) > 1):
+            # Skip rows that don't have '<td>' cells
+            results_table = self.soup.findAll('table')[1]
+            all_rows = results_table.findAll('tr') 
+            data_rows = [row for row in all_rows if len(row.findAll('td'))]
+        else:
+            data_rows = []
+
         for row in data_rows:
             # Check to see if this row starts a new member
             # If it does, grab the member data and create new Member object
