@@ -1,5 +1,6 @@
 from .member import Member
 from .appointment import Appointment
+from .utils import defaultkwargs
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -8,9 +9,20 @@ class BioguideSearch(object):
     """An object that will perform searches on the Biographical
     Directory of the US Congress"""
 
+    _defaults = dict(
+        first_name='',
+        last_name='',
+        position='',
+        state='',
+        party='',
+        year_or_congress='',
+        url='http://bioguide.congress.gov/biosearch/biosearch1.asp'
+    )
+
+    @defaultkwargs()
     def __init__(self, **kwargs):
         """Set some defaults"""
-        self.settings = self.get_settings(**kwargs)
+        self.settings = kwargs
 
     def search(self):
         """Function that performs the bioguide search"""
@@ -134,26 +146,3 @@ class BioguideSearch(object):
             )
 
         return payload
-        
-    def get_settings(self, **kwargs):
-        """Turn a set of keyword arguments into a dictionary of settings """
-        # Dictionary with default values
-        settings = dict(
-            first_name='',
-            last_name='',
-            position='',
-            state='',
-            party='',
-            year_or_congress='',
-            url='http://bioguide.congress.gov/biosearch/biosearch1.asp'
-        )
-
-        badargs = set(kwargs) - set(settings)
-
-        if badargs:
-            err = 'BioguideSearch() got unexpected keyword arguments: {}.'
-            raise TypeError( err.format(list(badargs)) )
-        else:
-            settings.update(kwargs)
-
-        return settings
