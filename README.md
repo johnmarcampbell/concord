@@ -39,7 +39,7 @@ pip install -r requirements.txt
 
 - Concord can be run from the command line or using the included `runSpider.py` script.  
 ```shell  
-cd congress_gov  
+congress_gov  
 scrapy crawl congress # command line  
 python runSpider.py # script  
 ```  
