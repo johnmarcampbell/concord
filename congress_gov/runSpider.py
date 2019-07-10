@@ -10,8 +10,8 @@ settings['LOG_FILE'] = 'log.txt'
 
 process = CrawlerProcess(settings)
 
-start = '01/12/2016'
-end = '01/12/2016'
+start = '01/12/2019'
+end = '01/19/2019'
 limit = 999
 
 process.crawl(cs, start_date=start, end_date=end, item_limit=limit)
