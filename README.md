@@ -46,7 +46,7 @@ python runSpider.py # script
 
 The `congress` spider can take the following arguments:  
 - `item_limit`: A limit on the number of items to download.  
-` `start_date`: Spider begins parsing records at this date. If none is provided, this will automatically set to *yesterday's* date  
+- `start_date`: Spider begins parsing records at this date. If none is provided, this will automatically set to *yesterday's* date  
 - `end_date`: Spider stops parsing records after this date. If none is provided, this will automatically set to *yesterday's* date  
 - `date_format`: A date format for specifying the date_string.  See [`arrow` documentation](http://crsmithdev.com/arrow/#tokens) for more info. 
 

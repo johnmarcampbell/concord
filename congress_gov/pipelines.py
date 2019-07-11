@@ -29,6 +29,5 @@ class MongoPipeline(object):
         self.client.close()
 
     def process_item(self, item, spider):
-        print('Foo\n'*5)
         self.db[self.mongo_collection].insert_one(dict(item))
         return item
