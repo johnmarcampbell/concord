@@ -83,7 +83,7 @@ class CongressSpider(scrapy.spiders.CrawlSpider):
 
         linked_text = response.xpath(linked_text_path).extract()
         raw_date = response.xpath(date_path).extract_first()
-        date = arrow.get(raw_date, 'MMMM D, YYYY ').format(self.set['date_format'])
+        date = arrow.get(raw_date, 'MMMM D, YYYY ').datetime
         blurb = response.xpath(blurb_path).extract()
         title = response.xpath(title_path).extract_first()
         nth_congress_session = blurb[0]
