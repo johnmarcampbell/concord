@@ -8,6 +8,7 @@ the CLI does the right thing around it.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,17 @@ from typer.testing import CliRunner
 import concord.cli as cli_module
 from concord.api import ENV_API_KEY, ApiError
 from concord.pipeline import PullResult
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip(text: str) -> str:
+    """Drop ANSI color/style escapes so assertions don't depend on the terminal.
+
+    Locally, CliRunner produces plain text; on CI runners Rich detects color
+    support and injects escapes that break naive substring checks.
+    """
+    return _ANSI.sub("", text)
 
 
 @pytest.fixture
@@ -51,8 +63,9 @@ class TestHelp:
         result = runner.invoke(cli_module.app, ["pull", "--help"])
         assert result.exit_code == 0
         # All four flags must appear in --help.
+        plain = _strip(result.output)
         for flag in ["--from", "--to", "--storage", "--limit"]:
-            assert flag in result.output
+            assert flag in plain
 
 
 class TestArgParsing:
@@ -121,7 +134,7 @@ class TestArgParsing:
         )
         assert result.exit_code == 0, result.output
         # Default path is ./proceedings.jsonl
-        assert "proceedings.jsonl" in result.output
+        assert "proceedings.jsonl" in _strip(result.output)
 
     @pytest.mark.parametrize("bad_date", ["yesterday", "05/22/2026", "2026-13-01"])
     def test_pull_rejects_bad_date(
@@ -166,9 +179,10 @@ class TestSuccessOutput:
         )
         assert result.exit_code == 0, result.output
         # PullResult(written=3, skipped=1) from the stub.
-        assert "Wrote 3 new proceedings" in result.output
-        assert str(out_path) in result.output
-        assert "skipped 1" in result.output
+        plain = _strip(result.output)
+        assert "Wrote 3 new proceedings" in plain
+        assert str(out_path) in plain
+        assert "skipped 1" in plain
 
 
 # -- missing API key ---------------------------------------------------------
@@ -198,10 +212,11 @@ class TestMissingApiKey:
         )
         # Non-zero exit, error message on stderr, no traceback.
         assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
         # The error message mentions the env var so the user knows what to set.
-        assert ENV_API_KEY in result.output or ENV_API_KEY in (result.stderr or "")
+        assert ENV_API_KEY in plain
         # Ensure we don't accidentally let an unhandled exception through.
-        assert "Traceback" not in result.output
+        assert "Traceback" not in plain
 
     def test_apierror_during_client_init_surfaces_as_exit_code_2(
         self,
@@ -229,4 +244,4 @@ class TestMissingApiKey:
             ],
         )
         assert result.exit_code == 2
-        assert "simulated init failure" in result.output
+        assert "simulated init failure" in _strip(result.output)
