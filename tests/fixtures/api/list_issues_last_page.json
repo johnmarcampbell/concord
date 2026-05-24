@@ -1,0 +1,102 @@
+{
+    "dailyCongressionalRecord": [
+        {
+            "congress": 111,
+            "issueDate": "2009-05-07T04:00:00Z",
+            "issueNumber": "70",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:08:33Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/70?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-05-04T04:00:00Z",
+            "issueNumber": "67",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:08:25Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/67?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-05-13T04:00:00Z",
+            "issueNumber": "73",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:08:14Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/73?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-01-12T05:00:00Z",
+            "issueNumber": "6",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:08:10Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/6?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-11-17T05:00:00Z",
+            "issueNumber": "170",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:08:00Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/170?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-09-10T04:00:00Z",
+            "issueNumber": "127",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:07:49Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/127?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-01-28T05:00:00Z",
+            "issueNumber": "17",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:07:39Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/17?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-03-16T04:00:00Z",
+            "issueNumber": "45",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:07:31Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/45?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-10-08T04:00:00Z",
+            "issueNumber": "145",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:07:19Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/145?format=json",
+            "volumeNumber": 155
+        },
+        {
+            "congress": 111,
+            "issueDate": "2009-08-03T04:00:00Z",
+            "issueNumber": "119",
+            "sessionNumber": 1,
+            "updateDate": "2013-04-10T08:07:15Z",
+            "url": "https://api.congress.gov/v3/daily-congressional-record/155/119?format=json",
+            "volumeNumber": 155
+        }
+    ],
+    "pagination": {
+        "count": 5810,
+        "prev": "https://api.congress.gov/v3/daily-congressional-record?offset=5790&limit=10&format=json"
+    },
+    "request": {
+        "contentType": "application/json",
+        "format": "json"
+    }
+}
