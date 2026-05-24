@@ -14,7 +14,7 @@ import httpx
 import typer
 
 from .api import ENV_API_KEY, ApiError, Client
-from .pipeline import pull
+from .pipeline import ProgressEvent, pull
 from .storage import JsonlStorage
 from .text import fetch_text
 
@@ -74,8 +74,20 @@ def pull_command(
             help="Maximum number of new proceedings to write.",
         ),
     ] = None,
+    show_progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Print a line per issue as the pull proceeds. Useful for backfills.",
+        ),
+    ] = False,
 ) -> None:
-    """Pull every article in every issue between --from and --to (inclusive)."""
+    """Pull every article in every issue between --from and --to (inclusive).
+
+    Re-running the same command after a crash, network drop, or Ctrl+C is
+    safe: already-stored articles are detected by their granule ID and
+    skipped without re-fetching.
+    """
     start = _parse_date(from_)
     end = _parse_date(to)
 
@@ -88,6 +100,15 @@ def pull_command(
     storage = JsonlStorage(storage_path)
     http_client = httpx.Client()
 
+    def _print_progress(event: ProgressEvent) -> None:
+        typer.echo(
+            f"{event.issue.issue_date}  "
+            f"vol {event.issue.volume} iss {event.issue.issue_number:>4}  "
+            f"+{event.issue_written:>4} written, {event.issue_skipped:>4} skipped  "
+            f"(total: {event.total_written} / {event.total_skipped})",
+            err=True,
+        )
+
     try:
         with api_client:
             result = pull(
@@ -97,6 +118,7 @@ def pull_command(
                 fetch=lambda url: fetch_text(url, http_client),
                 storage=storage,
                 limit=limit,
+                progress=_print_progress if show_progress else None,
             )
     finally:
         http_client.close()
