@@ -9,7 +9,11 @@ authors = [{ name = "John Campbell" }]
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.4",
+    "typer>=0.25.1",
 ]
+
+[project.scripts]
+concord = "concord.cli:main"
 
 [dependency-groups]
 dev = [

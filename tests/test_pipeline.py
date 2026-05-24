@@ -115,7 +115,7 @@ class TestRangeFiltering:
     def test_empty_range_returns_zero(self) -> None:
         client = _StubClient(pages=[], articles_by_issue={})
         storage = _InMemoryStorage()
-        n = pull(
+        result = pull(
             date(2026, 5, 1),
             date(2026, 4, 30),  # end < start
             client=client,  # type: ignore[arg-type]
@@ -123,7 +123,7 @@ class TestRangeFiltering:
             storage=storage,
             now=_now,
         )
-        assert n == 0
+        assert result.written == 0
         # No API calls were made — the range was empty.
         assert client.list_issues_calls == []
 
@@ -132,7 +132,7 @@ class TestRangeFiltering:
         articles = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
         client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})
         storage = _InMemoryStorage()
-        n = pull(
+        result = pull(
             date(2026, 5, 22),
             date(2026, 5, 22),
             client=client,  # type: ignore[arg-type]
@@ -140,7 +140,7 @@ class TestRangeFiltering:
             storage=storage,
             now=_now,
         )
-        assert n == 3
+        assert result.written == 3
         assert len(storage.writes) == 3
         # fetched_at is stamped from the injected clock.
         assert all(p.fetched_at == FIXED_NOW for p in storage.writes)
@@ -185,7 +185,7 @@ class TestDedup:
             fetch_calls.append(url)
             return "body"
 
-        n = pull(
+        result = pull(
             date(2026, 5, 22),
             date(2026, 5, 22),
             client=client,  # type: ignore[arg-type]
@@ -194,7 +194,8 @@ class TestDedup:
             now=_now,
         )
         # Two new writes, one skip.
-        assert n == 2
+        assert result.written == 2
+        assert result.skipped == 1
         # fetch was NOT called for the already-stored article.
         assert len(fetch_calls) == 2
         assert articles[1].text_url not in [httpx.URL(u) for u in fetch_calls]
@@ -207,7 +208,7 @@ class TestLimit:
         client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})
         storage = _InMemoryStorage()
 
-        n = pull(
+        result = pull(
             date(2026, 5, 22),
             date(2026, 5, 22),
             client=client,  # type: ignore[arg-type]
@@ -216,7 +217,7 @@ class TestLimit:
             limit=4,
             now=_now,
         )
-        assert n == 4
+        assert result.written == 4
         assert len(storage.writes) == 4
 
 
@@ -237,7 +238,7 @@ class TestPagination:
             articles_by_issue={(172, 88): articles_88, (172, 87): articles_87},
         )
         storage = _InMemoryStorage()
-        n = pull(
+        result = pull(
             date(2026, 5, 21),
             date(2026, 5, 22),
             client=client,  # type: ignore[arg-type]
@@ -245,7 +246,7 @@ class TestPagination:
             storage=storage,
             now=_now,
         )
-        assert n == 2
+        assert result.written == 2
         # Both pages were requested.
         assert len(client.list_issues_calls) == 2
 
@@ -309,7 +310,7 @@ class TestIntegration:
     ) -> None:
         client, fetch, storage = wired_components
         with client:
-            n = pull(
+            result = pull(
                 date(2026, 5, 22),
                 date(2026, 5, 22),
                 client=client,
@@ -319,7 +320,8 @@ class TestIntegration:
             )
 
         # The articles fixture has 6 + 3 + 11 = 20 articles.
-        assert n == 20
+        assert result.written == 20
+        assert result.skipped == 0
         assert len(storage) == 20
 
         # Every line on disk parses back into a Proceeding.
@@ -357,7 +359,9 @@ class TestIntegration:
                 storage=storage,
                 now=_now,
             )
-        assert first == 20
-        assert second == 0  # Everything already stored.
+        assert first.written == 20
+        assert first.skipped == 0
+        assert second.written == 0  # Everything already stored.
+        assert second.skipped == 20  # ...and all of them counted as skipped.
         # File has exactly 20 lines, not 40.
         assert len(storage.path.read_text().strip().splitlines()) == 20

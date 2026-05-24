@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+from typing import NamedTuple
 
 from .api import Client
 from .models import Proceeding
@@ -35,6 +36,19 @@ from .storage.base import Storage
 #: Per-page size when paginating ``list_issues``. The API caps at 250;
 #: using the max minimizes round trips on long-range pulls.
 LIST_PAGE_SIZE = 250
+
+
+class PullResult(NamedTuple):
+    """Outcome of a single :func:`pull` invocation.
+
+    ``written`` is the count of new :class:`Proceeding` records persisted to
+    storage during this call. ``skipped`` is the count of articles that were
+    already present in storage (matched by ``granule_id``) and whose text
+    fetch was therefore avoided.
+    """
+
+    written: int
+    skipped: int
 
 
 def pull(
@@ -46,15 +60,15 @@ def pull(
     storage: Storage,
     limit: int | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
-) -> int:
+) -> PullResult:
     """Pull every in-range article and persist it as a :class:`Proceeding`.
 
     Parameters
     ----------
     start, end:
         Inclusive date bounds. ``end >= start`` is the caller's responsibility;
-        if ``end < start`` the function returns 0 without making any API calls
-        that would produce work.
+        if ``end < start`` the function returns ``PullResult(0, 0)`` without
+        making any API calls.
     client:
         Wired :class:`concord.api.Client`.
     fetch:
@@ -74,13 +88,14 @@ def pull(
 
     Returns
     -------
-    int
-        The number of *new* :class:`Proceeding` records written.
+    PullResult
+        ``(written, skipped)`` counts for this call.
     """
     if end < start:
-        return 0
+        return PullResult(written=0, skipped=0)
 
     written = 0
+    skipped = 0
     offset = 0
     while True:
         issues, next_offset = client.list_issues(limit=LIST_PAGE_SIZE, offset=offset)
@@ -89,6 +104,7 @@ def pull(
                 continue
             for article in client.list_articles(issue.volume, issue.issue_number):
                 if storage.has(article.granule_id):
+                    skipped += 1
                     continue
                 text = fetch(str(article.text_url))
                 proceeding = Proceeding.build(
@@ -100,7 +116,7 @@ def pull(
                 storage.write(proceeding)
                 written += 1
                 if limit is not None and written >= limit:
-                    return written
+                    return PullResult(written=written, skipped=skipped)
         if next_offset is None:
-            return written
+            return PullResult(written=written, skipped=skipped)
         offset = next_offset
