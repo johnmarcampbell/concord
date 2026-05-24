@@ -5,8 +5,6 @@ JSON responses are real captures from the live API, stored under
 ``tests/fixtures/api/``.
 """
 
-from __future__ import annotations
-
 import json
 from collections.abc import Callable
 from pathlib import Path

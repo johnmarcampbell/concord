@@ -4,8 +4,6 @@ Uses ``mongomock`` (a pymongo-compatible in-memory fake) so the suite runs
 without a real Mongo server.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 
 import mongomock

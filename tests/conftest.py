@@ -5,8 +5,6 @@ suite never touches the network. The ``load_fixture`` helper returns the raw
 text of a fixture file; ``load_json_fixture`` parses it as JSON.
 """
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any

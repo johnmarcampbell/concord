@@ -1,7 +1,5 @@
 """Smoke tests proving the project skeleton is wired up correctly."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import concord

@@ -5,8 +5,6 @@ These cover the coercions the models perform on raw API payloads
 logic that ties Article URLs together.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, date, datetime
 
 import pytest

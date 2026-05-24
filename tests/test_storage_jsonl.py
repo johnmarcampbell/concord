@@ -1,7 +1,5 @@
 """Tests for the JSONL storage backend."""
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from pathlib import Path
 

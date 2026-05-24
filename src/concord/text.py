@@ -10,8 +10,6 @@ No bs4, no lxml — the format is stable enough that one stdlib parser does the
 job and removes a dependency the rest of the project doesn't need.
 """
 
-from __future__ import annotations
-
 from html.parser import HTMLParser
 
 import httpx
