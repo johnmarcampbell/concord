@@ -1,14 +1,24 @@
-# Virtual Environment
-env/
-
-# Python byte-code
+# Python
 __pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
 
-# Editor swap files
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor
 *.swp
+.vscode/
+.idea/
 
-# Test output files
-*.json
-*.html
-*.txt
-
+# OS
+.DS_Store
