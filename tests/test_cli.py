@@ -118,6 +118,53 @@ class TestArgParsing:
         assert result.exit_code == 0, result.output
         assert stub_pull[0]["limit"] == 5
 
+    def test_pull_progress_flag_passes_callback(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        stub_pull: list[dict[str, Any]],
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "pull",
+                "--from",
+                "2026-05-22",
+                "--to",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+                "--progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # With --progress, a callback is wired up.
+        assert stub_pull[0]["progress"] is not None
+
+    def test_pull_no_progress_by_default(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        stub_pull: list[dict[str, Any]],
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "pull",
+                "--from",
+                "2026-05-22",
+                "--to",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Without --progress, callback is None.
+        assert stub_pull[0]["progress"] is None
+
     def test_pull_default_storage_path(
         self,
         runner: CliRunner,

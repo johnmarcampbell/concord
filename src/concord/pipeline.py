@@ -30,7 +30,7 @@ from datetime import UTC, date, datetime
 from typing import NamedTuple
 
 from .api import Client
-from .models import Proceeding
+from .models import Issue, Proceeding
 from .storage.base import Storage
 
 #: Per-page size when paginating ``list_issues``. The API caps at 250;
@@ -51,6 +51,21 @@ class PullResult(NamedTuple):
     skipped: int
 
 
+class ProgressEvent(NamedTuple):
+    """A single progress notification emitted after each in-range issue.
+
+    Emitted *after* every article in the issue has been processed (either
+    written or skipped). Multi-hour backfills use this to print a heartbeat
+    line so the operator can see the run is making progress.
+    """
+
+    issue: Issue
+    issue_written: int
+    issue_skipped: int
+    total_written: int
+    total_skipped: int
+
+
 def pull(
     start: date,
     end: date,
@@ -59,9 +74,20 @@ def pull(
     fetch: Callable[[str], str],
     storage: Storage,
     limit: int | None = None,
+    progress: Callable[[ProgressEvent], None] | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> PullResult:
     """Pull every in-range article and persist it as a :class:`Proceeding`.
+
+    Resume contract
+    ---------------
+
+    The pipeline is crash-safe by construction. Storage writes one Proceeding
+    at a time and the dedup index is rebuilt from disk on the next run, so
+    killing the process at any point loses at most the in-flight article;
+    the next invocation picks up only what's missing. Callers don't need a
+    special "resume" mode — re-running the same ``pull(start, end, ...)`` is
+    the resume.
 
     Parameters
     ----------
@@ -82,6 +108,11 @@ def pull(
     limit:
         Cap on total writes. ``None`` (the default) means unlimited. Useful
         for smoke tests and dry runs.
+    progress:
+        Optional callback invoked once per in-range issue *after* its
+        articles have been processed (written or skipped). Use this to print
+        a heartbeat line on long backfills. The pipeline itself prints
+        nothing — formatting is the caller's choice.
     now:
         Injection point for ``datetime.now(UTC)`` used to stamp
         ``fetched_at``. Lets tests assert exact timestamps.
@@ -102,9 +133,14 @@ def pull(
         for issue in issues:
             if not (start <= issue.issue_date <= end):
                 continue
+
+            issue_written = 0
+            issue_skipped = 0
+            hit_limit = False
             for article in client.list_articles(issue.volume, issue.issue_number):
                 if storage.has(article.granule_id):
                     skipped += 1
+                    issue_skipped += 1
                     continue
                 text = fetch(str(article.text_url))
                 proceeding = Proceeding.build(
@@ -115,8 +151,24 @@ def pull(
                 )
                 storage.write(proceeding)
                 written += 1
+                issue_written += 1
                 if limit is not None and written >= limit:
-                    return PullResult(written=written, skipped=skipped)
+                    hit_limit = True
+                    break
+
+            if progress is not None:
+                progress(
+                    ProgressEvent(
+                        issue=issue,
+                        issue_written=issue_written,
+                        issue_skipped=issue_skipped,
+                        total_written=written,
+                        total_skipped=skipped,
+                    )
+                )
+
+            if hit_limit:
+                return PullResult(written=written, skipped=skipped)
         if next_offset is None:
             return PullResult(written=written, skipped=skipped)
         offset = next_offset

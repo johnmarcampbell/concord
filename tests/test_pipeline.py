@@ -12,6 +12,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -365,3 +366,168 @@ class TestIntegration:
         assert second.skipped == 20  # ...and all of them counted as skipped.
         # File has exactly 20 lines, not 40.
         assert len(storage.path.read_text().strip().splitlines()) == 20
+
+
+# ---------------------------------------------------------------------------
+# Resume / crash recovery
+# ---------------------------------------------------------------------------
+
+
+class TestResume:
+    def test_crash_mid_pull_is_recoverable(
+        self,
+        fixtures_dir: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Simulate the operator's worst-case: kill -9 partway through.
+
+        Setup: integration components but the fetch callable raises on the
+        N-th article. Run pull, catch the exception, count what was written,
+        then run pull again with a working fetch and verify no duplicates
+        and no missing records.
+        """
+        # Build two clients (one will be re-created for the resume) sharing
+        # the same JSONL path.
+        out = tmp_path / "out.jsonl"
+
+        # ---- attempt 1: fetch dies after 7 articles
+        api_transport_1 = httpx.MockTransport(_api_mock_handler(fixtures_dir))
+        text_transport_1 = httpx.MockTransport(_text_mock_handler())
+        text_http_1 = httpx.Client(transport=text_transport_1)
+        client_1 = Client(api_key="test", transport=api_transport_1, sleep=lambda _: None)
+        storage_1 = JsonlStorage(out)
+
+        call_count = {"n": 0}
+
+        def crashing_fetch(url: str) -> str:
+            call_count["n"] += 1
+            if call_count["n"] > 7:
+                raise RuntimeError("simulated crash")
+            return fetch_text(url, text_http_1)
+
+        with client_1, pytest.raises(RuntimeError, match="simulated crash"):
+            pull(
+                date(2026, 5, 22),
+                date(2026, 5, 22),
+                client=client_1,
+                fetch=crashing_fetch,
+                storage=storage_1,
+                now=_now,
+            )
+        text_http_1.close()
+
+        # 7 articles made it onto disk before the crash.
+        written_during_crash = len(out.read_text().strip().splitlines())
+        assert written_during_crash == 7
+
+        # ---- attempt 2: fresh components, working fetch
+        api_transport_2 = httpx.MockTransport(_api_mock_handler(fixtures_dir))
+        text_transport_2 = httpx.MockTransport(_text_mock_handler())
+        text_http_2 = httpx.Client(transport=text_transport_2)
+        client_2 = Client(api_key="test", transport=api_transport_2, sleep=lambda _: None)
+        # Re-opening the same JSONL path rebuilds the seen-set from disk.
+        storage_2 = JsonlStorage(out)
+
+        with client_2:
+            result = pull(
+                date(2026, 5, 22),
+                date(2026, 5, 22),
+                client=client_2,
+                fetch=lambda url: fetch_text(url, text_http_2),
+                storage=storage_2,
+                now=_now,
+            )
+        text_http_2.close()
+
+        # Resume wrote only the remaining articles, skipped the 7 already there.
+        assert result.written == 13  # 20 total - 7 already done
+        assert result.skipped == 7
+
+        # Final state: exactly 20 distinct records, no duplicates.
+        lines = out.read_text().strip().splitlines()
+        assert len(lines) == 20
+        granule_ids = {Proceeding.model_validate_json(line).granule_id for line in lines}
+        assert len(granule_ids) == 20  # all unique
+
+
+# ---------------------------------------------------------------------------
+# Progress reporting
+# ---------------------------------------------------------------------------
+
+
+class TestProgress:
+    def test_callback_invoked_once_per_in_range_issue(self) -> None:
+        # Two in-range issues, one out-of-range.
+        in_1 = _issue("2026-05-22", issue_number=88)
+        in_2 = _issue("2026-05-21", issue_number=87)
+        out_of_range = _issue("2026-05-01", issue_number=80)
+        articles_88 = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
+        articles_87 = [_article(f"CREC-2026-05-21-pt1-PgS{n:04d}") for n in range(2)]
+        client = _StubClient(
+            pages=[[in_1, in_2, out_of_range]],
+            articles_by_issue={(172, 88): articles_88, (172, 87): articles_87},
+        )
+        storage = _InMemoryStorage()
+
+        events: list[Any] = []
+        pull(
+            date(2026, 5, 21),
+            date(2026, 5, 22),
+            client=client,  # type: ignore[arg-type]
+            fetch=_stub_fetch,
+            storage=storage,
+            progress=events.append,
+            now=_now,
+        )
+        # Two callbacks: one per in-range issue. Out-of-range was skipped
+        # without invoking progress.
+        assert len(events) == 2
+        # First call: issue 88 with 3 writes.
+        assert events[0].issue.issue_number == 88
+        assert events[0].issue_written == 3
+        assert events[0].issue_skipped == 0
+        assert events[0].total_written == 3
+        # Second call: issue 87 with 2 more writes; totals accumulate.
+        assert events[1].issue.issue_number == 87
+        assert events[1].issue_written == 2
+        assert events[1].total_written == 5
+
+    def test_callback_reports_skipped(self) -> None:
+        issue = _issue("2026-05-22", issue_number=88)
+        articles = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
+        client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})
+        storage = _InMemoryStorage()
+        # Pre-seed one as already stored.
+        storage._seen.add(articles[1].granule_id)
+
+        events: list[Any] = []
+        pull(
+            date(2026, 5, 22),
+            date(2026, 5, 22),
+            client=client,  # type: ignore[arg-type]
+            fetch=_stub_fetch,
+            storage=storage,
+            progress=events.append,
+            now=_now,
+        )
+        assert len(events) == 1
+        assert events[0].issue_written == 2
+        assert events[0].issue_skipped == 1
+
+    def test_progress_optional(self) -> None:
+        """No progress kwarg → no events, no errors."""
+        issue = _issue("2026-05-22", issue_number=88)
+        client = _StubClient(
+            pages=[[issue]],
+            articles_by_issue={(172, 88): [_article("CREC-2026-05-22-pt1-PgS0001")]},
+        )
+        storage = _InMemoryStorage()
+        result = pull(
+            date(2026, 5, 22),
+            date(2026, 5, 22),
+            client=client,  # type: ignore[arg-type]
+            fetch=_stub_fetch,
+            storage=storage,
+            now=_now,
+        )
+        assert result.written == 1
