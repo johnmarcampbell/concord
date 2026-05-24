@@ -12,11 +12,15 @@ dependencies = [
     "typer>=0.25.1",
 ]
 
+[project.optional-dependencies]
+mongo = ["pymongo>=4.0"]
+
 [project.scripts]
 concord = "concord.cli:main"
 
 [dependency-groups]
 dev = [
+    "mongomock>=4.1",
     "mypy>=1.11",
     "pytest>=8.0",
     "ruff>=0.6",

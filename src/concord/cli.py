@@ -15,7 +15,8 @@ import typer
 
 from .api import ENV_API_KEY, ApiError, Client
 from .pipeline import ProgressEvent, pull
-from .storage import JsonlStorage
+from .storage import JsonlStorage, MongoStorage
+from .storage.base import Storage
 from .text import fetch_text
 
 app = typer.Typer(
@@ -81,6 +82,21 @@ def pull_command(
             help="Print a line per issue as the pull proceeds. Useful for backfills.",
         ),
     ] = False,
+    mongo_uri: Annotated[
+        str | None,
+        typer.Option(
+            "--mongo-uri",
+            help="MongoDB connection URI. When set, --storage is ignored.",
+        ),
+    ] = None,
+    mongo_db: Annotated[
+        str,
+        typer.Option("--mongo-db", help="MongoDB database name (with --mongo-uri)."),
+    ] = "concord",
+    mongo_collection: Annotated[
+        str,
+        typer.Option("--mongo-collection", help="MongoDB collection name (with --mongo-uri)."),
+    ] = "proceedings",
 ) -> None:
     """Pull every article in every issue between --from and --to (inclusive).
 
@@ -97,7 +113,18 @@ def pull_command(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    storage = JsonlStorage(storage_path)
+    storage: Storage
+    storage_label: str
+    if mongo_uri is not None:
+        try:
+            storage = MongoStorage.from_uri(mongo_uri, db=mongo_db, collection=mongo_collection)
+        except ImportError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        storage_label = f"mongodb://{mongo_db}.{mongo_collection}"
+    else:
+        storage = JsonlStorage(storage_path)
+        storage_label = str(storage_path)
     http_client = httpx.Client()
 
     def _print_progress(event: ProgressEvent) -> None:
@@ -124,7 +151,7 @@ def pull_command(
         http_client.close()
 
     typer.echo(
-        f"Wrote {result.written} new proceedings to {storage_path} "
+        f"Wrote {result.written} new proceedings to {storage_label} "
         f"(skipped {result.skipped} already present)"
     )
 

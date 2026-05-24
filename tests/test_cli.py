@@ -292,3 +292,79 @@ class TestMissingApiKey:
         )
         assert result.exit_code == 2
         assert "simulated init failure" in _strip(result.output)
+
+
+# -- Mongo backend wiring ----------------------------------------------------
+
+
+class TestMongoBackend:
+    def test_mongo_uri_routes_to_mongo_storage(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        stub_pull: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With --mongo-uri, the CLI calls MongoStorage.from_uri instead of JsonlStorage."""
+        from concord.storage import MongoStorage
+
+        calls: list[dict[str, Any]] = []
+
+        def fake_from_uri(uri: str, *, db: str, collection: str) -> MongoStorage:
+            calls.append({"uri": uri, "db": db, "collection": collection})
+            # Return a stand-in that satisfies the Storage protocol.
+            import mongomock
+
+            return MongoStorage(collection=mongomock.MongoClient()[db][collection])
+
+        monkeypatch.setattr(cli_module.MongoStorage, "from_uri", staticmethod(fake_from_uri))
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "pull",
+                "--from",
+                "2026-05-22",
+                "--to",
+                "2026-05-22",
+                "--mongo-uri",
+                "mongodb://example.invalid:27017",
+                "--mongo-db",
+                "my_db",
+                "--mongo-collection",
+                "my_coll",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == [
+            {"uri": "mongodb://example.invalid:27017", "db": "my_db", "collection": "my_coll"}
+        ]
+        # Success summary names the mongo target, not a file path.
+        assert "mongodb://my_db.my_coll" in _strip(result.output)
+
+    def test_pymongo_missing_exits_cleanly(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        stub_pull: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Helpful error if MongoStorage.from_uri raises ImportError (no [mongo])."""
+
+        def fake_from_uri(*_args: Any, **_kwargs: Any) -> Any:
+            raise ImportError("pymongo not installed; install concord[mongo]")
+
+        monkeypatch.setattr(cli_module.MongoStorage, "from_uri", staticmethod(fake_from_uri))
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "pull",
+                "--from",
+                "2026-05-22",
+                "--to",
+                "2026-05-22",
+                "--mongo-uri",
+                "mongodb://example.invalid:27017",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "pymongo not installed" in _strip(result.output)
