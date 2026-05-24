@@ -31,7 +31,8 @@ def _json_response(payload: Any, status: int = 200) -> httpx.Response:
 
 
 def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> Client:
-    return Client(api_key="test-key", transport=_mock_transport(handler))
+    """Default test client: never actually sleeps during retries."""
+    return Client(api_key="test-key", transport=_mock_transport(handler), sleep=lambda _s: None)
 
 
 # -- construction -------------------------------------------------------------
@@ -201,3 +202,177 @@ class TestErrors:
             pytest.raises(ApiError, match="expected JSON object"),
         ):
             client.list_issues()
+
+
+# -- retry / rate-limit -------------------------------------------------------
+
+
+def _sequenced_handler(
+    responses: list[httpx.Response],
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Return a handler that yields the given responses one per call."""
+    iterator = iter(responses)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        try:
+            return next(iterator)
+        except StopIteration as exc:
+            raise AssertionError("handler ran out of canned responses") from exc
+
+    return handler
+
+
+def _sequenced_exceptions(
+    items: list[BaseException | httpx.Response],
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Like _sequenced_handler but each element may be a Response or an exception."""
+    iterator = iter(items)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        item = next(iterator)
+        if isinstance(item, httpx.Response):
+            return item
+        raise item
+
+    return handler
+
+
+def _client_with_sleep_recorder(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> tuple[Client, list[float]]:
+    """Client whose sleep() records its arguments instead of waiting."""
+    sleeps: list[float] = []
+    client = Client(
+        api_key="test-key",
+        transport=_mock_transport(handler),
+        sleep=sleeps.append,
+    )
+    return client, sleeps
+
+
+class TestRetry5xx:
+    def test_recovers_after_transient_5xx(self) -> None:
+        # Two 503s, then success.
+        handler = _sequenced_handler(
+            [
+                httpx.Response(503),
+                httpx.Response(503),
+                _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}}),
+            ]
+        )
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            issues, _ = client.list_issues()
+        assert issues == []
+        # Slept between the two retries (1s, 2s).
+        assert sleeps == [1.0, 2.0]
+
+    def test_gives_up_after_max_attempts(self) -> None:
+        # Always 500. Should retry MAX_5XX_RETRIES (5) times, then raise.
+        handler = _sequenced_handler([httpx.Response(500) for _ in range(6)])
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client, pytest.raises(ApiError, match="gave up after 5 attempts") as exc:
+            client.list_issues()
+        assert exc.value.status_code == 500
+        # Five sleeps before the final attempt fails out.
+        assert len(sleeps) == 5
+        # Backoff schedule: 1, 2, 4, 8, 16
+        assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+    def test_4xx_other_than_429_is_not_retried(self) -> None:
+        # A 404 must NOT trigger retries — it's a permanent error.
+        handler = _sequenced_handler([httpx.Response(404)])
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client, pytest.raises(ApiError) as exc:
+            client.list_issues()
+        assert exc.value.status_code == 404
+        assert sleeps == []  # Never slept.
+
+
+class TestRetryTransport:
+    def test_recovers_after_transient_connect_error(self) -> None:
+        handler = _sequenced_exceptions(
+            [
+                httpx.ConnectError("first"),
+                _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}}),
+            ]
+        )
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            client.list_issues()
+        assert sleeps == [1.0]
+
+    def test_gives_up_after_max_transport_errors(self) -> None:
+        handler = _sequenced_exceptions([httpx.ConnectError("x") for _ in range(6)])
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client, pytest.raises(ApiError, match="gave up after 5 attempts") as exc:
+            client.list_issues()
+        assert exc.value.status_code is None
+        assert len(sleeps) == 5
+
+
+class TestRetry429:
+    def test_respects_retry_after_header(self) -> None:
+        handler = _sequenced_handler(
+            [
+                httpx.Response(429, headers={"Retry-After": "3"}),
+                _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}}),
+            ]
+        )
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            client.list_issues()
+        # Slept the 3 seconds the server requested, exactly once.
+        assert sleeps == [3.0]
+
+    def test_falls_back_to_backoff_without_retry_after(self) -> None:
+        handler = _sequenced_handler(
+            [
+                httpx.Response(429),  # no header
+                _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}}),
+            ]
+        )
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            client.list_issues()
+        assert sleeps == [1.0]  # _backoff_seconds(0) = 1
+
+    def test_retries_indefinitely(self) -> None:
+        """Many 429s in a row should NOT count against the 5xx budget."""
+        # 10 consecutive 429s — would exceed MAX_5XX_RETRIES — then succeed.
+        responses = [httpx.Response(429) for _ in range(10)]
+        responses.append(
+            _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}})
+        )
+        handler = _sequenced_handler(responses)
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            client.list_issues()
+        # Slept once per 429, all with the same delay (no escalation).
+        assert len(sleeps) == 10
+
+    def test_retry_after_capped_to_max_backoff(self) -> None:
+        # A pathological server says "wait 24 hours" — clamp to MAX_BACKOFF.
+        handler = _sequenced_handler(
+            [
+                httpx.Response(429, headers={"Retry-After": "86400"}),
+                _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}}),
+            ]
+        )
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            client.list_issues()
+        assert sleeps == [60.0]  # MAX_BACKOFF
+
+    def test_malformed_retry_after_falls_back_to_backoff(self) -> None:
+        handler = _sequenced_handler(
+            [
+                httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}),
+                _json_response({"dailyCongressionalRecord": [], "pagination": {"count": 0}}),
+            ]
+        )
+        client, sleeps = _client_with_sleep_recorder(handler)
+        with client:
+            client.list_issues()
+        # HTTP-date form not supported; falls back to exponential.
+        assert sleeps == [1.0]
