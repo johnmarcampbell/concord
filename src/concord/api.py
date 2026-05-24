@@ -4,14 +4,29 @@ All HTTP and JSON-parsing concerns live here. Callers receive validated
 Pydantic models (:class:`Issue`, :class:`Article`) and never touch the
 raw camelCase payload shape.
 
-Rate-limit and retry handling are intentionally absent — they land in #23
-once the client is in use. Today, transient failures surface as
-:class:`ApiError`.
+Retry policy
+------------
+
+Transient failures are retried automatically:
+
+* HTTP 429 ("Too Many Requests"): retry **indefinitely**, respecting any
+  ``Retry-After`` header and otherwise backing off exponentially capped at
+  :data:`MAX_BACKOFF`. Rate-limited is not broken — we wait.
+* HTTP 5xx, connection errors, read/write/connect timeouts: retry up to
+  :data:`MAX_5XX_RETRIES` times with exponential backoff. After that, the
+  failure surfaces as an :class:`ApiError`.
+
+Every retry decision is logged to ``stderr`` via :mod:`logging` (logger
+``concord.api``) at WARNING level so multi-hour pulls have a visible
+heartbeat.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import time
+from collections.abc import Callable
 from types import TracebackType
 from typing import Any
 
@@ -23,6 +38,20 @@ from .models import Article, Issue
 API_BASE = "https://api.congress.gov/v3"
 USER_AGENT = f"concord/{__version__} (+https://github.com/johnmarcampbell/concord)"
 ENV_API_KEY = "CONGRESS_API_KEY"
+
+#: Cap on a single backoff delay, in seconds. Applied to both the exponential
+#: schedule and Retry-After values so a server-suggested 1-hour wait can't
+#: silently stall the pipeline.
+MAX_BACKOFF = 60.0
+
+#: Maximum retries for transient 5xx / transport failures before surfacing
+#: an :class:`ApiError`. 429s are retried indefinitely separately.
+MAX_5XX_RETRIES = 5
+
+#: Exponential schedule for transient backoff: 1s, 2s, 4s, 8s, 16s (capped).
+_BACKOFF_BASE = 2.0
+
+_log = logging.getLogger("concord.api")
 
 
 class ApiError(Exception):
@@ -55,11 +84,13 @@ class Client:
         api_key: str | None = None,
         transport: httpx.BaseTransport | None = None,
         timeout: float = 30.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         resolved = api_key if api_key is not None else os.environ.get(ENV_API_KEY)
         if not resolved:
             raise ApiError(f"API key required: pass api_key=... or set {ENV_API_KEY}")
         self._api_key = resolved
+        self._sleep = sleep
         self._client = httpx.Client(
             base_url=API_BASE,
             transport=transport,
@@ -133,20 +164,92 @@ class Client:
         merged: dict[str, Any] = {"format": "json", "api_key": self._api_key}
         if params:
             merged.update(params)
-        try:
-            response = self._client.get(path, params=merged)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise ApiError(
-                f"{exc.response.status_code} {exc.response.reason_phrase} from {path}",
-                status_code=exc.response.status_code,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ApiError(f"transport error calling {path}: {exc}") from exc
-        data: Any = response.json()
-        if not isinstance(data, dict):
-            raise ApiError(f"expected JSON object from {path}, got {type(data).__name__}")
-        return data
+
+        transient_attempts = 0
+        while True:
+            try:
+                response = self._client.get(path, params=merged)
+            except httpx.HTTPError as exc:
+                # Transport-level failure (DNS, timeout, connection reset).
+                # Treat as a retryable transient.
+                if transient_attempts >= MAX_5XX_RETRIES:
+                    raise ApiError(
+                        f"transport error calling {path} "
+                        f"(gave up after {MAX_5XX_RETRIES} attempts): {exc}"
+                    ) from exc
+                delay = _backoff_seconds(transient_attempts)
+                _log.warning("transport error on %s (%s); retrying in %.1fs", path, exc, delay)
+                self._sleep(delay)
+                transient_attempts += 1
+                continue
+
+            status = response.status_code
+
+            if status == 429:
+                delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
+                _log.warning("429 from %s; backing off %.1fs before retry", path, delay)
+                self._sleep(delay)
+                # 429 retries do not increment transient_attempts — rate-limited
+                # is a wait condition, not a fault. We could be 429'd for hours.
+                continue
+
+            if 500 <= status < 600:
+                if transient_attempts >= MAX_5XX_RETRIES:
+                    raise ApiError(
+                        f"{status} {response.reason_phrase} from {path} "
+                        f"(gave up after {MAX_5XX_RETRIES} attempts)",
+                        status_code=status,
+                    )
+                delay = _backoff_seconds(transient_attempts)
+                _log.warning(
+                    "%s from %s; retrying in %.1fs (attempt %d/%d)",
+                    status,
+                    path,
+                    delay,
+                    transient_attempts + 1,
+                    MAX_5XX_RETRIES,
+                )
+                self._sleep(delay)
+                transient_attempts += 1
+                continue
+
+            if not response.is_success:
+                # Non-retryable client error (4xx other than 429): surface immediately.
+                raise ApiError(
+                    f"{status} {response.reason_phrase} from {path}",
+                    status_code=status,
+                )
+
+            data: Any = response.json()
+            if not isinstance(data, dict):
+                raise ApiError(f"expected JSON object from {path}, got {type(data).__name__}")
+            return data
+
+
+# -- retry helpers ----------------------------------------------------------
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff capped at :data:`MAX_BACKOFF`. ``attempt`` is 0-based."""
+    return min(_BACKOFF_BASE**attempt, MAX_BACKOFF)
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Parse the ``Retry-After`` header, if any, as seconds.
+
+    Supports the integer-seconds form. Returns ``None`` for the HTTP-date
+    form or when the header is missing/unparseable; callers fall back to
+    exponential backoff in that case. The result is clamped to
+    :data:`MAX_BACKOFF` so a misbehaving server can't park us forever.
+    """
+    raw = response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    return min(max(seconds, 0.0), MAX_BACKOFF)
 
 
 # -- payload -> model -------------------------------------------------------
