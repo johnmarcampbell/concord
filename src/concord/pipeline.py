@@ -1,0 +1,106 @@
+"""Pipeline orchestrator.
+
+The glue between the API client, the text fetcher, and storage. Given a date
+range, :func:`pull` produces one :class:`Proceeding` per article for every
+issue whose ``issue_date`` lies in ``[start, end]`` and writes the results
+through the supplied :class:`Storage` backend.
+
+Design notes
+------------
+
+* The ``/v3/daily-congressional-record`` list endpoint has **no date filter**,
+  and the API does not return results in strict ``issueDate`` order: recently
+  updated issues bubble to the top regardless of when they were originally
+  issued. (E.g., in the captured fixture, 2026-05-22 → 2026-05-20 → 2026-05-21.)
+  For correctness, :func:`pull` walks every page of the list endpoint rather
+  than trying to short-circuit on the first out-of-range date.
+* The walk uses the API's maximum page size to keep the metadata cost low: a
+  full 30-year backfill is ~24 list calls plus one ``/articles`` call per
+  issue, well under the 5000-requests/hour rate limit.
+* ``storage.has(granule_id)`` is consulted before each text fetch, so
+  re-running ``pull`` over an already-pulled range is a no-op (no HTTP for
+  the article text, no write). This is the resume contract the storage
+  backend in #20 was designed to provide.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import UTC, date, datetime
+
+from .api import Client
+from .models import Proceeding
+from .storage.base import Storage
+
+#: Per-page size when paginating ``list_issues``. The API caps at 250;
+#: using the max minimizes round trips on long-range pulls.
+LIST_PAGE_SIZE = 250
+
+
+def pull(
+    start: date,
+    end: date,
+    *,
+    client: Client,
+    fetch: Callable[[str], str],
+    storage: Storage,
+    limit: int | None = None,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> int:
+    """Pull every in-range article and persist it as a :class:`Proceeding`.
+
+    Parameters
+    ----------
+    start, end:
+        Inclusive date bounds. ``end >= start`` is the caller's responsibility;
+        if ``end < start`` the function returns 0 without making any API calls
+        that would produce work.
+    client:
+        Wired :class:`concord.api.Client`.
+    fetch:
+        Callable taking a Formatted Text URL and returning the plain text of
+        the article. Typically a closure over :func:`concord.text.fetch_text`
+        bound to an ``httpx.Client``.
+    storage:
+        Any :class:`Storage` implementation. ``has`` is checked before every
+        article to skip already-stored work; ``write`` is called for each new
+        :class:`Proceeding`.
+    limit:
+        Cap on total writes. ``None`` (the default) means unlimited. Useful
+        for smoke tests and dry runs.
+    now:
+        Injection point for ``datetime.now(UTC)`` used to stamp
+        ``fetched_at``. Lets tests assert exact timestamps.
+
+    Returns
+    -------
+    int
+        The number of *new* :class:`Proceeding` records written.
+    """
+    if end < start:
+        return 0
+
+    written = 0
+    offset = 0
+    while True:
+        issues, next_offset = client.list_issues(limit=LIST_PAGE_SIZE, offset=offset)
+        for issue in issues:
+            if not (start <= issue.issue_date <= end):
+                continue
+            for article in client.list_articles(issue.volume, issue.issue_number):
+                if storage.has(article.granule_id):
+                    continue
+                text = fetch(str(article.text_url))
+                proceeding = Proceeding.build(
+                    issue=issue,
+                    article=article,
+                    text=text,
+                    fetched_at=now(),
+                )
+                storage.write(proceeding)
+                written += 1
+                if limit is not None and written >= limit:
+                    return written
+        if next_offset is None:
+            return written
+        offset = next_offset
