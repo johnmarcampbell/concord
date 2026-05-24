@@ -6,8 +6,6 @@ itself is covered by tests/test_pipeline.py — here we stub it out and verify
 the CLI does the right thing around it.
 """
 
-from __future__ import annotations
-
 import re
 from datetime import date
 from pathlib import Path

@@ -7,8 +7,6 @@ over articles without ever checking — though it's still expected to call
 ``has`` first to skip the text-fetch HTTP for already-stored articles.
 """
 
-from __future__ import annotations
-
 from typing import Protocol
 
 from ..models import Proceeding

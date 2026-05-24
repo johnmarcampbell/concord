@@ -10,8 +10,6 @@ load — losing one record from a long backfill is better than losing the
 ability to resume the whole thing.
 """
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 

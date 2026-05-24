@@ -6,8 +6,6 @@ JsonlStorage together via httpx.MockTransport, using the JSON and HTML
 fixtures captured for #18 and #19.
 """
 
-from __future__ import annotations
-
 import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime

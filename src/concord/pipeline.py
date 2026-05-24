@@ -23,8 +23,6 @@ Design notes
   backend in #20 was designed to provide.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import NamedTuple

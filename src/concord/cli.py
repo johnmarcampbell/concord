@@ -4,8 +4,6 @@ One command today — ``concord pull`` — that wires the API client, text
 fetcher, and JSONL storage together for a given inclusive date range.
 """
 
-from __future__ import annotations
-
 from datetime import date
 from pathlib import Path
 from typing import Annotated
