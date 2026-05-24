@@ -1,0 +1,119 @@
+"""Command-line interface for Concord.
+
+One command today — ``concord pull`` — that wires the API client, text
+fetcher, and JSONL storage together for a given inclusive date range.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+from typing import Annotated
+
+import httpx
+import typer
+
+from .api import ENV_API_KEY, ApiError, Client
+from .pipeline import pull
+from .storage import JsonlStorage
+from .text import fetch_text
+
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="Pull Congressional Record articles from api.congress.gov.",
+)
+
+
+@app.callback()
+def _root() -> None:
+    """Concord — Congressional Record collection pipeline.
+
+    The empty callback exists so Typer treats this as a multi-command app
+    (with ``pull`` as a real subcommand) rather than collapsing the lone
+    command into the root.
+    """
+
+
+def _parse_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"expected YYYY-MM-DD, got {value!r}") from exc
+
+
+@app.command("pull")
+def pull_command(
+    from_: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="Start date YYYY-MM-DD (inclusive).",
+            show_default=False,
+        ),
+    ],
+    to: Annotated[
+        str,
+        typer.Option(
+            "--to",
+            help="End date YYYY-MM-DD (inclusive).",
+            show_default=False,
+        ),
+    ],
+    storage_path: Annotated[
+        Path,
+        typer.Option(
+            "--storage",
+            help="JSONL output file. Created if missing.",
+        ),
+    ] = Path("./proceedings.jsonl"),
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Maximum number of new proceedings to write.",
+        ),
+    ] = None,
+) -> None:
+    """Pull every article in every issue between --from and --to (inclusive)."""
+    start = _parse_date(from_)
+    end = _parse_date(to)
+
+    try:
+        api_client = Client()  # reads CONGRESS_API_KEY from env
+    except ApiError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    storage = JsonlStorage(storage_path)
+    http_client = httpx.Client()
+
+    try:
+        with api_client:
+            result = pull(
+                start,
+                end,
+                client=api_client,
+                fetch=lambda url: fetch_text(url, http_client),
+                storage=storage,
+                limit=limit,
+            )
+    finally:
+        http_client.close()
+
+    typer.echo(
+        f"Wrote {result.written} new proceedings to {storage_path} "
+        f"(skipped {result.skipped} already present)"
+    )
+
+
+def main() -> None:  # pragma: no cover - entry point shim
+    app()
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
+
+
+# re-export for any callers who want to introspect the env-var name
+__all__ = ["ENV_API_KEY", "app", "main", "pull_command"]
