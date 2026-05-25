@@ -1,0 +1,41 @@
+{% if not query %}
+  <p class="text-stone-500">Enter a query above to search.</p>
+{% elif total == 0 %}
+  <p class="text-stone-600">
+    No proceedings match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.
+  </p>
+{% else %}
+  <p class="text-sm text-stone-500 mb-4">
+    {{ total }} proceeding{% if total != 1 %}s{% endif %} matching
+    <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>
+    — page {{ page }}.
+  </p>
+  <ol class="space-y-6">
+    {% for entry in results %}
+      {% include "_result_card.html" %}
+    {% endfor %}
+  </ol>
+
+  {% if has_prev or has_next %}
+    <nav class="mt-8 flex justify-between text-sm">
+      {% if has_prev %}
+        <a
+          class="text-stone-600 hover:text-stone-900 underline"
+          href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
+          hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
+          hx-target="#results"
+          hx-push-url="true"
+        >&larr; Previous</a>
+      {% else %}<span></span>{% endif %}
+      {% if has_next %}
+        <a
+          class="text-stone-600 hover:text-stone-900 underline"
+          href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
+          hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
+          hx-target="#results"
+          hx-push-url="true"
+        >Next &rarr;</a>
+      {% else %}<span></span>{% endif %}
+    </nav>
+  {% endif %}
+{% endif %}
