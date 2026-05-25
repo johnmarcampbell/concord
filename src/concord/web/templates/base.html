@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Concord — Congressional Record Search{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-stone-50 text-stone-900 antialiased">
+  <header class="border-b border-stone-200 bg-white">
+    <div class="max-w-4xl mx-auto px-4 py-4">
+      <div class="flex items-baseline gap-3 mb-4">
+        <a href="/" class="text-2xl font-serif font-semibold text-stone-900 hover:text-stone-700">
+          Concord
+        </a>
+        <span class="text-sm text-stone-500">— search the Congressional Record</span>
+      </div>
+      <form
+        hx-get="/search"
+        hx-target="#results"
+        hx-push-url="true"
+        hx-trigger="submit, change from:select[name='section']"
+        action="/search"
+        method="get"
+        class="flex flex-wrap gap-2"
+      >
+        <input
+          type="search"
+          name="q"
+          value="{{ query|default('') }}"
+          placeholder="Search for a phrase, topic, or speaker…"
+          class="flex-1 min-w-0 rounded border border-stone-300 px-3 py-2 text-base focus:border-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-500"
+          autocomplete="off"
+          autofocus
+        >
+        <button
+          type="submit"
+          class="rounded bg-stone-900 px-4 py-2 text-white text-sm font-medium hover:bg-stone-700"
+        >
+          Search
+        </button>
+      </form>
+      <div class="mt-3 flex flex-wrap gap-3 text-sm text-stone-600">
+        <label class="flex items-center gap-1">
+          <span>From</span>
+          <input
+            type="date" name="from" form="" value="{{ from_date|default('') }}"
+            class="rounded border border-stone-300 px-2 py-1 text-sm"
+          >
+        </label>
+        <label class="flex items-center gap-1">
+          <span>To</span>
+          <input
+            type="date" name="to" form="" value="{{ to_date|default('') }}"
+            class="rounded border border-stone-300 px-2 py-1 text-sm"
+          >
+        </label>
+        <label class="flex items-center gap-1">
+          <span>Section</span>
+          <select name="section" form="" class="rounded border border-stone-300 px-2 py-1 text-sm">
+            <option value="">All</option>
+            {% for s in sections|default(['Senate Section','House Section','Extensions of Remarks Section','Daily Digest']) %}
+              <option value="{{ s }}" {% if s == section %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="max-w-4xl mx-auto px-4 py-8 text-xs text-stone-500 border-t border-stone-200 mt-12">
+    Sourced from
+    <a class="underline hover:text-stone-700" href="https://api.congress.gov/">api.congress.gov</a>
+    and <a class="underline hover:text-stone-700" href="https://www.congress.gov/">congress.gov</a>.
+    Data is in the public domain. This is a personal demo, not affiliated with Congress.
+  </footer>
+
+  <style>
+    /* Snippet match highlighting */
+    mark { background-color: #fef08a; padding: 0 2px; border-radius: 2px; color: inherit; }
+  </style>
+</body>
+</html>

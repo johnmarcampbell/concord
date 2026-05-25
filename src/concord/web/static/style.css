@@ -1,0 +1,8 @@
+/* Minimal supplements to Tailwind. The bulk of styling is utility classes
+   in the templates; this file is only for things Tailwind can't easily do. */
+
+/* Force a serif stack for headings without depending on a custom Tailwind
+   font config (we use the Play CDN, no tailwind.config.js). */
+.font-serif {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Not found — Concord{% endblock %}
+{% block content %}
+<div class="prose prose-stone">
+  <h1 class="text-2xl font-serif font-semibold">Not found</h1>
+  <p class="text-stone-600">
+    No proceeding with granule
+    <span class="font-mono">{{ granule_id }}</span> is in this database.
+  </p>
+  <p class="text-stone-500 text-sm">
+    The Congressional Record's daily edition covers 1995 onward, and
+    Concord's local copy may be a subset.
+  </p>
+  <p class="mt-4"><a href="/" class="underline">Back to search</a></p>
+</div>
+{% endblock %}

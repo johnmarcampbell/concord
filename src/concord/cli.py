@@ -8,6 +8,7 @@ Subcommands:
   in SQLite. Idempotent on ``granule_id``.
 - ``concord index`` — Stage 2. Chunk + embed every proceeding into FTS5
   and ``sqlite-vec`` indexes. Idempotent per chunk and per embedding.
+- ``concord serve`` — Web layer. Run the FastAPI search demo via uvicorn.
 """
 
 import json
@@ -302,6 +303,64 @@ def index_command(
     )
 
 
+@app.command("serve")
+def serve_command(
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db",
+            help="SQLite database produced by `concord load` + `concord index`.",
+            show_default=False,
+        ),
+    ],
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help="Bind address. Use 127.0.0.1 behind a reverse proxy.",
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option(
+            "--port",
+            help="TCP port for the web server.",
+        ),
+    ] = 8000,
+    reload: Annotated[
+        bool,
+        typer.Option(
+            "--reload/--no-reload",
+            help="Enable uvicorn auto-reload (dev only).",
+        ),
+    ] = False,
+) -> None:
+    """Run the public-facing search demo via uvicorn.
+
+    Reads ``OPENAI_API_KEY`` from the environment. Production deployments
+    bind to ``127.0.0.1`` and live behind Hostinger's TLS-terminating
+    reverse proxy.
+    """
+    if not db_path.exists():
+        typer.echo(f"error: database not found: {db_path}", err=True)
+        raise typer.Exit(code=2)
+
+    if not os.environ.get(ENV_OPENAI_API_KEY):
+        typer.echo(
+            f"error: {ENV_OPENAI_API_KEY} is not set; required for embedding queries",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # Lazy imports so `concord --help` doesn't pay the FastAPI/uvicorn cost.
+    import uvicorn
+
+    from .web.app import create_app
+
+    app_instance = create_app(db_path)
+    uvicorn.run(app_instance, host=host, port=port, reload=reload)
+
+
 def main() -> None:  # pragma: no cover - entry point shim
     app()
 
@@ -319,4 +378,5 @@ __all__ = [
     "load_command",
     "main",
     "pull_command",
+    "serve_command",
 ]

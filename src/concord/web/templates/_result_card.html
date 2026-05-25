@@ -1,0 +1,15 @@
+<li class="border-b border-stone-200 pb-6 last:border-0">
+  <a
+    href="/proceedings/{{ entry.result.granule_id }}"
+    class="text-lg font-serif font-medium text-stone-900 hover:text-stone-700"
+  >
+    {{ entry.result.title }}
+  </a>
+  <div class="mt-1 text-xs text-stone-500 flex flex-wrap gap-x-3 gap-y-1">
+    <span>{{ entry.result.issue_date }}</span>
+    <span>{{ entry.result.section }}</span>
+    <span>pp. {{ entry.result.start_page }}–{{ entry.result.end_page }}</span>
+    <span class="font-mono text-stone-400">{{ "%.4f"|format(entry.result.score) }}</span>
+  </div>
+  <p class="mt-2 text-sm text-stone-700 leading-relaxed">{{ entry.snippet|safe }}</p>
+</li>

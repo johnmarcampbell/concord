@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ p.title }} — Concord{% endblock %}
+{% block content %}
+<article class="grid grid-cols-1 md:grid-cols-4 gap-6">
+  <aside class="md:col-span-1 text-sm text-stone-600 space-y-3">
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Date</div>
+      <div>{{ p.issue_date }}</div>
+    </div>
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Congress</div>
+      <div>{{ p.congress }} (session {{ p.session }})</div>
+    </div>
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Volume / Issue</div>
+      <div>Vol. {{ p.volume }}, No. {{ p.issue_number }}</div>
+    </div>
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Section</div>
+      <div>{{ p.section }}</div>
+    </div>
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Pages</div>
+      <div>{{ p.start_page }} – {{ p.end_page }}</div>
+    </div>
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Source</div>
+      <div class="flex flex-col gap-1 mt-1">
+        <a class="underline hover:text-stone-900" href="{{ p.text_url }}">congress.gov (HTML)</a>
+        <a class="underline hover:text-stone-900" href="{{ p.pdf_url }}">congress.gov (PDF)</a>
+      </div>
+    </div>
+    <div class="text-xs text-stone-400">
+      Granule: <span class="font-mono">{{ p.granule_id }}</span>
+    </div>
+  </aside>
+
+  <div class="md:col-span-3">
+    <h1 class="text-2xl font-serif font-semibold mb-4">{{ p.title }}</h1>
+    <pre class="whitespace-pre-wrap font-mono text-sm leading-relaxed text-stone-800 bg-white border border-stone-200 rounded p-4">{{ p.text }}</pre>
+  </div>
+</article>
+{% endblock %}

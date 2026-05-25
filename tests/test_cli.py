@@ -662,3 +662,90 @@ class TestIndexCommand:
         with SqliteStorage(db) as storage:
             count = storage.connection.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0]
             assert count > 0
+
+
+# -- `concord serve` ----------------------------------------------------------
+
+
+class TestServeCommand:
+    def test_help_lists_all_flags(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["serve", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--db", "--host", "--port", "--reload"]:
+            assert flag in plain
+
+    def test_missing_db_exits_cleanly(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        result = runner.invoke(cli_module.app, ["serve", "--db", str(tmp_path / "missing.db")])
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert "not found" in plain
+        assert "Traceback" not in plain
+
+    def test_missing_openai_api_key_exits_cleanly(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from concord.storage import SqliteStorage
+
+        monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
+        db = tmp_path / "out.db"
+        SqliteStorage(db).close()
+        result = runner.invoke(cli_module.app, ["serve", "--db", str(db)])
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert cli_module.ENV_OPENAI_API_KEY in plain
+        assert "Traceback" not in plain
+
+    def test_wires_uvicorn_with_expected_args(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify the CLI's wiring up to ``uvicorn.run`` without actually starting a server."""
+        from concord.storage import SqliteStorage
+
+        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        db = tmp_path / "out.db"
+        SqliteStorage(db).close()
+
+        captured: dict[str, Any] = {}
+
+        # Stub uvicorn so the test doesn't actually bind a port.
+        import uvicorn
+
+        def fake_run(app: Any, **kwargs: Any) -> None:
+            captured["app"] = app
+            captured["kwargs"] = kwargs
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+
+        # Stub openai.OpenAI so the embedder construction inside create_app
+        # doesn't need a real API key.
+        import openai
+
+        class _Fake:
+            class embeddings:
+                @staticmethod
+                def create(*, model: str, input: list[str]) -> Any:
+                    raise AssertionError("should not be called during serve startup")
+
+        monkeypatch.setattr(openai, "OpenAI", lambda *a, **kw: _Fake())
+
+        result = runner.invoke(
+            cli_module.app,
+            ["serve", "--db", str(db), "--host", "0.0.0.0", "--port", "8123"],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["kwargs"]["host"] == "0.0.0.0"
+        assert captured["kwargs"]["port"] == 8123
+        assert captured["kwargs"]["reload"] is False
