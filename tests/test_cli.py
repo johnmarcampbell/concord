@@ -366,3 +366,173 @@ class TestMongoBackend:
         )
         assert result.exit_code == 2
         assert "pymongo not installed" in _strip(result.output)
+
+
+# -- `concord load` ----------------------------------------------------------
+
+
+_PROCEEDING_LINE_TEMPLATE = (
+    '{{"granule_id":"{gid}",'
+    '"issue_date":"2026-05-22","congress":119,"session":2,"volume":172,'
+    '"issue_number":88,"update_date":"2026-05-23T06:44:22Z",'
+    '"section":"Daily Digest","title":"Sample {gid}",'
+    '"start_page":"D551","end_page":"D552",'
+    '"text_url":"https://www.congress.gov/119/crec/2026/05/22/172/88/modified/{gid}.htm",'
+    '"pdf_url":"https://www.congress.gov/119/crec/2026/05/22/172/88/{gid}.pdf",'
+    '"text":"body for {gid}",'
+    '"fetched_at":"2026-05-24T00:00:00Z"}}'
+)
+
+
+def _write_jsonl(path: Path, granule_ids: list[str]) -> None:
+    """Write a JSONL fixture with one valid Proceeding per granule_id."""
+    lines = [_PROCEEDING_LINE_TEMPLATE.format(gid=gid) for gid in granule_ids]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class TestLoadCommand:
+    def test_help_lists_all_flags(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["load", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--jsonl", "--db", "--limit"]:
+            assert flag in plain
+
+    def test_loads_jsonl_into_sqlite(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        jsonl = tmp_path / "in.jsonl"
+        db = tmp_path / "out.db"
+        _write_jsonl(jsonl, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
+
+        result = runner.invoke(
+            cli_module.app,
+            ["load", "--jsonl", str(jsonl), "--db", str(db)],
+        )
+        assert result.exit_code == 0, result.output
+        plain = _strip(result.output)
+        assert "Loaded 2 new proceedings" in plain
+        assert str(db) in plain
+
+        # Verify the rows actually landed.
+        from concord.storage import SqliteStorage
+
+        with SqliteStorage(db) as storage:
+            assert len(storage) == 2
+
+    def test_idempotent_when_jsonl_unchanged(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        jsonl = tmp_path / "in.jsonl"
+        db = tmp_path / "out.db"
+        _write_jsonl(jsonl, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
+
+        first = runner.invoke(cli_module.app, ["load", "--jsonl", str(jsonl), "--db", str(db)])
+        assert first.exit_code == 0
+        second = runner.invoke(cli_module.app, ["load", "--jsonl", str(jsonl), "--db", str(db)])
+        assert second.exit_code == 0, second.output
+        plain = _strip(second.output)
+        assert "Loaded 0 new proceedings" in plain
+        assert "skipped 2 already present" in plain
+
+    def test_limit_caps_writes(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        jsonl = tmp_path / "in.jsonl"
+        db = tmp_path / "out.db"
+        _write_jsonl(
+            jsonl,
+            [
+                "CREC-2026-05-22-pt1-PgD551-1",
+                "CREC-2026-05-22-pt1-PgD551-2",
+                "CREC-2026-05-22-pt1-PgD551-3",
+                "CREC-2026-05-22-pt1-PgD551-4",
+                "CREC-2026-05-22-pt1-PgD551-5",
+            ],
+        )
+        result = runner.invoke(
+            cli_module.app,
+            ["load", "--jsonl", str(jsonl), "--db", str(db), "--limit", "2"],
+        )
+        assert result.exit_code == 0, result.output
+        plain = _strip(result.output)
+        assert "Loaded 2 new proceedings" in plain
+
+        from concord.storage import SqliteStorage
+
+        with SqliteStorage(db) as storage:
+            assert len(storage) == 2
+
+    def test_malformed_line_skipped(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        jsonl = tmp_path / "in.jsonl"
+        db = tmp_path / "out.db"
+        good_1 = _PROCEEDING_LINE_TEMPLATE.format(gid="CREC-2026-05-22-pt1-PgD551-1")
+        good_2 = _PROCEEDING_LINE_TEMPLATE.format(gid="CREC-2026-05-22-pt1-PgD551-2")
+        # Insert one truncated-JSON line and one missing-field line between
+        # two valid lines.
+        broken_json = '{"granule_id": "CREC-truncated", "text": "no closing'
+        missing_fields = '{"granule_id": "CREC-missing-fields-only"}'
+        jsonl.write_text(
+            "\n".join([good_1, broken_json, missing_fields, good_2]) + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            cli_module.app,
+            ["load", "--jsonl", str(jsonl), "--db", str(db)],
+        )
+        assert result.exit_code == 0, result.output
+        plain = _strip(result.output)
+        # Two valid lines made it through.
+        assert "Loaded 2 new proceedings" in plain
+        # Two bad lines were called out.
+        assert "2 malformed lines skipped" in plain
+
+    def test_blank_lines_are_skipped(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        jsonl = tmp_path / "in.jsonl"
+        db = tmp_path / "out.db"
+        good = _PROCEEDING_LINE_TEMPLATE.format(gid="CREC-2026-05-22-pt1-PgD551-1")
+        jsonl.write_text("\n\n" + good + "\n\n", encoding="utf-8")
+
+        result = runner.invoke(
+            cli_module.app,
+            ["load", "--jsonl", str(jsonl), "--db", str(db)],
+        )
+        assert result.exit_code == 0, result.output
+        # Blank lines aren't malformed — they're just skipped silently.
+        assert "malformed" not in _strip(result.output)
+        assert "Loaded 1 new proceedings" in _strip(result.output)
+
+    def test_missing_jsonl_file_exits_cleanly(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "load",
+                "--jsonl",
+                str(tmp_path / "does-not-exist.jsonl"),
+                "--db",
+                str(tmp_path / "out.db"),
+            ],
+        )
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert "not found" in plain
+        assert "Traceback" not in plain
