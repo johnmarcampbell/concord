@@ -39,6 +39,11 @@ API_BASE = "https://api.congress.gov/v3"
 USER_AGENT = f"concord/{__version__} (+https://github.com/johnmarcampbell/concord)"
 ENV_API_KEY = "CONGRESS_API_KEY"
 
+#: Per-page size when walking the ``/articles`` endpoint. The API maxes out
+#: at 250 results per page; using the max minimizes round trips on issues
+#: with hundreds of proceedings (the Senate routinely produces 100+).
+ARTICLES_PAGE_SIZE = 250
+
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
 #: silently stall the pipeline.
@@ -141,21 +146,33 @@ class Client:
         return issues, next_offset
 
     def list_articles(self, volume: int, issue_number: int) -> list[Article]:
-        """List all articles in one issue, flattening the section nesting.
+        """List **every** article in one issue, flattening the section nesting.
 
         The API groups articles by section (``Senate Section``, ``House
-        Section``, ``Extensions of Remarks Section``, ``Daily Digest``). This
-        method flattens them into a single list, populating each
+        Section``, ``Extensions of Remarks Section``, ``Daily Digest``) and
+        paginates the response — the default page size is 20 and the API
+        caps at 250. This method walks every page (``pagination.next``)
+        until exhausted and returns one flat list, populating each
         :class:`Article`'s ``section`` from the parent ``name``.
         """
-        payload = self._get(
-            f"/daily-congressional-record/{volume}/{issue_number}/articles",
-        )
         out: list[Article] = []
-        for section in payload.get("articles", []):
-            section_name = section["name"]
-            for art in section.get("sectionArticles", []):
-                out.append(_parse_article(section_name, art))
+        offset = 0
+        path = f"/daily-congressional-record/{volume}/{issue_number}/articles"
+        while True:
+            payload = self._get(path, params={"limit": ARTICLES_PAGE_SIZE, "offset": offset})
+            page_count = 0
+            for section in payload.get("articles", []):
+                section_name = section["name"]
+                for art in section.get("sectionArticles", []):
+                    out.append(_parse_article(section_name, art))
+                    page_count += 1
+            if "next" not in payload.get("pagination", {}):
+                break
+            if page_count == 0:
+                # Defensive: server claims "next" but page is empty. Stop
+                # rather than loop forever.
+                break
+            offset += ARTICLES_PAGE_SIZE
         return out
 
     # -- internals -----------------------------------------------------------

@@ -328,7 +328,12 @@ def _api_mock_handler(fixtures_dir: Path) -> Callable[[httpx.Request], httpx.Res
             }
             return httpx.Response(200, json=modified)
         if path.endswith("/articles"):
-            return httpx.Response(200, json=articles_payload)
+            # list_articles paginates; serve fixture on first page only and
+            # an empty terminating page after.
+            offset = int(request.url.params.get("offset", "0"))
+            if offset == 0:
+                return httpx.Response(200, json=articles_payload)
+            return httpx.Response(200, json={"articles": [], "pagination": {"count": 20}})
         return httpx.Response(404)
 
     return handler
