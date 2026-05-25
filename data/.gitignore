@@ -1,0 +1,6 @@
+# Ignore everything in this directory except the placeholder.
+# The CLI defaults to ./data/proceedings.{jsonl,db}; the directory needs
+# to exist in git so a fresh clone can populate it.
+*
+!.gitignore
+!.gitkeep

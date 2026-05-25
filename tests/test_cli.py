@@ -140,7 +140,30 @@ class TestArgParsing:
         # With --progress, a callback is wired up.
         assert stub_pull[0]["progress"] is not None
 
-    def test_pull_no_progress_by_default(
+    def test_pull_progress_on_by_default(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        stub_pull: list[dict[str, Any]],
+        tmp_path: Path,
+    ) -> None:
+        # Long-running pulls benefit from feedback; --no-progress opts out.
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "pull",
+                "--from",
+                "2026-05-22",
+                "--to",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert stub_pull[0]["progress"] is not None
+
+    def test_pull_no_progress_when_disabled(
         self,
         runner: CliRunner,
         with_api_key: None,
@@ -157,10 +180,10 @@ class TestArgParsing:
                 "2026-05-22",
                 "--storage",
                 str(tmp_path / "out.jsonl"),
+                "--no-progress",
             ],
         )
         assert result.exit_code == 0, result.output
-        # Without --progress, callback is None.
         assert stub_pull[0]["progress"] is None
 
     def test_pull_default_storage_path(
@@ -749,3 +772,143 @@ class TestServeCommand:
         assert captured["kwargs"]["host"] == "0.0.0.0"
         assert captured["kwargs"]["port"] == 8123
         assert captured["kwargs"]["reload"] is False
+
+
+# -- defaults & ergonomics --------------------------------------------------
+
+
+class TestDefaults:
+    def test_pull_to_defaults_to_today(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        stub_pull: list[dict[str, Any]],
+        tmp_path: Path,
+    ) -> None:
+        from datetime import UTC, datetime
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "pull",
+                "--from",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # When --to is omitted, end should be today (UTC).
+        assert stub_pull[0]["end"] == datetime.now(UTC).date()
+
+
+# -- `concord run` ----------------------------------------------------------
+
+
+class TestRunCommand:
+    def test_help_lists_all_flags(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["run", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--from", "--to", "--storage", "--db", "--limit"]:
+            assert flag in plain
+
+    def test_run_dispatches_all_three_stages(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`concord run` should call _run_pull, _run_load, _run_index in order."""
+        from concord.indexing import IndexResult
+        from concord.pipeline import PullResult
+
+        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        calls: list[str] = []
+
+        def fake_pull(**_kw: Any) -> PullResult:
+            calls.append("pull")
+            return PullResult(written=0, skipped=0, failed=0)
+
+        def fake_load(**_kw: Any) -> tuple[int, int, int]:
+            calls.append("load")
+            return (0, 0, 0)
+
+        def fake_index(**_kw: Any) -> IndexResult:
+            calls.append("index")
+            return IndexResult(
+                chunked_proceedings=0,
+                chunks_written=0,
+                embedded_chunks=0,
+                skipped_chunked=0,
+                skipped_embedded=0,
+            )
+
+        monkeypatch.setattr(cli_module, "_run_pull", fake_pull)
+        monkeypatch.setattr(cli_module, "_run_load", fake_load)
+        monkeypatch.setattr(cli_module, "_run_index", fake_index)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "run",
+                "--from",
+                "2026-05-22",
+                "--to",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+                "--db",
+                str(tmp_path / "out.db"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == ["pull", "load", "index"]
+        plain = _strip(result.output)
+        assert "Stage 0" in plain and "Stage 1" in plain and "Stage 2" in plain
+
+    def test_run_fails_fast_on_missing_congress_key(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv(cli_module.ENV_API_KEY, raising=False)
+        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "run",
+                "--from",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+            ],
+        )
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert cli_module.ENV_API_KEY in plain
+
+    def test_run_fails_fast_on_missing_openai_key(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "run",
+                "--from",
+                "2026-05-22",
+                "--storage",
+                str(tmp_path / "out.jsonl"),
+            ],
+        )
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert cli_module.ENV_OPENAI_API_KEY in plain
