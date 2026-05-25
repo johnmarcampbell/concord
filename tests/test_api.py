@@ -33,6 +33,20 @@ def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> Client:
     return Client(api_key="test-key", transport=_mock_transport(handler), sleep=lambda _s: None)
 
 
+def _make_article(granule_id: str) -> dict[str, Any]:
+    """Build a minimal article dict matching the /articles response shape."""
+    base = "https://www.congress.gov/119/crec/2026/05/22/172/88"
+    return {
+        "title": f"Sample {granule_id}",
+        "startPage": "S1",
+        "endPage": "S2",
+        "text": [
+            {"type": "Formatted Text", "url": f"{base}/modified/{granule_id}.htm"},
+            {"type": "PDF", "url": f"{base}/{granule_id}.pdf"},
+        ],
+    }
+
+
 # -- construction -------------------------------------------------------------
 
 
@@ -123,12 +137,21 @@ class TestListArticles:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured.append(request)
-            return _json_response(payload)
+            # The fixture has `pagination.next` (count=24 in 20-per-page
+            # chunks). list_articles walks pagination now, so the mock
+            # must terminate it: serve the fixture for the first request
+            # (offset omitted or 0), serve an empty terminating page after.
+            offset = int(request.url.params.get("offset", "0"))
+            if offset == 0:
+                return _json_response(payload)
+            return _json_response({"articles": [], "pagination": {"count": 24}})
 
         with _make_client(handler) as client:
             articles = client.list_articles(volume=172, issue_number=88)
 
-        # Fixture has 6 + 3 + 11 = 20 articles across 3 sections.
+        # Fixture has 6 + 3 + 11 = 20 articles across 3 sections (first
+        # page only — the real /articles response has more, but our
+        # stubbed page-2 is empty for the test).
         assert len(articles) == 20
         sections = {a.section for a in articles}
         assert sections == {"Daily Digest", "Extensions of Remarks Section", "House Section"}
@@ -139,8 +162,42 @@ class TestListArticles:
         # Every article has a granule_id derived from its text_url.
         assert all(a.granule_id.startswith("CREC-") for a in articles)
 
-        req = captured[0]
-        assert req.url.path == "/v3/daily-congressional-record/172/88/articles"
+        # First request was to the right path; pagination triggered exactly
+        # one follow-up (because the fixture had pagination.next).
+        assert captured[0].url.path == "/v3/daily-congressional-record/172/88/articles"
+        assert len(captured) == 2
+
+    def test_walks_pagination_to_completion(self) -> None:
+        """When ``pagination.next`` is present, list_articles follows it."""
+
+        # Three pages: 2 articles each on pages 1+2, 1 article on page 3, no next.
+        def _page(granule_ids: list[str], *, has_next: bool) -> dict[str, Any]:
+            return {
+                "articles": [
+                    {
+                        "name": "Senate Section",
+                        "sectionArticles": [_make_article(g) for g in granule_ids],
+                    }
+                ],
+                "pagination": {"count": 5, **({"next": "..."} if has_next else {})},
+            }
+
+        page_payloads = [
+            _page(["CREC-2026-05-22-pt1-PgS0", "CREC-2026-05-22-pt1-PgS1"], has_next=True),
+            _page(["CREC-2026-05-22-pt1-PgS2", "CREC-2026-05-22-pt1-PgS3"], has_next=True),
+            _page(["CREC-2026-05-22-pt1-PgS4"], has_next=False),
+        ]
+        call_idx = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            n = call_idx["n"]
+            call_idx["n"] += 1
+            return _json_response(page_payloads[n])
+
+        with _make_client(handler) as client:
+            articles = client.list_articles(volume=172, issue_number=88)
+        assert len(articles) == 5
+        assert call_idx["n"] == 3
 
     def test_missing_text_format_raises(self) -> None:
         # An article entry without the required "Formatted Text" URL is a
