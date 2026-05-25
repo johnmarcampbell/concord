@@ -200,6 +200,63 @@ class TestDedup:
         assert articles[1].text_url not in [httpx.URL(u) for u in fetch_calls]
 
 
+class TestFetchFailures:
+    def test_single_fetch_failure_does_not_abort_run(self) -> None:
+        from concord.text import TextFetchError
+
+        issue = _issue("2026-05-22", issue_number=88)
+        articles = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
+        client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})
+        storage = _InMemoryStorage()
+
+        def flaky_fetch(url: str) -> str:
+            if articles[1].granule_id in url:
+                raise TextFetchError("simulated timeout", status_code=None)
+            return "body"
+
+        result = pull(
+            date(2026, 5, 22),
+            date(2026, 5, 22),
+            client=client,  # type: ignore[arg-type]
+            fetch=flaky_fetch,
+            storage=storage,
+            now=_now,
+        )
+        assert result.written == 2  # the two that succeeded
+        assert result.skipped == 0
+        assert result.failed == 1  # the one that timed out
+        # Storage didn't accept the failed article — re-running can retry it.
+        assert all(p.granule_id != articles[1].granule_id for p in storage.writes)
+
+    def test_failed_count_in_progress_event(self) -> None:
+        from concord.text import TextFetchError
+
+        issue = _issue("2026-05-22", issue_number=88)
+        articles = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
+        client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})
+        storage = _InMemoryStorage()
+
+        def flaky_fetch(url: str) -> str:
+            if articles[0].granule_id in url:
+                raise TextFetchError("simulated", status_code=None)
+            return "body"
+
+        events: list[Any] = []
+        pull(
+            date(2026, 5, 22),
+            date(2026, 5, 22),
+            client=client,  # type: ignore[arg-type]
+            fetch=flaky_fetch,
+            storage=storage,
+            progress=events.append,
+            now=_now,
+        )
+        assert len(events) == 1
+        assert events[0].issue_failed == 1
+        assert events[0].issue_written == 2
+        assert events[0].total_failed == 1
+
+
 class TestLimit:
     def test_limit_caps_writes(self) -> None:
         issue = _issue("2026-05-22", issue_number=88)

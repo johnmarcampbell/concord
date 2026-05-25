@@ -36,9 +36,17 @@ _log = logging.getLogger("concord.cli")
 
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
 
+#: Per-request timeout (seconds) for fetching article text from congress.gov.
+#: The default httpx timeout (5s) is too aggressive for occasional slow
+#: responses and triggers transport errors that abort multi-day pulls.
+TEXT_FETCH_TIMEOUT = 60.0
+
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
+    # Plain Python tracebacks; Rich's pretty formatter is verbose and harder
+    # to read for unfamiliar code paths.
+    pretty_exceptions_enable=False,
     help="Pull Congressional Record articles from api.congress.gov.",
 )
 
@@ -142,14 +150,18 @@ def pull_command(
     else:
         storage = JsonlStorage(storage_path)
         storage_label = str(storage_path)
-    http_client = httpx.Client()
+    http_client = httpx.Client(timeout=TEXT_FETCH_TIMEOUT)
 
     def _print_progress(event: ProgressEvent) -> None:
         typer.echo(
             f"{event.issue.issue_date}  "
             f"vol {event.issue.volume} iss {event.issue.issue_number:>4}  "
-            f"+{event.issue_written:>4} written, {event.issue_skipped:>4} skipped  "
-            f"(total: {event.total_written} / {event.total_skipped})",
+            f"+{event.issue_written:>4} written, "
+            f"{event.issue_skipped:>4} skipped, "
+            f"{event.issue_failed:>3} failed  "
+            f"(total: {event.total_written} / "
+            f"{event.total_skipped} / "
+            f"{event.total_failed})",
             err=True,
         )
 
@@ -167,10 +179,14 @@ def pull_command(
     finally:
         http_client.close()
 
-    typer.echo(
+    summary = (
         f"Wrote {result.written} new proceedings to {storage_label} "
-        f"(skipped {result.skipped} already present)"
+        f"(skipped {result.skipped} already present"
     )
+    if result.failed:
+        summary += f", {result.failed} failed to fetch — will retry on next run"
+    summary += ")"
+    typer.echo(summary)
 
 
 @app.command("load")
