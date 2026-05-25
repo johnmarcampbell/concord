@@ -23,6 +23,7 @@ Design notes
   backend in #20 was designed to provide.
 """
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import NamedTuple
@@ -30,6 +31,9 @@ from typing import NamedTuple
 from .api import Client
 from .models import Issue, Proceeding
 from .storage.base import Storage
+from .text import TextFetchError
+
+_log = logging.getLogger("concord.pipeline")
 
 #: Per-page size when paginating ``list_issues``. The API caps at 250;
 #: using the max minimizes round trips on long-range pulls.
@@ -39,29 +43,30 @@ LIST_PAGE_SIZE = 250
 class PullResult(NamedTuple):
     """Outcome of a single :func:`pull` invocation.
 
-    ``written`` is the count of new :class:`Proceeding` records persisted to
-    storage during this call. ``skipped`` is the count of articles that were
-    already present in storage (matched by ``granule_id``) and whose text
-    fetch was therefore avoided.
+    ``written``  — new :class:`Proceeding` records persisted this call.
+    ``skipped``  — articles already in storage (matched by ``granule_id``);
+                   their text fetch was avoided.
+    ``failed``   — articles whose text fetch raised :class:`TextFetchError`
+                   and were skipped so the rest of the run could continue.
+                   These will be re-attempted on the next ``pull`` since
+                   they were never written to storage.
     """
 
     written: int
     skipped: int
+    failed: int = 0
 
 
 class ProgressEvent(NamedTuple):
-    """A single progress notification emitted after each in-range issue.
-
-    Emitted *after* every article in the issue has been processed (either
-    written or skipped). Multi-hour backfills use this to print a heartbeat
-    line so the operator can see the run is making progress.
-    """
+    """A single progress notification emitted after each in-range issue."""
 
     issue: Issue
     issue_written: int
     issue_skipped: int
+    issue_failed: int
     total_written: int
     total_skipped: int
+    total_failed: int
 
 
 def pull(
@@ -121,10 +126,11 @@ def pull(
         ``(written, skipped)`` counts for this call.
     """
     if end < start:
-        return PullResult(written=0, skipped=0)
+        return PullResult(written=0, skipped=0, failed=0)
 
     written = 0
     skipped = 0
+    failed = 0
     offset = 0
     while True:
         issues, next_offset = client.list_issues(limit=LIST_PAGE_SIZE, offset=offset)
@@ -134,13 +140,29 @@ def pull(
 
             issue_written = 0
             issue_skipped = 0
+            issue_failed = 0
             hit_limit = False
             for article in client.list_articles(issue.volume, issue.issue_number):
                 if storage.has(article.granule_id):
                     skipped += 1
                     issue_skipped += 1
                     continue
-                text = fetch(str(article.text_url))
+                try:
+                    text = fetch(str(article.text_url))
+                except TextFetchError as exc:
+                    # Single article failed to fetch (timeout, 5xx, etc.).
+                    # Log + skip + continue — the run as a whole should not
+                    # die because one article is temporarily unreachable.
+                    # The next `concord pull` over the same range will
+                    # retry this granule since it was never written.
+                    _log.warning(
+                        "skipping %s after fetch failure: %s",
+                        article.granule_id,
+                        exc,
+                    )
+                    failed += 1
+                    issue_failed += 1
+                    continue
                 proceeding = Proceeding.build(
                     issue=issue,
                     article=article,
@@ -160,13 +182,15 @@ def pull(
                         issue=issue,
                         issue_written=issue_written,
                         issue_skipped=issue_skipped,
+                        issue_failed=issue_failed,
                         total_written=written,
                         total_skipped=skipped,
+                        total_failed=failed,
                     )
                 )
 
             if hit_limit:
-                return PullResult(written=written, skipped=skipped)
+                return PullResult(written=written, skipped=skipped, failed=failed)
         if next_offset is None:
-            return PullResult(written=written, skipped=skipped)
+            return PullResult(written=written, skipped=skipped, failed=failed)
         offset = next_offset
