@@ -230,3 +230,209 @@ class TestLifecycle:
             pass
         else:
             raise AssertionError("expected closed connection to refuse queries")
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — schema additions
+# ---------------------------------------------------------------------------
+
+
+class TestStage2Schema:
+    def test_chunks_table_exists(self, tmp_path: Path) -> None:
+        SqliteStorage(tmp_path / "out.db").close()
+        conn = sqlite3.connect(tmp_path / "out.db")
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'"
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_chunks_fts_virtual_table_exists(self, tmp_path: Path) -> None:
+        SqliteStorage(tmp_path / "out.db").close()
+        conn = sqlite3.connect(tmp_path / "out.db")
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_fts'"
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_chunks_vec_virtual_table_exists_when_load_vec_true(self, tmp_path: Path) -> None:
+        SqliteStorage(tmp_path / "out.db", load_vec=True).close()
+        # Re-open with load_vec=True so the extension is available for inspection.
+        with SqliteStorage(tmp_path / "out.db", load_vec=True) as storage:
+            row = storage.connection.execute(
+                "SELECT name FROM sqlite_master WHERE name='chunks_vec'"
+            ).fetchone()
+            assert row is not None
+
+    def test_load_vec_false_skips_vec_table(self, tmp_path: Path) -> None:
+        SqliteStorage(tmp_path / "out.db", load_vec=False).close()
+        conn = sqlite3.connect(tmp_path / "out.db")
+        try:
+            row = conn.execute("SELECT name FROM sqlite_master WHERE name='chunks_vec'").fetchone()
+            assert row is None
+        finally:
+            conn.close()
+
+    def test_chunking_status_table_exists(self, tmp_path: Path) -> None:
+        SqliteStorage(tmp_path / "out.db").close()
+        conn = sqlite3.connect(tmp_path / "out.db")
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chunking_status'"
+            ).fetchone()
+            assert row is not None
+        finally:
+            conn.close()
+
+    def test_fts_trigger_fires_on_chunk_insert(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding())
+            storage.bulk_insert_chunks(
+                DEFAULT_GRANULE,
+                [(0, "Senator Warren spoke about banking regulation today.", 0, 50)],
+                chunked_at="2026-05-25T00:00:00Z",
+            )
+            rows = storage.connection.execute(
+                "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'warren'"
+            ).fetchall()
+            assert len(rows) == 1
+
+    def test_fts_trigger_fires_on_chunk_delete(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding())
+            storage.bulk_insert_chunks(
+                DEFAULT_GRANULE,
+                [(0, "Unique sentinel word: zzzpangram.", 0, 30)],
+                chunked_at="2026-05-25T00:00:00Z",
+            )
+            # Deleting the chunk row removes it from FTS too.
+            storage.connection.execute(
+                "DELETE FROM chunks WHERE granule_id = ?", (DEFAULT_GRANULE,)
+            )
+            storage.connection.commit()
+            rows = storage.connection.execute(
+                "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'zzzpangram'"
+            ).fetchall()
+            assert rows == []
+
+    def test_vec_trigger_cascades_chunk_delete(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding())
+            storage.bulk_insert_chunks(
+                DEFAULT_GRANULE,
+                [(0, "any text", 0, 8)],
+                chunked_at="2026-05-25T00:00:00Z",
+            )
+            chunk_id = storage.connection.execute(
+                "SELECT id FROM chunks WHERE granule_id = ?", (DEFAULT_GRANULE,)
+            ).fetchone()[0]
+            storage.bulk_insert_embeddings([(chunk_id, [0.5] * 1536)])
+            assert storage.connection.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0] == 1
+
+            storage.connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+            storage.connection.commit()
+            assert storage.connection.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — chunk helpers
+# ---------------------------------------------------------------------------
+
+
+class TestStage2ChunkHelpers:
+    def test_proceedings_without_chunks_yields_unchunked(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding(granule_id="CREC-2026-05-22-pt1-PgD551-1"))
+            storage.write(_sample_proceeding(granule_id="CREC-2026-05-22-pt1-PgD551-2"))
+            storage.bulk_insert_chunks(
+                "CREC-2026-05-22-pt1-PgD551-1",
+                [(0, "already chunked", 0, 15)],
+                chunked_at="2026-05-25T00:00:00Z",
+            )
+            remaining = list(storage.proceedings_without_chunks())
+            assert [gid for gid, _ in remaining] == ["CREC-2026-05-22-pt1-PgD551-2"]
+
+    def test_proceedings_without_chunks_excludes_empty_text_after_status(
+        self, tmp_path: Path
+    ) -> None:
+        """A proceeding with zero chunks (empty text) is marked done via chunking_status."""
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding(text=""))
+            # Insert chunking_status with zero chunks — simulating the
+            # orchestrator processing an empty-text proceeding.
+            storage.bulk_insert_chunks(DEFAULT_GRANULE, [], chunked_at="2026-05-25T00:00:00Z")
+            assert list(storage.proceedings_without_chunks()) == []
+
+    def test_bulk_insert_chunks_round_trip(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding())
+            chunks = [
+                (0, "first chunk", 0, 11),
+                (1, "second chunk", 11, 23),
+            ]
+            inserted = storage.bulk_insert_chunks(
+                DEFAULT_GRANULE, chunks, chunked_at="2026-05-25T00:00:00Z"
+            )
+            assert inserted == 2
+            rows = storage.chunks_for(DEFAULT_GRANULE)
+            assert len(rows) == 2
+            assert rows[0]["text"] == "first chunk"
+            assert rows[1]["chunk_index"] == 1
+
+    def test_proceedings_without_chunks_respects_limit(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            for i in range(5):
+                storage.write(_sample_proceeding(granule_id=f"CREC-2026-05-22-pt1-PgD551-{i}"))
+            assert len(list(storage.proceedings_without_chunks(limit=2))) == 2
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — embedding helpers
+# ---------------------------------------------------------------------------
+
+
+class TestStage2EmbeddingHelpers:
+    def test_chunks_without_embeddings_yields_unembedded(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding())
+            storage.bulk_insert_chunks(
+                DEFAULT_GRANULE,
+                [(0, "first", 0, 5), (1, "second", 6, 12)],
+                chunked_at="2026-05-25T00:00:00Z",
+            )
+            ids = [
+                row["id"] for row in storage.connection.execute("SELECT id FROM chunks ORDER BY id")
+            ]
+            # Embed only the first chunk.
+            storage.bulk_insert_embeddings([(ids[0], [0.0] * 1536)])
+            remaining = list(storage.chunks_without_embeddings())
+            assert [cid for cid, _ in remaining] == [ids[1]]
+
+    def test_bulk_insert_embeddings_returns_count(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            storage.write(_sample_proceeding())
+            storage.bulk_insert_chunks(
+                DEFAULT_GRANULE,
+                [(0, "x", 0, 1)],
+                chunked_at="2026-05-25T00:00:00Z",
+            )
+            chunk_id = storage.connection.execute("SELECT id FROM chunks").fetchone()[0]
+            assert storage.bulk_insert_embeddings([(chunk_id, [1.0] * 1536)]) == 1
+
+    def test_bulk_insert_embeddings_empty_list_noop(self, tmp_path: Path) -> None:
+        with SqliteStorage(tmp_path / "out.db") as storage:
+            assert storage.bulk_insert_embeddings([]) == 0
+
+    def test_embedding_helpers_require_load_vec(self, tmp_path: Path) -> None:
+        import pytest
+
+        with SqliteStorage(tmp_path / "out.db", load_vec=False) as storage:
+            with pytest.raises(RuntimeError, match="load_vec=True"):
+                list(storage.chunks_without_embeddings())
+            with pytest.raises(RuntimeError, match="load_vec=True"):
+                storage.bulk_insert_embeddings([(1, [0.0] * 1536)])

@@ -1,31 +1,41 @@
 """SQLite storage — the recommended derived store.
 
-One file on disk, one ``proceedings`` table that mirrors the
-:class:`Proceeding` model 1:1. Dedup is enforced by SQL: ``granule_id`` is
-the primary key, and writes use ``INSERT OR IGNORE`` so re-running over an
-unchanged JSONL is a no-op.
+One file on disk that holds every derived index Concord builds: a
+``proceedings`` table mirroring the :class:`Proceeding` model (Stage 1),
+plus, when Stage 2 is built on top, a ``chunks`` table with an FTS5 index
+(``chunks_fts``) and a ``sqlite-vec`` vector index (``chunks_vec``).
 
-WAL mode is enabled on construction so the web layer can read concurrently
-while the pipeline writes. The class isn't thread-safe — the underlying
-``sqlite3.Connection`` is created with ``check_same_thread=True``, which is
-the right default for a one-process loader.
+Construction creates all the schema lazily via ``CREATE … IF NOT EXISTS``.
+WAL mode is enabled so the web layer can read concurrently while the
+pipeline writes. Foreign keys are enabled so Stage 2's ``chunks.granule_id``
+FK actually cascades.
 
-Stage 2 (chunks + FTS5 + ``sqlite-vec``) extends this schema in
-:doc:`docs/plans/stage-2-index`; Stage 1 only creates the ``proceedings``
-table and its secondary indexes.
+The class isn't thread-safe — the underlying :class:`sqlite3.Connection`
+is opened with ``check_same_thread=True``. Instantiate one per writer.
+
+Parameters
+----------
+
+The ``load_vec`` constructor flag controls whether the ``sqlite-vec``
+extension is loaded and the ``chunks_vec`` virtual table is created. The
+default (``True``) is what the pipeline needs. Tests and any Stage-1-only
+caller can pass ``load_vec=False`` to skip the extension entirely.
 """
 
 import sqlite3
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Any
+
+import sqlite_vec  # type: ignore[import-untyped]
 
 from ..models import Proceeding
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,
 # extend _row_from_proceeding, extend the DDL.
-_COLUMNS: tuple[str, ...] = (
+_PROCEEDING_COLUMNS: tuple[str, ...] = (
     "granule_id",
     "issue_date",
     "congress",
@@ -43,7 +53,10 @@ _COLUMNS: tuple[str, ...] = (
     "fetched_at",
 )
 
-_SCHEMA = """
+# Schema that's always created — Stage 1's proceedings table and Stage 2's
+# chunks / FTS5 tables. (chunks_vec lives separately so it can be skipped
+# when load_vec=False.)
+_BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS proceedings (
     granule_id   TEXT PRIMARY KEY,
     issue_date   TEXT NOT NULL,
@@ -67,40 +80,101 @@ CREATE INDEX IF NOT EXISTS idx_proceedings_issue_date
 
 CREATE INDEX IF NOT EXISTS idx_proceedings_congress
     ON proceedings (congress);
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    granule_id  TEXT NOT NULL REFERENCES proceedings(granule_id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    char_start  INTEGER NOT NULL,
+    char_end    INTEGER NOT NULL,
+    UNIQUE (granule_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_granule_id
+    ON chunks (granule_id);
+
+-- chunking_status records every Proceeding whose text has been considered
+-- for chunking, including those whose text produced zero chunks (empty /
+-- whitespace-only text). Without this, "find unchunked proceedings" would
+-- yield empty-text proceedings forever. See ADR-0005 / stage-2-index plan.
+CREATE TABLE IF NOT EXISTS chunking_status (
+    granule_id  TEXT PRIMARY KEY REFERENCES proceedings(granule_id) ON DELETE CASCADE,
+    chunked_at  TEXT NOT NULL,
+    chunk_count INTEGER NOT NULL
+);
+
+-- FTS5 virtual table indexing chunks.text. External-content mode means
+-- chunks owns the bytes and chunks_fts owns the index — no duplication.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    text,
+    content='chunks',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+-- Triggers keep chunks_fts in sync with chunks.
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
+END;
 """
 
-_INSERT_SQL = (
-    "INSERT OR IGNORE INTO proceedings (" + ", ".join(_COLUMNS) + ") "
-    "VALUES (" + ", ".join("?" for _ in _COLUMNS) + ")"
+# Vec-only schema. Only created when load_vec=True.
+_VEC_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
+    embedding float[1536]
+);
+
+-- Cascade chunk deletes into chunks_vec so the two stay in sync. Virtual
+-- tables can't be the *target* of trigger creation, but they can appear
+-- inside trigger bodies; this is the documented sqlite-vec pattern.
+CREATE TRIGGER IF NOT EXISTS chunks_ad_vec AFTER DELETE ON chunks BEGIN
+    DELETE FROM chunks_vec WHERE rowid = old.id;
+END;
+"""
+
+_PROCEEDING_INSERT_SQL = (
+    "INSERT OR IGNORE INTO proceedings (" + ", ".join(_PROCEEDING_COLUMNS) + ") "
+    "VALUES (" + ", ".join("?" for _ in _PROCEEDING_COLUMNS) + ")"
 )
+
+_CHUNK_INSERT_SQL = (
+    "INSERT OR IGNORE INTO chunks "
+    "(granule_id, chunk_index, text, char_start, char_end) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+
+_VEC_INSERT_SQL = "INSERT OR REPLACE INTO chunks_vec(rowid, embedding) VALUES (?, ?)"
 
 
 class SqliteStorage:
-    """SQLite-backed :class:`Storage` implementation.
+    """SQLite-backed :class:`Storage` implementation."""
 
-    Parameters
-    ----------
-    path:
-        Filesystem path for the ``.db`` file. Parent directories are
-        created on first use.
-
-    The class opens one long-lived :class:`sqlite3.Connection` on
-    construction. WAL mode is enabled so other readers (eventually the web
-    layer) can run concurrently with writes. Not thread-safe; instantiate
-    one per writer.
-    """
-
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, load_vec: bool = True) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._path)
         self._conn.row_factory = sqlite3.Row
+        self._load_vec = load_vec
+
+        if load_vec:
+            self._conn.enable_load_extension(True)
+            sqlite_vec.load(self._conn)
+            self._conn.enable_load_extension(False)
+
         # WAL gives us concurrent reads alongside our single writer.
         self._conn.execute("PRAGMA journal_mode = WAL")
-        # Foreign keys aren't used yet but Stage 2's chunks table will need
-        # them on; enabling here is cheap and saves a footgun later.
         self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_BASE_SCHEMA)
+        if load_vec:
+            self._conn.executescript(_VEC_SCHEMA)
         self._conn.commit()
 
     # -- Storage Protocol -------------------------------------------------
@@ -113,14 +187,118 @@ class SqliteStorage:
         return cursor.fetchone() is not None
 
     def write(self, proceeding: Proceeding) -> None:
-        self._conn.execute(_INSERT_SQL, _row_from_proceeding(proceeding))
+        self._conn.execute(_PROCEEDING_INSERT_SQL, _row_from_proceeding(proceeding))
         self._conn.commit()
+
+    # -- Stage 2: chunk I/O -----------------------------------------------
+
+    def proceedings_without_chunks(self, *, limit: int | None = None) -> Iterable[tuple[str, str]]:
+        """Yield ``(granule_id, text)`` for proceedings whose chunking pass hasn't run.
+
+        Uses the ``chunking_status`` ledger rather than a chunks-row count so
+        that empty-text proceedings (which produce zero chunks) aren't
+        re-yielded on every run.
+        """
+        sql = (
+            "SELECT p.granule_id, p.text FROM proceedings p "
+            "LEFT JOIN chunking_status cs ON cs.granule_id = p.granule_id "
+            "WHERE cs.granule_id IS NULL"
+        )
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        cursor = self._conn.execute(sql)
+        for row in cursor:
+            yield row["granule_id"], row["text"]
+
+    def bulk_insert_chunks(
+        self,
+        granule_id: str,
+        chunks: Sequence[tuple[int, str, int, int]],
+        *,
+        chunked_at: str,
+    ) -> int:
+        """Write the chunks for a single proceeding atomically.
+
+        Each ``chunks`` entry is ``(chunk_index, text, char_start, char_end)``.
+        Also records the chunking-status row so ``proceedings_without_chunks``
+        won't re-yield this proceeding.
+        """
+        try:
+            self._conn.execute("BEGIN")
+            if chunks:
+                self._conn.executemany(
+                    _CHUNK_INSERT_SQL,
+                    [(granule_id, idx, text, cs, ce) for idx, text, cs, ce in chunks],
+                )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO chunking_status "
+                "(granule_id, chunked_at, chunk_count) VALUES (?, ?, ?)",
+                (granule_id, chunked_at, len(chunks)),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        return len(chunks)
+
+    def chunks_for(self, granule_id: str) -> list[sqlite3.Row]:
+        """Return every chunk row for a proceeding, ordered by chunk_index."""
+        cursor = self._conn.execute(
+            "SELECT id, granule_id, chunk_index, text, char_start, char_end "
+            "FROM chunks WHERE granule_id = ? ORDER BY chunk_index",
+            (granule_id,),
+        )
+        return cursor.fetchall()
+
+    # -- Stage 2: embedding I/O -------------------------------------------
+
+    def chunks_without_embeddings(self, *, limit: int | None = None) -> Iterable[tuple[int, str]]:
+        """Yield ``(chunk_id, text)`` for chunks not yet embedded."""
+        if not self._load_vec:
+            raise RuntimeError("chunks_without_embeddings requires load_vec=True (sqlite-vec)")
+        sql = (
+            "SELECT c.id, c.text FROM chunks c "
+            "LEFT JOIN chunks_vec v ON v.rowid = c.id "
+            "WHERE v.rowid IS NULL ORDER BY c.id"
+        )
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        cursor = self._conn.execute(sql)
+        for row in cursor:
+            yield row["id"], row["text"]
+
+    def bulk_insert_embeddings(self, rows: Sequence[tuple[int, Sequence[float]]]) -> int:
+        """Insert ``(chunk_id, embedding)`` pairs into ``chunks_vec``."""
+        if not self._load_vec:
+            raise RuntimeError("bulk_insert_embeddings requires load_vec=True (sqlite-vec)")
+        if not rows:
+            return 0
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.executemany(
+                _VEC_INSERT_SQL,
+                [(chunk_id, sqlite_vec.serialize_float32(vec)) for chunk_id, vec in rows],
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        return len(rows)
 
     # -- introspection ----------------------------------------------------
 
     @property
     def path(self) -> Path:
         return self._path
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Direct access to the underlying connection.
+
+        Intended for read-only queries the orchestrator and (later) the web
+        layer need that aren't worth a dedicated helper.
+        """
+        return self._conn
 
     def __len__(self) -> int:
         """Total number of distinct Proceedings stored."""
@@ -149,11 +327,6 @@ class SqliteStorage:
 
 
 def _row_from_proceeding(proceeding: Proceeding) -> tuple[Any, ...]:
-    """Project a :class:`Proceeding` into the column tuple expected by SQL.
-
-    Uses ``model_dump(mode="json")`` so dates, datetimes, and HttpUrl
-    values come out as ISO/string forms that SQLite stores in TEXT columns
-    without surprise. Order must match :data:`_COLUMNS`.
-    """
+    """Project a :class:`Proceeding` into the column tuple expected by SQL."""
     dumped: dict[str, Any] = proceeding.model_dump(mode="json")
-    return tuple(dumped[col] for col in _COLUMNS)
+    return tuple(dumped[col] for col in _PROCEEDING_COLUMNS)
