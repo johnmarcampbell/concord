@@ -536,3 +536,129 @@ class TestLoadCommand:
         plain = _strip(result.output) + _strip(result.stderr or "")
         assert "not found" in plain
         assert "Traceback" not in plain
+
+
+# -- `concord index` ---------------------------------------------------------
+
+
+def _seed_db_for_index(db_path: Path, granule_ids: list[str]) -> None:
+    """Pre-populate a SQLite DB with proceedings so `concord index` has work to do."""
+    from datetime import UTC, datetime
+
+    from concord.models import Article, Issue, Proceeding
+    from concord.storage import SqliteStorage
+
+    with SqliteStorage(db_path) as storage:
+        for gid in granule_ids:
+            text_url = f"https://www.congress.gov/119/crec/2026/05/22/172/88/modified/{gid}.htm"
+            pdf_url = f"https://www.congress.gov/119/crec/2026/05/22/172/88/{gid}.pdf"
+            issue = Issue(
+                issue_date="2026-05-22",
+                congress=119,
+                session=2,
+                volume=172,
+                issue_number=88,
+                update_date="2026-05-23T06:44:22Z",
+            )
+            article = Article(
+                section="Daily Digest",
+                title=f"Sample {gid}",
+                start_page="D1",
+                end_page="D2",
+                text_url=text_url,
+                pdf_url=pdf_url,
+                granule_id=gid,
+            )
+            storage.write(
+                Proceeding.build(
+                    issue=issue,
+                    article=article,
+                    text=f"Body of {gid} mentioning the senate floor today.",
+                    fetched_at=datetime(2026, 5, 24, tzinfo=UTC),
+                )
+            )
+
+
+class _FakeOpenAIData:
+    def __init__(self, vec: list[float]) -> None:
+        self.embedding = vec
+
+
+class _FakeOpenAIResponse:
+    def __init__(self, vectors: list[list[float]]) -> None:
+        self.data = [_FakeOpenAIData(v) for v in vectors]
+
+
+class _FakeOpenAIEmbeddings:
+    def create(self, *, model: str, input: list[str]) -> _FakeOpenAIResponse:
+        return _FakeOpenAIResponse([[float(i)] * 1536 for i in range(len(input))])
+
+
+class _FakeOpenAIClient:
+    embeddings = _FakeOpenAIEmbeddings()
+
+
+class TestIndexCommand:
+    def test_help_lists_all_flags(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["index", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--db", "--limit"]:
+            assert flag in plain
+
+    def test_missing_db_file_exits_cleanly(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        result = runner.invoke(cli_module.app, ["index", "--db", str(tmp_path / "missing.db")])
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert "not found" in plain
+        assert "Traceback" not in plain
+
+    def test_missing_openai_api_key_exits_cleanly(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
+        db = tmp_path / "out.db"
+        _seed_db_for_index(db, ["CREC-2026-05-22-pt1-PgD551-1"])
+        result = runner.invoke(cli_module.app, ["index", "--db", str(db)])
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert cli_module.ENV_OPENAI_API_KEY in plain
+        assert "Traceback" not in plain
+
+    def test_indexes_end_to_end(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        db = tmp_path / "out.db"
+        _seed_db_for_index(db, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
+
+        # Patch openai.OpenAI inside the CLI to return our fake.
+        import openai
+
+        monkeypatch.setattr(openai, "OpenAI", lambda *a, **kw: _FakeOpenAIClient())
+
+        result = runner.invoke(cli_module.app, ["index", "--db", str(db)])
+        assert result.exit_code == 0, result.output
+        plain = _strip(result.output)
+        assert "Indexed:" in plain
+        assert "chunked 2 new proceedings" in plain
+        assert "embedded" in plain
+
+        # Verify state on disk: chunks_vec has rows.
+        from concord.storage import SqliteStorage
+
+        with SqliteStorage(db) as storage:
+            count = storage.connection.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0]
+            assert count > 0

@@ -6,10 +6,13 @@ Subcommands:
   the canonical JSONL store.
 - ``concord load`` — Stage 1. Mirror the JSONL into a ``proceedings`` table
   in SQLite. Idempotent on ``granule_id``.
+- ``concord index`` — Stage 2. Chunk + embed every proceeding into FTS5
+  and ``sqlite-vec`` indexes. Idempotent per chunk and per embedding.
 """
 
 import json
 import logging
+import os
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -19,6 +22,9 @@ import typer
 from pydantic import ValidationError
 
 from .api import ENV_API_KEY, ApiError, Client
+from .chunking import Chunker
+from .embedding import Embedder
+from .indexing import index
 from .models import Proceeding
 from .pipeline import ProgressEvent, pull
 from .storage import JsonlStorage, MongoStorage, SqliteStorage
@@ -26,6 +32,8 @@ from .storage.base import Storage
 from .text import fetch_text
 
 _log = logging.getLogger("concord.cli")
+
+ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -236,6 +244,64 @@ def load_command(
     typer.echo(summary)
 
 
+@app.command("index")
+def index_command(
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db",
+            help="SQLite database written by `concord load`.",
+            show_default=False,
+        ),
+    ],
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Cap on new chunks written in the chunk pass (the embed pass still runs).",
+        ),
+    ] = None,
+) -> None:
+    """Chunk every proceeding and embed every chunk via OpenAI.
+
+    Two passes, both idempotent. Safe to interrupt and re-run — a crashed
+    run loses at most one proceeding's chunks + one embedding batch's worth
+    of OpenAI calls (~$0.002).
+    """
+    if not db_path.exists():
+        typer.echo(f"error: database not found: {db_path}", err=True)
+        raise typer.Exit(code=2)
+
+    if not os.environ.get(ENV_OPENAI_API_KEY):
+        typer.echo(
+            f"error: {ENV_OPENAI_API_KEY} is not set; required for embedding calls",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    # Lazy import so `concord --help` doesn't pay the openai SDK import cost.
+    import openai
+
+    storage = SqliteStorage(db_path)
+    try:
+        result = index(
+            storage,
+            chunker=Chunker(),
+            embedder=Embedder(openai.OpenAI()),
+            limit=limit,
+        )
+    finally:
+        storage.close()
+
+    typer.echo(
+        f"Indexed: chunked {result.chunked_proceedings} new proceedings "
+        f"({result.chunks_written} new chunks, "
+        f"skipped {result.skipped_chunked} already chunked); "
+        f"embedded {result.embedded_chunks} new chunks "
+        f"(skipped {result.skipped_embedded} already embedded)"
+    )
+
+
 def main() -> None:  # pragma: no cover - entry point shim
     app()
 
@@ -245,4 +311,12 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 # re-export for any callers who want to introspect the env-var name
-__all__ = ["ENV_API_KEY", "app", "load_command", "main", "pull_command"]
+__all__ = [
+    "ENV_API_KEY",
+    "ENV_OPENAI_API_KEY",
+    "app",
+    "index_command",
+    "load_command",
+    "main",
+    "pull_command",
+]
