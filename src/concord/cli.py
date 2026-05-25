@@ -25,9 +25,10 @@ scriptable.
 import json
 import logging
 import os
+import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import IO, Annotated
 
 import httpx
 import typer
@@ -59,6 +60,54 @@ LOAD_PROGRESS_EVERY = 100
 #: Default canonical store paths.
 DEFAULT_JSONL = Path("./data/proceedings.jsonl")
 DEFAULT_DB = Path("./data/proceedings.db")
+
+
+class Progress:
+    """Progress lines that overwrite themselves on a TTY.
+
+    On an interactive terminal, ``update`` rewrites the same line via
+    carriage-return + clear-to-end-of-line, so a long pull doesn't scroll
+    the screen with one row per issue. On a non-TTY stream (cron logs,
+    pipes, file redirection) it falls back to one line per update so the
+    log file still has a useful record.
+
+    Call ``commit`` between phases to end the in-place line with a newline
+    — the next ``update`` then starts a fresh line. ``close`` is the same
+    thing; use whichever reads better in context.
+    """
+
+    def __init__(self, enabled: bool, *, stream: IO[str] | None = None) -> None:
+        self._stream = stream if stream is not None else sys.stderr
+        self._enabled = enabled
+        self._inplace = enabled and getattr(self._stream, "isatty", lambda: False)()
+        self._open = False
+
+    def update(self, msg: str) -> None:
+        if not self._enabled:
+            return
+        if self._inplace:
+            # \r to start of line, \x1b[K to clear from cursor to end so a
+            # shorter message doesn't leave debris from the previous one.
+            self._stream.write("\r\x1b[K" + msg)
+            self._open = True
+        else:
+            self._stream.write(msg + "\n")
+        self._stream.flush()
+
+    def commit(self) -> None:
+        """End the current in-place line so subsequent output starts fresh."""
+        if self._open:
+            self._stream.write("\n")
+            self._stream.flush()
+            self._open = False
+
+    # Context-manager sugar so callers can `with Progress(...) as p:`
+    def __enter__(self) -> "Progress":
+        return self
+
+    def __exit__(self, *_a: object) -> None:
+        self.commit()
+
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -126,18 +175,18 @@ def _run_pull(
         raise typer.Exit(code=2) from exc
 
     http_client = httpx.Client(timeout=TEXT_FETCH_TIMEOUT)
+    progress = Progress(enabled=show_progress)
 
     def _on_progress(event: ProgressEvent) -> None:
-        typer.echo(
-            f"{event.issue.issue_date}  "
+        progress.update(
+            f"  {event.issue.issue_date}  "
             f"vol {event.issue.volume} iss {event.issue.issue_number:>4}  "
             f"+{event.issue_written:>4} written, "
             f"{event.issue_skipped:>4} skipped, "
             f"{event.issue_failed:>3} failed  "
             f"(total: {event.total_written} / "
             f"{event.total_skipped} / "
-            f"{event.total_failed})",
-            err=True,
+            f"{event.total_failed})"
         )
 
     try:
@@ -153,6 +202,7 @@ def _run_pull(
             )
     finally:
         http_client.close()
+        progress.commit()
 
     summary = (
         f"Wrote {result.written} new proceedings to {storage_label} "
@@ -178,6 +228,7 @@ def _run_load(
         raise typer.Exit(code=2)
 
     storage = SqliteStorage(db_path)
+    progress = Progress(enabled=show_progress)
     written = 0
     skipped = 0
     malformed = 0
@@ -201,16 +252,16 @@ def _run_load(
                 else:
                     storage.write(proceeding)
                     written += 1
-                if show_progress and seen % LOAD_PROGRESS_EVERY == 0:
-                    typer.echo(
+                if seen % LOAD_PROGRESS_EVERY == 0:
+                    progress.update(
                         f"  loaded {seen:>6} records ({written} new, {skipped} skipped"
-                        + (f", {malformed} malformed)" if malformed else ")"),
-                        err=True,
+                        + (f", {malformed} malformed)" if malformed else ")")
                     )
                 if limit is not None and written >= limit:
                     break
     finally:
         storage.close()
+        progress.commit()
 
     summary = f"Loaded {written} new proceedings into {db_path} (skipped {skipped} already present"
     if malformed:
@@ -235,27 +286,39 @@ def _run_index(
     import openai
 
     storage = SqliteStorage(db_path)
+    progress = Progress(enabled=show_progress)
+    last_phase: str | None = None
+
+    # Per-batch counter so the embed line keeps growing instead of
+    # restarting from each batch's `processed` value (which is per-event).
+    embed_total = 0
 
     def _on_progress(event: IndexProgressEvent) -> None:
+        nonlocal last_phase, embed_total
+        if event.phase != last_phase:
+            # Phase boundary: lock in whatever line was being updated.
+            progress.commit()
+            last_phase = event.phase
+            if event.phase == "embed":
+                embed_total = 0
         if event.phase == "chunk":
-            typer.echo(
+            progress.update(
                 f"  [chunk] {event.processed:>6} proceedings chunked"
                 + (
                     f"  (latest: {event.most_recent_granule_id})"
                     if event.most_recent_granule_id
                     else ""
-                ),
-                err=True,
+                )
             )
         else:  # "embed"
-            typer.echo(
-                f"  [embed] +{event.processed:>3} chunks embedded"
+            embed_total += event.processed
+            progress.update(
+                f"  [embed] {embed_total:>6} chunks embedded"
                 + (
                     f"  (latest chunk id: {event.most_recent_chunk_id})"
                     if event.most_recent_chunk_id is not None
                     else ""
-                ),
-                err=True,
+                )
             )
 
     try:
@@ -268,6 +331,7 @@ def _run_index(
         )
     finally:
         storage.close()
+        progress.commit()
 
     typer.echo(
         f"Indexed: chunked {result.chunked_proceedings} new proceedings "
