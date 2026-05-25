@@ -174,6 +174,37 @@ class TestProceedingRoute:
         assert "Not found" in r.text
 
 
+# -- search form behavior on every page -------------------------------------
+
+
+class TestSearchFormTarget:
+    """Regression: the header search form must work from /proceedings/{id}.
+
+    Previously the form had hx-target="#results", which doesn't exist on
+    the proceeding detail page, so HTMX silently failed. The fix targets
+    `main`, which exists on every page via base.html.
+    """
+
+    def test_form_targets_main_on_index(self, client: TestClient) -> None:
+        r = client.get("/")
+        assert 'hx-target="main"' in r.text
+        assert 'hx-target="#results"' not in r.text
+
+    def test_form_targets_main_on_proceeding(self, client: TestClient) -> None:
+        r = client.get("/proceedings/CREC-2026-05-22-pt1-PgS001-1")
+        assert 'hx-target="main"' in r.text
+        assert 'hx-target="#results"' not in r.text
+
+    def test_form_targets_main_on_search(self, client: TestClient) -> None:
+        r = client.get("/search?q=banking")
+        assert 'hx-target="main"' in r.text
+
+    def test_form_targets_main_on_404(self, client: TestClient) -> None:
+        r = client.get("/proceedings/CREC-not-real")
+        assert r.status_code == 404
+        assert 'hx-target="main"' in r.text
+
+
 # -- rate limiting ------------------------------------------------------------
 
 

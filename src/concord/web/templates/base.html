@@ -19,7 +19,8 @@
       </div>
       <form
         hx-get="/search"
-        hx-target="#results"
+        hx-target="main"
+        hx-swap="innerHTML"
         hx-push-url="true"
         hx-trigger="submit, change from:select[name='section']"
         action="/search"

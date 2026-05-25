@@ -23,7 +23,7 @@
           class="text-stone-600 hover:text-stone-900 underline"
           href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
           hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
-          hx-target="#results"
+          hx-target="main"
           hx-push-url="true"
         >&larr; Previous</a>
       {% else %}<span></span>{% endif %}
@@ -32,7 +32,7 @@
           class="text-stone-600 hover:text-stone-900 underline"
           href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
           hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
-          hx-target="#results"
+          hx-target="main"
           hx-push-url="true"
         >Next &rarr;</a>
       {% else %}<span></span>{% endif %}
