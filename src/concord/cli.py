@@ -398,8 +398,14 @@ def _run_load_members(
 ) -> tuple[int, int]:
     """Return ``(members_written, terms_written)``."""
     if not storage_path.exists():
-        typer.echo(f"error: input file not found: {storage_path}", err=True)
-        raise typer.Exit(code=2)
+        # No input file is a no-op, not an error: load is idempotent and
+        # callable in any order. The user probably hasn't run scrape yet —
+        # tell them what they need.
+        typer.echo(
+            f"No input file at {storage_path} — "
+            f"run `concord scrape members` first. Nothing to load."
+        )
+        return 0, 0
 
     from .pipeline.load_members import load as load_members
 
