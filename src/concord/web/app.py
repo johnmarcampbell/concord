@@ -56,6 +56,17 @@ MEMBERS_PAGE_SIZE = 50
 #: Page size for the ``/bills`` browse-only index.
 BILLS_PAGE_SIZE = 50
 
+#: Page size for the ``/votes`` browse-only index.
+VOTES_PAGE_SIZE = 50
+
+#: Cap on Recent-votes rows on the Member profile.
+MEMBER_RECENT_VOTES_LIMIT = 25
+
+#: Members with fewer than this many party-unity votes get a
+#: "(not enough votes yet)" treatment instead of a percentage.
+#: Mirrors :data:`concord.pipeline.index_votes.PARTY_UNITY_MIN_VOTES`.
+_PARTY_UNITY_MIN_VOTES = 10
+
 #: Cap on Member hits surfaced in a federated ``/search``. Members are an
 #: at-most-N peek alongside Proceedings; deeper exploration goes through
 #: ``/members``.
@@ -345,6 +356,21 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         sponsored_total = search_mod.count_sponsored_bills_for_member(db, bioguide_id)
         cosponsored = search_mod.cosponsored_bills_for_member(db, bioguide_id, limit=25)
         cosponsored_total = search_mod.count_cosponsored_bills_for_member(db, bioguide_id)
+
+        # Decide House vs Senate by the Member's most-recent term chamber.
+        most_recent_chamber: str | None = None
+        if terms:
+            most_recent_chamber = terms[0]["chamber"]
+        is_house = most_recent_chamber == "house"
+
+        recent_votes = (
+            search_mod.recent_votes_for_member(db, bioguide_id, limit=MEMBER_RECENT_VOTES_LIMIT)
+            if is_house
+            else []
+        )
+        party_unity_rows = search_mod.party_unity_for_member(db, bioguide_id) if is_house else []
+        modal_vote_party = search_mod.member_modal_vote_party(db, bioguide_id) if is_house else None
+
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "members/profile.html",
@@ -356,6 +382,11 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "sponsored_bills_total": sponsored_total,
                 "cosponsored_bills": cosponsored,
                 "cosponsored_bills_total": cosponsored_total,
+                "is_house_member": is_house,
+                "recent_votes": recent_votes,
+                "party_unity_rows": party_unity_rows,
+                "modal_vote_party": modal_vote_party,
+                "party_unity_min_votes": _PARTY_UNITY_MIN_VOTES,
             },
         )
 
@@ -421,6 +452,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         subjects = search_mod.subjects_for_bill(db, bill_id)
         titles = search_mod.titles_for_bill(db, bill_id)
         summaries = search_mod.summaries_for_bill(db, bill_id)
+        vote_history = search_mod.vote_history_for_bill(db, bill_id)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "bills/profile.html",
@@ -431,7 +463,126 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "subjects": subjects,
                 "titles": titles,
                 "summaries": summaries,
+                "vote_history": vote_history,
             },
+        )
+
+    @app.get("/votes", response_class=HTMLResponse)
+    def votes_index(
+        request: Request,
+        chamber: str | None = Query(None, description="'house', 'senate', or omitted."),
+        congress: int | None = Query(None, description="Filter on a Congress number."),
+        result: str | None = Query(None, description="Filter on result string."),
+        vote_kind: str | None = Query(None, description="'standard' or 'election'."),
+        bill: str | None = Query(None, description="Substring match on bill_id."),
+        page: int = Query(1, ge=1, description="1-based page index."),
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008
+    ) -> Response:
+        offset = (page - 1) * VOTES_PAGE_SIZE
+        chamber_filter = chamber if chamber in {"house", "senate"} else None
+        kind_filter = vote_kind if vote_kind in {"standard", "election"} else None
+        hits, total = search_mod.list_votes(
+            db,
+            chamber=chamber_filter,
+            congress=congress,
+            result=result or None,
+            vote_kind=kind_filter,
+            bill=bill or None,
+            limit=VOTES_PAGE_SIZE,
+            offset=offset,
+        )
+        context = {
+            "votes": hits,
+            "total": total,
+            "page": page,
+            "page_size": VOTES_PAGE_SIZE,
+            "has_next": offset + VOTES_PAGE_SIZE < total,
+            "has_prev": page > 1,
+            "chamber": chamber_filter or "",
+            "congress": congress,
+            "result": result or "",
+            "vote_kind": kind_filter or "",
+            "bill": bill or "",
+        }
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request, "votes/list.html", context
+        )
+
+    @app.get(
+        "/votes/{chamber}/{congress}/{session}/{roll_number}",
+        response_class=HTMLResponse,
+    )
+    def vote_profile(
+        request: Request,
+        chamber: str,
+        congress: int,
+        session: int,
+        roll_number: int,
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008
+    ) -> Response:
+        chamber_lc = chamber.lower()
+        if chamber_lc not in {"house", "senate"}:
+            raise HTTPException(status_code=404, detail=f"unknown chamber: {chamber}")
+        if session not in {1, 2}:
+            raise HTTPException(status_code=404, detail=f"invalid session: {session}")
+        if chamber_lc == "senate":
+            # Phase 3b placeholder. Always rendered, never 404.
+            return templates.TemplateResponse(  # type: ignore[no-any-return]
+                request,
+                "votes/profile.html",
+                {
+                    "vote": None,
+                    "positions": [],
+                    "underlying_bill": None,
+                    "is_senate_placeholder": True,
+                    "chamber": chamber_lc,
+                    "congress": congress,
+                    "session": session,
+                    "roll_number": roll_number,
+                },
+            )
+        vote = search_mod.get_vote(
+            db,
+            chamber=chamber_lc,
+            congress=congress,
+            session=session,
+            roll_number=roll_number,
+        )
+        if vote is None:
+            return templates.TemplateResponse(  # type: ignore[no-any-return]
+                request,
+                "404.html",
+                {"granule_id": f"{chamber_lc}/{congress}/{session}/{roll_number}"},
+                status_code=404,
+            )
+        positions = search_mod.vote_positions_for_vote(db, vote["vote_id"])
+        underlying_bill: dict[str, Any] | None = None
+        if vote.get("bill_id"):
+            br = db.execute(
+                "SELECT bill_id, congress, bill_type, bill_number, title, policy_area "
+                "FROM bills WHERE bill_id = ?",
+                (vote["bill_id"],),
+            ).fetchone()
+            underlying_bill = dict(br) if br else None
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request,
+            "votes/profile.html",
+            {
+                "vote": vote,
+                "positions": positions,
+                "underlying_bill": underlying_bill,
+                "is_senate_placeholder": False,
+                "chamber": chamber_lc,
+                "congress": congress,
+                "session": session,
+                "roll_number": roll_number,
+            },
+        )
+
+    @app.get("/about/methodology", response_class=HTMLResponse)
+    def about_methodology(request: Request) -> Response:
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request, "about/methodology.html", {}
         )
 
     @app.get("/healthz")

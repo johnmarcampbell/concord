@@ -58,6 +58,11 @@ BILLS_PAGE_SIZE = 250
 #: or actions.
 BILL_SUB_PAGE_SIZE = 250
 
+#: Per-page size when walking ``/house-vote/{congress}/{session}``. The
+#: API caps at 250; a single House session produces ~600-800 rolls so
+#: the list endpoint settles in three to four pages.
+VOTES_PAGE_SIZE = 250
+
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
 #: silently stall the pipeline.
@@ -357,6 +362,82 @@ class Client:
         return self._paginate_sub_endpoint(
             congress, bill_type, bill_number, "summaries", array_key="summaries"
         )
+
+    # -- House votes (Phase 3a) ---------------------------------------------
+
+    def list_house_votes(
+        self,
+        congress: int,
+        session: int,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield every House roll-call vote stub for one ``(congress, session)``.
+
+        Walks ``GET /v3/house-vote/{congress}/{session}`` until
+        ``pagination.next`` is absent. Returns raw stub dicts — the full
+        vote record lives on :meth:`get_house_vote_detail`, and the
+        per-member positions live on :meth:`get_house_vote_members`.
+        Stubs are not persisted by the scraper; they exist only to drive
+        discovery of roll numbers.
+        """
+        offset = 0
+        path = f"/house-vote/{congress}/{session}"
+        while True:
+            payload = self._get(path, params={"limit": VOTES_PAGE_SIZE, "offset": offset})
+            page_count = 0
+            for raw in payload.get("houseRollCallVotes", []):
+                yield raw
+                page_count += 1
+            if "next" not in payload.get("pagination", {}):
+                return
+            if page_count == 0:
+                # Defensive: server advertises "next" but returned nothing.
+                return
+            offset += VOTES_PAGE_SIZE
+
+    def get_house_vote_detail(
+        self,
+        congress: int,
+        session: int,
+        roll_number: int,
+    ) -> dict[str, Any]:
+        """Fetch the detail record for one House roll-call vote.
+
+        Returns the ``houseRollCallVote`` object from
+        ``/v3/house-vote/{c}/{s}/{roll}`` — the full record (vote_type,
+        result, totals, the subject's bill/amendment linkage if any,
+        and the per-party totals breakdown).
+        """
+        payload = self._get(f"/house-vote/{congress}/{session}/{roll_number}")
+        vote = payload.get("houseRollCallVote")
+        if not isinstance(vote, dict):
+            raise ApiError(
+                f"expected 'houseRollCallVote' object in detail response for "
+                f"{congress}/{session}/{roll_number}; got {type(vote).__name__}"
+            )
+        return vote
+
+    def get_house_vote_members(
+        self,
+        congress: int,
+        session: int,
+        roll_number: int,
+    ) -> dict[str, Any]:
+        """Fetch the full per-member position roster for one House roll-call vote.
+
+        Returns the ``houseRollCallVoteMemberVotes`` object from
+        ``/v3/house-vote/{c}/{s}/{roll}/members`` — one entry per Member
+        in the ``results`` array, Bioguide-keyed, carrying the
+        Member's recorded position, party at the time of the vote, and
+        state.
+        """
+        payload = self._get(f"/house-vote/{congress}/{session}/{roll_number}/members")
+        members = payload.get("houseRollCallVoteMemberVotes")
+        if not isinstance(members, dict):
+            raise ApiError(
+                f"expected 'houseRollCallVoteMemberVotes' object in members response for "
+                f"{congress}/{session}/{roll_number}; got {type(members).__name__}"
+            )
+        return members
 
     def _paginate_sub_endpoint(
         self,

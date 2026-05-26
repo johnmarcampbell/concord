@@ -1,0 +1,51 @@
+{# Shared one-line summary of a Vote.
+   Caller provides ``v`` (a VoteHit-like or row dict). Optional
+   ``member_position`` / ``member_party`` keys are used on the
+   Member-page Recent-votes section. #}
+<li class="border border-stone-200 rounded p-3 bg-white">
+  <div class="flex items-baseline gap-2 flex-wrap">
+    <a
+      href="/votes/{{ v.chamber }}/{{ v.congress }}/{{ v.session }}/{{ v.roll_number }}"
+      class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+    >
+      {% if v.chamber == "house" %}H{% else %}S{% endif %} {{ v.roll_number }}
+    </a>
+    <span class="text-xs text-stone-400">· {{ v.congress }}th · {{ v.start_date[:10] }}</span>
+    {% if v.is_party_unity %}
+      <span class="text-xs text-amber-700 bg-amber-50 px-1 rounded">party-unity</span>
+    {% endif %}
+    {% if v.bill_id %}
+      <span class="text-xs text-stone-500">·
+        <a
+          class="font-mono hover:text-stone-900 underline"
+          href="/bills/{{ v.congress }}/{{ v.bill_id.split('-')[1] }}/{{ v.bill_id.split('-')[2] }}"
+        >{{ v.bill_id.split('-')[1]|upper }} {{ v.bill_id.split('-')[2] }}</a>
+      </span>
+    {% endif %}
+    {% if v.amendment_id %}
+      <span class="text-xs text-stone-500">· amdt {{ v.amendment_id.split('-')[1]|upper }} {{ v.amendment_id.split('-')[2] }}</span>
+    {% endif %}
+    <span class="ml-auto text-xs
+      {% if v.result in ('Passed', 'Agreed to') %}text-emerald-700{% elif v.result == 'Failed' %}text-rose-700{% else %}text-stone-500{% endif %}">
+      {{ v.result }}
+    </span>
+  </div>
+  <div class="text-sm text-stone-700 mt-1">{{ v.vote_question|truncate(120) }}</div>
+  {% if v.yea_count is not none or v.nay_count is not none %}
+    <div class="text-xs text-stone-500 mt-1">
+      Y {{ v.yea_count or 0 }} · N {{ v.nay_count or 0 }}
+      {% if v.present_count %}· P {{ v.present_count }}{% endif %}
+      {% if v.not_voting_count %}· NV {{ v.not_voting_count }}{% endif %}
+    </div>
+  {% endif %}
+  {% if member_position is defined %}
+    <div class="text-xs mt-1">
+      <span class="text-stone-400">Member voted:</span>
+      <span class="font-medium
+        {% if member_position == 'Yea' %}text-emerald-700
+        {% elif member_position == 'Nay' %}text-rose-700
+        {% else %}text-stone-600{% endif %}">{{ member_position }}</span>
+      {% if member_party %}<span class="text-stone-400">({{ member_party }})</span>{% endif %}
+    </div>
+  {% endif %}
+</li>

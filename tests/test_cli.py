@@ -1413,3 +1413,187 @@ class TestScrapeBillsEnrichCommand:
         )
         assert result.exit_code == 0, result.output
         assert "nothing to do" in _strip(result.output).lower()
+
+
+# -- `concord scrape votes` / load / index / run (Phase 3a) -----------------
+
+
+def _votes_fixture(name: str) -> dict[str, Any]:
+    here = Path(__file__).parent / "fixtures" / "api" / "votes"
+    return json.loads((here / name).read_text())
+
+
+def _votes_handler():
+    list_payload = _votes_fixture("list_house_119_1.json")
+    details = {
+        240: _votes_fixture("detail_house_119_1_240.json"),
+        241: _votes_fixture("detail_house_119_1_241_amendment.json"),
+    }
+    members = {
+        240: _votes_fixture("members_house_119_1_240.json"),
+        241: _votes_fixture("members_house_119_1_241.json"),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        parts = request.url.path.rstrip("/").split("/")
+        if len(parts) == 5:
+            body = list_payload
+        elif len(parts) == 6:
+            body = details[int(parts[-1])]
+        elif len(parts) == 7 and parts[-1] == "members":
+            body = members[int(parts[-2])]
+        else:
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            content=json.dumps(body),
+            headers={"content-type": "application/json"},
+        )
+
+    return handler
+
+
+class TestVotesHelp:
+    def test_scrape_votes_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["scrape", "votes", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--congresses", "--sessions", "--chambers", "--storage-dir", "--limit"]:
+            assert flag in plain
+
+    def test_load_votes_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["load", "votes", "--help"])
+        assert result.exit_code == 0
+        for flag in ["--storage-dir", "--db", "--limit"]:
+            assert flag in _strip(result.output)
+
+    def test_index_votes_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["index", "votes", "--help"])
+        assert result.exit_code == 0
+        for flag in ["--db", "--limit"]:
+            assert flag in _strip(result.output)
+
+    def test_run_votes_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["run", "votes", "--help"])
+        assert result.exit_code == 0
+
+
+class TestScrapeVotesCommand:
+    def test_scrape_with_limit_writes_both_files(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        handler = _votes_handler()
+
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "votes",
+                "--congresses",
+                "119",
+                "--sessions",
+                "1",
+                "--limit",
+                "2",
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        details = (tmp_path / "house_votes.jsonl").read_text().splitlines()
+        members = (tmp_path / "house_vote_positions.jsonl").read_text().splitlines()
+        assert len(details) == 2
+        assert len(members) == 2
+
+    def test_senate_chamber_logs_skip_and_runs_house(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        handler = _votes_handler()
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "votes",
+                "--congresses",
+                "119",
+                "--sessions",
+                "1",
+                "--chambers",
+                "senate,house",
+                "--limit",
+                "1",
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Phase 3b" in _strip(result.output)
+        # House half still runs.
+        assert (tmp_path / "house_votes.jsonl").exists()
+
+    def test_senate_only_is_pure_noop(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "votes",
+                "--chambers",
+                "senate",
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Phase 3b" in _strip(result.output)
+        assert not (tmp_path / "house_votes.jsonl").exists()
+
+
+class TestLoadVotesCommand:
+    def test_missing_file_is_a_no_op(self, runner: CliRunner, tmp_path: Path) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "load",
+                "votes",
+                "--storage-dir",
+                str(tmp_path / "absent"),
+                "--db",
+                str(tmp_path / "out.db"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "No input file" in _strip(result.output)

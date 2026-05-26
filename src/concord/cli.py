@@ -85,6 +85,24 @@ DEFAULT_BILL_TYPES = ("hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "s
 #: Tier-2 sub-endpoint names that ``concord scrape bills enrich`` defaults to.
 DEFAULT_BILL_SECTIONS = ("cosponsors", "actions", "subjects", "titles", "summaries")
 
+#: Congresses scraped by ``concord scrape votes`` when ``--congresses``
+#: is not passed. Matches the Phase 3a roadmap scope.
+DEFAULT_VOTE_CONGRESSES = (117, 118, 119)
+
+#: Sessions scraped per Congress when ``--sessions`` is not passed.
+DEFAULT_VOTE_SESSIONS = (1, 2)
+
+#: Chambers scraped by ``concord scrape votes`` when ``--chambers`` is
+#: not passed. Phase 3a is House-only; Phase 3b will extend to senate.
+DEFAULT_VOTE_CHAMBERS = ("house",)
+
+#: All chamber codes the votes CLI knows about. ``senate`` is a no-op
+#: in 3a (logs a "lands in 3b" message and returns).
+VALID_VOTE_CHAMBERS = ("house", "senate")
+
+#: Default storage dir for the votes JSONLs.
+DEFAULT_VOTES_STORAGE_DIR = Path("./data")
+
 #: Default cap on the auto-selected enrichment batch when --bill-ids is
 #: not given. Operators tweak via ``--limit N``.
 DEFAULT_ENRICH_AUTO_LIMIT = 25
@@ -1347,6 +1365,296 @@ def run_bills_command(
 
     typer.echo("→ Stage 2: index", err=True)
     _run_index_bills(db_path=db_path, limit=None)
+
+    typer.echo("✓ Done.", err=True)
+
+
+# ---------------------------------------------------------------------------
+# Subcommands — Votes (Phase 3a)
+# ---------------------------------------------------------------------------
+
+
+def _parse_sessions(raw: str) -> list[int]:
+    parsed = _parse_csv(raw, name="sessions", coerce=int)
+    bad = [s for s in parsed if s not in (1, 2)]
+    if bad:
+        raise typer.BadParameter(f"sessions must be 1 or 2; got {bad}")
+    return parsed
+
+
+def _parse_chambers(raw: str) -> list[str]:
+    parsed = _parse_csv(raw, name="chambers", coerce=str.lower)
+    bad = [c for c in parsed if c not in VALID_VOTE_CHAMBERS]
+    if bad:
+        raise typer.BadParameter(
+            f"unknown chamber(s): {', '.join(bad)}. Valid: {', '.join(VALID_VOTE_CHAMBERS)}"
+        )
+    return parsed
+
+
+def _run_scrape_votes(
+    *,
+    congresses: list[int],
+    sessions: list[int],
+    chambers: list[str],
+    storage_dir: Path,
+    limit: int | None,
+    show_progress: bool,
+) -> int:
+    from .api import ApiError
+    from .scraper import votes as votes_scraper
+
+    if "senate" in chambers:
+        typer.echo("Senate ingest lands in Phase 3b — skipping.")
+    if "house" not in chambers:
+        return 0
+
+    try:
+        api_client = Client()
+    except ApiError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    progress = Progress(enabled=show_progress)
+
+    def _on_progress(event: votes_scraper.ScrapeProgressEvent) -> None:
+        progress.update(
+            f"  {event.chamber} {event.congress}/{event.session}  "
+            f"+{event.votes_written:>4} written  "
+            f"({event.votes_seen} seen)"
+        )
+
+    try:
+        with api_client:
+            stats = votes_scraper.scrape_house(
+                client=api_client,
+                congresses=congresses,
+                storage_dir=storage_dir,
+                fetched_at=datetime.now(UTC),
+                sessions=tuple(sessions),
+                limit=limit,
+                progress=_on_progress if show_progress else None,
+            )
+    finally:
+        progress.commit()
+
+    typer.echo(
+        f"Wrote {stats.votes_written} vote detail snapshot(s) and "
+        f"{stats.positions_written} member-positions snapshot(s) to {storage_dir}."
+    )
+    return stats.votes_written
+
+
+def _run_load_votes(
+    *,
+    storage_dir: Path,
+    db_path: Path,
+    limit: int | None,
+) -> int:
+    from .pipeline.load_votes import load as load_votes
+    from .scraper.votes import HOUSE_VOTES_JSONL_NAME
+
+    jsonl_path = storage_dir / HOUSE_VOTES_JSONL_NAME
+    if not jsonl_path.exists():
+        typer.echo(
+            f"No input file at {jsonl_path} — run `concord scrape votes` first. Nothing to load."
+        )
+        return 0
+
+    stats = load_votes(storage_dir=storage_dir, db_path=db_path, limit=limit)
+    typer.echo(
+        f"Loaded {stats.votes_written} vote(s) and "
+        f"{stats.positions_written} position(s) into {db_path} "
+        f"(read {stats.snapshots_read} snapshot(s)"
+        + (f", {stats.malformed} malformed" if stats.malformed else "")
+        + ")."
+    )
+    return stats.votes_written
+
+
+def _run_index_votes(
+    *,
+    db_path: Path,
+    limit: int | None,
+) -> int:
+    if not db_path.exists():
+        typer.echo(f"error: database not found: {db_path}", err=True)
+        raise typer.Exit(code=2)
+
+    from .pipeline.index_votes import index as index_votes
+
+    stats = index_votes(db_path=db_path, limit=limit)
+    typer.echo(
+        f"Flagged {stats.votes_flagged_party_unity} party-unity vote(s); "
+        f"scored {stats.members_scored} member-congress row(s) into member_party_unity."
+    )
+    return stats.members_scored
+
+
+@scrape_app.command("votes")
+def scrape_votes_command(
+    congresses: Annotated[
+        str,
+        typer.Option(
+            "--congresses",
+            help="Comma-separated list of congress numbers to scrape.",
+        ),
+    ] = ",".join(str(c) for c in DEFAULT_VOTE_CONGRESSES),
+    sessions: Annotated[
+        str,
+        typer.Option(
+            "--sessions",
+            help="Comma-separated list of sessions (1, 2).",
+        ),
+    ] = ",".join(str(s) for s in DEFAULT_VOTE_SESSIONS),
+    chambers: Annotated[
+        str,
+        typer.Option(
+            "--chambers",
+            help="Comma-separated chambers. Phase 3a only handles 'house'.",
+        ),
+    ] = ",".join(DEFAULT_VOTE_CHAMBERS),
+    storage_dir: Annotated[
+        Path,
+        typer.Option(
+            "--storage-dir",
+            help="Directory holding house_votes.jsonl + house_vote_positions.jsonl.",
+        ),
+    ] = DEFAULT_VOTES_STORAGE_DIR,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Maximum number of detail snapshots to write (members fetches mirror).",
+        ),
+    ] = None,
+    show_progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Print a stderr line per (congress, session) pair.",
+        ),
+    ] = True,
+) -> None:
+    """Snapshot House roll-call votes into ``<storage-dir>/house_votes*.jsonl``."""
+    parsed_congresses = _parse_congresses(congresses)
+    parsed_sessions = _parse_sessions(sessions)
+    parsed_chambers = _parse_chambers(chambers)
+    _run_scrape_votes(
+        congresses=parsed_congresses,
+        sessions=parsed_sessions,
+        chambers=parsed_chambers,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+    )
+
+
+@load_app.command("votes")
+def load_votes_command(
+    storage_dir: Annotated[
+        Path,
+        typer.Option(
+            "--storage-dir",
+            help="Directory holding house_votes.jsonl + house_vote_positions.jsonl.",
+        ),
+    ] = DEFAULT_VOTES_STORAGE_DIR,
+    db_path: Annotated[
+        Path,
+        typer.Option("--db", help="SQLite database. Created if missing."),
+    ] = DEFAULT_DB,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum number of vote rows to UPSERT."),
+    ] = None,
+) -> None:
+    """Project the latest vote + positions snapshot per key into SQLite."""
+    _run_load_votes(storage_dir=storage_dir, db_path=db_path, limit=limit)
+
+
+@index_app.command("votes")
+def index_votes_command(
+    db_path: Annotated[
+        Path,
+        typer.Option("--db", help="SQLite database written by `concord load votes`."),
+    ] = DEFAULT_DB,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Cap on vote_positions rows processed."),
+    ] = None,
+) -> None:
+    """Compute ``votes.is_party_unity`` + ``member_party_unity``.
+
+    Truncate-then-repopulate. Re-running converges to the latest
+    snapshot of ``votes`` + ``vote_positions``.
+    """
+    _run_index_votes(db_path=db_path, limit=limit)
+
+
+@run_app.command("votes")
+def run_votes_command(
+    congresses: Annotated[
+        str,
+        typer.Option("--congresses", help="Comma-separated congress numbers."),
+    ] = ",".join(str(c) for c in DEFAULT_VOTE_CONGRESSES),
+    sessions: Annotated[
+        str,
+        typer.Option("--sessions", help="Comma-separated sessions (1, 2)."),
+    ] = ",".join(str(s) for s in DEFAULT_VOTE_SESSIONS),
+    chambers: Annotated[
+        str,
+        typer.Option("--chambers", help="Comma-separated chambers."),
+    ] = ",".join(DEFAULT_VOTE_CHAMBERS),
+    storage_dir: Annotated[
+        Path,
+        typer.Option("--storage-dir", help="JSONL canonical store directory."),
+    ] = DEFAULT_VOTES_STORAGE_DIR,
+    db_path: Annotated[
+        Path,
+        typer.Option("--db", help="SQLite derived store. Created if missing."),
+    ] = DEFAULT_DB,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Cap on new votes scraped (load and index run unbounded).",
+        ),
+    ] = None,
+    show_progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Print progress to stderr throughout all three stages.",
+        ),
+    ] = True,
+) -> None:
+    """Run all three stages for Votes: scrape → load → index."""
+    if not os.environ.get(ENV_API_KEY):
+        typer.echo(
+            f"error: {ENV_API_KEY} is not set; required for `concord scrape votes`",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    parsed_congresses = _parse_congresses(congresses)
+    parsed_sessions = _parse_sessions(sessions)
+    parsed_chambers = _parse_chambers(chambers)
+
+    typer.echo("→ Stage 0: scrape", err=True)
+    _run_scrape_votes(
+        congresses=parsed_congresses,
+        sessions=parsed_sessions,
+        chambers=parsed_chambers,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+    )
+
+    typer.echo("→ Stage 1: load", err=True)
+    _run_load_votes(storage_dir=storage_dir, db_path=db_path, limit=None)
+
+    typer.echo("→ Stage 2: index", err=True)
+    _run_index_votes(db_path=db_path, limit=None)
 
     typer.echo("✓ Done.", err=True)
 

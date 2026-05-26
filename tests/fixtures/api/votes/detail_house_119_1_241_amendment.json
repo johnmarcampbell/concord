@@ -1,0 +1,23 @@
+{
+  "houseRollCallVote": {
+    "congress": 119,
+    "sessionNumber": 1,
+    "chamber": "House",
+    "rollCallNumber": 241,
+    "startDate": "2026-04-02T13:00:00Z",
+    "updateDate": "2026-04-02T13:05:00Z",
+    "voteType": "Recorded Vote",
+    "voteQuestion": "On Agreeing to the Amendment",
+    "result": "Failed",
+    "legislationType": "HR",
+    "legislationNumber": 3424,
+    "amendmentType": "HAMDT",
+    "amendmentNumber": 85,
+    "votePartyTotal": [
+      {"party": "Republican", "voteParty": "R", "yeaTotal": 10, "nayTotal": 200, "presentTotal": 0, "notVotingTotal": 8},
+      {"party": "Democratic", "voteParty": "D", "yeaTotal": 195, "nayTotal": 5, "presentTotal": 0, "notVotingTotal": 16}
+    ],
+    "url": "https://api.congress.gov/v3/house-vote/119/1/241?format=json"
+  },
+  "request": {"congress": "119", "sessionNumber": "1", "rollCallNumber": "241"}
+}
