@@ -14,8 +14,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_members import load as load_members
 from concord.storage.sqlite import SqliteStorage
@@ -44,11 +42,7 @@ class TestLoadMembers:
         payload = _fixture("current_house.json")["members"][0]
         _write_jsonl(
             jsonl,
-            [
-                wrap_snapshot(
-                    payload, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"}
-                )
-            ],
+            [wrap_snapshot(payload, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"})],
         )
 
         stats = load_members(jsonl_path=jsonl, db_path=db)
@@ -108,9 +102,7 @@ class TestLoadMembers:
         db = tmp_path / "test.db"
         payload = _fixture("current_senate.json")["members"][0]
         good = json.dumps(
-            wrap_snapshot(
-                payload, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "S000033"}
-            )
+            wrap_snapshot(payload, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "S000033"})
         )
         jsonl.write_text(
             "\n".join(
@@ -136,12 +128,8 @@ class TestLoadMembers:
         _write_jsonl(
             jsonl,
             [
-                wrap_snapshot(
-                    house, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"}
-                ),
-                wrap_snapshot(
-                    senate, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "S000033"}
-                ),
+                wrap_snapshot(house, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"}),
+                wrap_snapshot(senate, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "S000033"}),
             ],
         )
 
@@ -162,12 +150,8 @@ class TestIndexMembers:
         _write_jsonl(
             jsonl,
             [
-                wrap_snapshot(
-                    house, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"}
-                ),
-                wrap_snapshot(
-                    senate, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "S000033"}
-                ),
+                wrap_snapshot(house, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"}),
+                wrap_snapshot(senate, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "S000033"}),
             ],
         )
         load_members(jsonl_path=jsonl, db_path=db)
@@ -188,11 +172,7 @@ class TestIndexMembers:
         payload = _fixture("current_house.json")["members"][0]
         _write_jsonl(
             jsonl,
-            [
-                wrap_snapshot(
-                    payload, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"}
-                )
-            ],
+            [wrap_snapshot(payload, fetched_at=FIXED_FETCHED_AT, key={"bioguide_id": "O000172"})],
         )
         load_members(jsonl_path=jsonl, db_path=db)
 
@@ -202,7 +182,5 @@ class TestIndexMembers:
         assert second.indexed_members == 1
 
         with SqliteStorage(db, load_vec=False) as storage:
-            (count,) = storage.connection.execute(
-                "SELECT COUNT(*) FROM members_fts"
-            ).fetchone()
+            (count,) = storage.connection.execute("SELECT COUNT(*) FROM members_fts").fetchone()
             assert count == 1

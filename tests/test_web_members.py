@@ -106,6 +106,7 @@ def _seed_members(storage: SqliteStorage) -> None:
 
     # Populate the FTS index the same way `concord index members` would.
     from concord.pipeline.index_members import index as index_members
+
     storage.close()
     index_members(db_path=storage.path)
 

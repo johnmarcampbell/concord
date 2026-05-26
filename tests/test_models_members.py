@@ -13,8 +13,6 @@ from typing import Any
 import pytest
 
 from concord.models import (
-    Chamber,
-    Member,
     MemberSnapshot,
     Term,
     normalize_state,
@@ -33,7 +31,7 @@ class TestNormalization:
             ("Vermont", "VT"),
             ("New York", "NY"),
             ("vermont", "VT"),  # case-insensitive
-            ("VT", "VT"),       # pass-through for codes
+            ("VT", "VT"),  # pass-through for codes
             ("Puerto Rico", "PR"),
             (None, None),
         ],
@@ -69,7 +67,7 @@ class TestParseMemberCurrentHouse:
 
     def test_current_term_has_no_end_date(self, payload: dict[str, Any]) -> None:
         _, terms = parse_member(payload)
-        current = [t for t in terms if t.congress == 119][0]
+        current = next(t for t in terms if t.congress == 119)
         assert current.end_date is None
         assert current.start_date == "2025-01-01"
 

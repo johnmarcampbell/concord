@@ -149,7 +149,8 @@ class TestMembersFtsTable:
         """The ``index members`` stage will populate this; here we just
         sanity-check the schema is queryable."""
         storage.connection.execute(
-            "INSERT INTO members_fts(bioguide_id, direct_order_name, inverted_order_name, last_name) "
+            "INSERT INTO members_fts"
+            "(bioguide_id, direct_order_name, inverted_order_name, last_name) "
             "VALUES (?, ?, ?, ?)",
             ("O000172", "Alexandria Ocasio-Cortez", "Ocasio-Cortez, Alexandria", "Ocasio-Cortez"),
         )

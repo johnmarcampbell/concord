@@ -350,20 +350,15 @@ def search_members(
 
 
 def get_member(db: sqlite3.Connection, bioguide_id: str) -> dict[str, Any] | None:
-    row = db.execute(
-        "SELECT * FROM members WHERE bioguide_id = ?", (bioguide_id,)
-    ).fetchone()
+    row = db.execute("SELECT * FROM members WHERE bioguide_id = ?", (bioguide_id,)).fetchone()
     if row is None:
         return None
     return dict(row)
 
 
-def terms_for_member(
-    db: sqlite3.Connection, bioguide_id: str
-) -> list[dict[str, Any]]:
+def terms_for_member(db: sqlite3.Connection, bioguide_id: str) -> list[dict[str, Any]]:
     rows = db.execute(
-        "SELECT * FROM member_terms WHERE bioguide_id = ? "
-        "ORDER BY congress DESC, chamber ASC",
+        "SELECT * FROM member_terms WHERE bioguide_id = ? ORDER BY congress DESC, chamber ASC",
         (bioguide_id,),
     ).fetchall()
     return [dict(r) for r in rows]

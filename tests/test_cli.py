@@ -78,7 +78,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -103,7 +104,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-01",
                 "--to",
@@ -127,7 +129,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -152,7 +155,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -174,7 +178,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -237,7 +242,8 @@ class TestSuccessOutput:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -270,7 +276,8 @@ class TestMissingApiKey:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -303,7 +310,8 @@ class TestMissingApiKey:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -343,7 +351,8 @@ class TestMongoBackend:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -379,7 +388,8 @@ class TestMongoBackend:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -455,9 +465,10 @@ class TestLoadCommand:
         db = tmp_path / "out.db"
         _write_jsonl(jsonl, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
 
-        first = runner.invoke(cli_module.app, ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)])
+        args = ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)]
+        first = runner.invoke(cli_module.app, args)
         assert first.exit_code == 0
-        second = runner.invoke(cli_module.app, ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)])
+        second = runner.invoke(cli_module.app, args)
         assert second.exit_code == 0, second.output
         plain = _strip(second.output)
         assert "Loaded 0 new proceedings" in plain
@@ -549,7 +560,8 @@ class TestLoadCommand:
         result = runner.invoke(
             cli_module.app,
             [
-                "load", "proceedings",
+                "load",
+                "proceedings",
                 "--jsonl",
                 str(tmp_path / "does-not-exist.jsonl"),
                 "--db",
@@ -637,7 +649,10 @@ class TestIndexCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
-        result = runner.invoke(cli_module.app, ["index", "proceedings", "--db", str(tmp_path / "missing.db")])
+        result = runner.invoke(
+            cli_module.app,
+            ["index", "proceedings", "--db", str(tmp_path / "missing.db")],
+        )
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
         assert "not found" in plain
@@ -791,7 +806,8 @@ class TestDefaults:
         result = runner.invoke(
             cli_module.app,
             [
-                "scrape", "proceedings",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--storage",
@@ -854,7 +870,8 @@ class TestRunCommand:
         result = runner.invoke(
             cli_module.app,
             [
-                "run", "proceedings",
+                "run",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -881,7 +898,8 @@ class TestRunCommand:
         result = runner.invoke(
             cli_module.app,
             [
-                "run", "proceedings",
+                "run",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--storage",
@@ -903,7 +921,8 @@ class TestRunCommand:
         result = runner.invoke(
             cli_module.app,
             [
-                "run", "proceedings",
+                "run",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--storage",

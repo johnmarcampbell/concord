@@ -407,12 +407,12 @@ class SqliteStorage:
             "SELECT * FROM members WHERE bioguide_id = ?",
             (bioguide_id,),
         )
-        return cursor.fetchone()
+        row: sqlite3.Row | None = cursor.fetchone()
+        return row
 
     def terms_for_member(self, bioguide_id: str) -> list[sqlite3.Row]:
         cursor = self._conn.execute(
-            "SELECT * FROM member_terms WHERE bioguide_id = ? "
-            "ORDER BY congress ASC, chamber ASC",
+            "SELECT * FROM member_terms WHERE bioguide_id = ? ORDER BY congress ASC, chamber ASC",
             (bioguide_id,),
         )
         return cursor.fetchall()

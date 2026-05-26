@@ -202,8 +202,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
             "total": total_proceedings,
             "page": page,
             "page_size": SEARCH_PAGE_SIZE,
-            "has_next": include_proceedings
-            and (offset + SEARCH_PAGE_SIZE) < total_proceedings,
+            "has_next": include_proceedings and (offset + SEARCH_PAGE_SIZE) < total_proceedings,
             "has_prev": page > 1,
             "sections": _SECTION_OPTIONS,
             "member_hits": member_hits,

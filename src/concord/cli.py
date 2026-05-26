@@ -47,7 +47,6 @@ from .embedding import Embedder
 from .models import Proceeding
 from .pipeline.index_proceedings import IndexResult, index
 from .pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
-from .pipeline.load_proceedings import ProgressEvent, PullResult, pull
 from .scraper.proceedings import scrape as scrape_proceedings_runner
 from .storage import JsonlStorage, MongoStorage, SqliteStorage
 from .storage.base import Storage
@@ -200,9 +199,7 @@ def _parse_congresses(raw: str) -> list[int]:
         try:
             out.append(int(token))
         except ValueError as exc:
-            raise typer.BadParameter(
-                f"expected comma-separated integers, got {raw!r}"
-            ) from exc
+            raise typer.BadParameter(f"expected comma-separated integers, got {raw!r}") from exc
     if not out:
         raise typer.BadParameter(f"no congresses parsed from {raw!r}")
     return out

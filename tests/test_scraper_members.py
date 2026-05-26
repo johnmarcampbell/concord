@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import pytest
 
 from concord.api import Client
 from concord.scraper.members import ScrapeProgressEvent, scrape
