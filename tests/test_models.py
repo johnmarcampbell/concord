@@ -27,7 +27,7 @@ SAMPLE_GRANULE = "CREC-2026-05-22-pt1-PgD551-6"
 
 class TestParseGranuleId:
     @pytest.mark.parametrize(
-        "url,expected",
+        ("url", "expected"),
         [
             (SAMPLE_TEXT_URL, SAMPLE_GRANULE),
             (SAMPLE_PDF_URL, SAMPLE_GRANULE),

@@ -4,6 +4,8 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from concord.models import Article, Issue, Proceeding
 from concord.storage import SqliteStorage, Storage
 
@@ -429,8 +431,6 @@ class TestStage2EmbeddingHelpers:
             assert storage.bulk_insert_embeddings([]) == 0
 
     def test_embedding_helpers_require_load_vec(self, tmp_path: Path) -> None:
-        import pytest
-
         with SqliteStorage(tmp_path / "out.db", load_vec=False) as storage:
             with pytest.raises(RuntimeError, match="load_vec=True"):
                 list(storage.chunks_without_embeddings())

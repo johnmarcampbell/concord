@@ -30,7 +30,7 @@ from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 
-from ..models import Bill, Member, Proceeding, Term
+from concord.models import Bill, Member, Proceeding, Term
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,

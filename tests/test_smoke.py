@@ -6,7 +6,17 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 import concord
+from concord.embedding import EMBEDDING_DIM, Embedder
+from concord.pipeline.index_bills import index as index_bills
+from concord.pipeline.index_members import index as index_members
+from concord.pipeline.load_bills import load as load_bills
+from concord.pipeline.load_members import load as load_members
+from concord.scraper.bills import BILLS_JSONL_NAME
+from concord.storage.sqlite import SqliteStorage
+from concord.web.app import create_app
 
 
 def test_package_importable() -> None:
@@ -25,13 +35,6 @@ def test_members_end_to_end(tmp_path: Path) -> None:
     three snapshots, then loads + indexes + queries the FastAPI app.
     Asserts the acceptance-criteria HTTP routes all return 200.
     """
-    from fastapi.testclient import TestClient
-
-    from concord.embedding import EMBEDDING_DIM, Embedder
-    from concord.pipeline.index_members import index as index_members
-    from concord.pipeline.load_members import load as load_members
-    from concord.web.app import create_app
-
     here = Path(__file__).parent / "fixtures" / "api" / "members"
     payloads = [
         json.loads((here / "current_house.json").read_text())["members"][0],
@@ -67,9 +70,7 @@ def test_members_end_to_end(tmp_path: Path) -> None:
     # Touch the DB with load_vec=True so the chunks_vec virtual table
     # exists. /search would 500 trying to query it otherwise — a real
     # deployment would have run `concord run proceedings` first.
-    from concord.storage.sqlite import SqliteStorage as _SqliteStorage
-
-    _SqliteStorage(db).close()
+    SqliteStorage(db).close()
 
     load_stats = load_members(jsonl_path=jsonl, db_path=db)
     assert load_stats.members_written == 3
@@ -114,15 +115,6 @@ def test_bills_end_to_end(tmp_path: Path) -> None:
     load + index and pokes the FastAPI app at the four routes named in
     the plan's verification section.
     """
-    from fastapi.testclient import TestClient
-
-    from concord.embedding import EMBEDDING_DIM, Embedder
-    from concord.pipeline.index_bills import index as index_bills
-    from concord.pipeline.load_bills import load as load_bills
-    from concord.scraper.bills import BILLS_JSONL_NAME
-    from concord.storage.sqlite import SqliteStorage as _SqliteStorage
-    from concord.web.app import create_app
-
     storage_dir = tmp_path / "data"
     storage_dir.mkdir()
     fetched_at = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC).isoformat()
@@ -142,7 +134,7 @@ def test_bills_end_to_end(tmp_path: Path) -> None:
     )
 
     db = tmp_path / "test.db"
-    _SqliteStorage(db).close()
+    SqliteStorage(db).close()
 
     load_stats = load_bills(storage_dir=storage_dir, db_path=db)
     assert load_stats.bills_written == 1

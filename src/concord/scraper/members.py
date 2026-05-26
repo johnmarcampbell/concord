@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from ..api import Client
+from concord.api import Client
 
 
 class ScrapeProgressEvent(NamedTuple):

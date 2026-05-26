@@ -14,10 +14,10 @@ from datetime import date
 import httpx
 import typer
 
-from ..api import ApiError, Client
-from ..pipeline.load_proceedings import ProgressEvent, PullResult, pull
-from ..storage.base import Storage
-from ..text import fetch_text
+from concord.api import ApiError, Client
+from concord.pipeline.load_proceedings import ProgressEvent, PullResult, pull
+from concord.storage.base import Storage
+from concord.text import fetch_text
 
 #: Per-request timeout (seconds) for fetching article text from congress.gov.
 #: The default httpx timeout (5s) is too aggressive for occasional slow
@@ -41,8 +41,7 @@ def scrape(
     the article-text fetch. Errors that prevent any work (missing API key,
     failed client construction) exit with code 2 via :class:`typer.Exit`.
     """
-    # Local import to avoid a circular dep on the CLI's Progress helper.
-    from ..cli import Progress
+    from concord.cli import Progress  # noqa: PLC0415 — circular dep: cli imports this module
 
     try:
         api_client = Client()

@@ -36,7 +36,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from ..embedding import Embedder
+from concord.embedding import Embedder
+
 from . import search as search_mod
 from .snippets import keyword_snippet, semantic_snippet
 
@@ -101,9 +102,7 @@ def create_app(
     db_path = Path(db_path)
 
     if embedder is None:
-        # Lazy import so the module is importable when openai isn't
-        # available (tests inject their own embedder).
-        import openai
+        import openai  # noqa: PLC0415 — guarded so tests can import this module without openai
 
         embedder = Embedder(openai.OpenAI())
 
@@ -133,7 +132,7 @@ def create_app(
 # -- routes ----------------------------------------------------------------
 
 
-def _register_routes(app: FastAPI, limiter: Limiter) -> None:
+def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR0915 — FastAPI route declarations
     templates = app.state.templates
 
     def get_db(request: Request) -> Iterator[sqlite3.Connection]:
@@ -159,7 +158,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
 
     @app.get("/search", response_class=HTMLResponse)
     @limiter.limit(SEARCH_RATE_LIMIT)
-    def search_endpoint(
+    def search_endpoint(  # noqa: C901, PLR0913 — one arg per FastAPI query param
         request: Request,
         q: str = Query("", description="Search query."),
         date_from: str | None = Query(None, alias="from", description="YYYY-MM-DD"),

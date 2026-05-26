@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..models import Proceeding
+from concord.models import Proceeding
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     pass
@@ -60,7 +60,7 @@ class MongoStorage:
         install hint if the optional dependency isn't installed.
         """
         try:
-            from pymongo import MongoClient  # type: ignore[import-not-found]
+            from pymongo import MongoClient  # type: ignore[import-not-found]  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover - exercised via install hint
             raise ImportError(
                 "MongoDB support requires pymongo. Install with "

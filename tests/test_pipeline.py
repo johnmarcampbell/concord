@@ -19,7 +19,7 @@ from concord.api import Client
 from concord.models import Article, Issue, Proceeding
 from concord.pipeline.load_proceedings import pull
 from concord.storage import JsonlStorage
-from concord.text import fetch_text
+from concord.text import TextFetchError, fetch_text
 
 FIXED_NOW = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
 
@@ -202,8 +202,6 @@ class TestDedup:
 
 class TestFetchFailures:
     def test_single_fetch_failure_does_not_abort_run(self) -> None:
-        from concord.text import TextFetchError
-
         issue = _issue("2026-05-22", issue_number=88)
         articles = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
         client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})
@@ -229,8 +227,6 @@ class TestFetchFailures:
         assert all(p.granule_id != articles[1].granule_id for p in storage.writes)
 
     def test_failed_count_in_progress_event(self) -> None:
-        from concord.text import TextFetchError
-
         issue = _issue("2026-05-22", issue_number=88)
         articles = [_article(f"CREC-2026-05-22-pt1-PgS{n:04d}") for n in range(3)]
         client = _StubClient(pages=[[issue]], articles_by_issue={(172, 88): articles})

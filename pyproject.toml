@@ -29,6 +29,7 @@ concord = "concord.cli:main"
 dev = [
     "mongomock>=4.1",
     "mypy>=1.11",
+    "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.6",
 ]
@@ -47,14 +48,57 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = [
-    "E",    # pycodestyle errors
-    "F",    # pyflakes
-    "I",    # isort
-    "UP",   # pyupgrade
-    "B",    # flake8-bugbear
-    "SIM",  # flake8-simplify
-    "RUF",  # ruff-specific
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "SIM",           # flake8-simplify
+    "RUF",           # ruff-specific
+    "PL",            # pylint (PLC/PLE/PLR/PLW)
+    "N",             # pep8-naming
+    "C90",           # mccabe complexity
+    "S",             # bandit (security)
+    "A",             # shadowing builtins
+    "ARG",           # unused arguments
+    "RET",           # return statement issues
+    "TRY",           # try/except antipatterns
+    "PTH",           # use pathlib
+    "ERA",           # commented-out code
+    "TID",           # tidy imports
+    "PT",            # pytest style
+    "C4",            # comprehensions
+    "PIE",
+    "ISC",
+    "G",             # logging format
 ]
+ignore = [
+    "TRY003",  # long exception messages — too noisy
+    "ISC001",  # conflicts with formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",     # asserts are the whole point in tests
+    "ARG",      # fixtures often look unused
+    "PLR2004",  # magic numbers are fine in tests
+    "S105", "S106",  # hardcoded passwords in test data
+    "A002",     # OpenAI-API-shaped stubs use `input=` kwarg
+    "S608",     # dynamic SQL built from `?` placeholders only
+    "PLR0913",  # test factory fixtures take many kwargs
+]
+# cli.py defers heavy subcommand imports (openai, uvicorn, pipeline modules)
+# so `concord --help` stays fast.
+"src/concord/cli.py" = ["PLC0415"]
+# SQL built from module-level column tuples + `?` placeholders; no user input.
+"src/concord/storage/sqlite.py" = ["S608"]
+"src/concord/web/search.py" = ["S608"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 8
+max-branches = 12
 
 [tool.mypy]
 python_version = "3.12"

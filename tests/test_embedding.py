@@ -5,7 +5,13 @@ from typing import Any
 
 import pytest
 
-from concord.embedding import DEFAULT_MODEL, EMBEDDING_DIM, Embedder, EmbeddingError
+from concord.embedding import (
+    DEFAULT_MODEL,
+    EMBEDDING_DIM,
+    MAX_RATE_LIMIT_WAIT,
+    Embedder,
+    EmbeddingError,
+)
 
 
 class _FakeData:
@@ -229,8 +235,6 @@ class TestRateLimitRetry:
         assert waits == [pytest.approx(1.5)]
 
     def test_caps_unreasonable_wait_at_max(self) -> None:
-        from concord.embedding import MAX_RATE_LIMIT_WAIT
-
         waits: list[float] = []
         # Server (hypothetically) suggests an hour. Cap to MAX_RATE_LIMIT_WAIT.
         api = _RateLimitedThenOk(

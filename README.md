@@ -177,13 +177,14 @@ See [docs/rebuild-plan.md](docs/rebuild-plan.md) for the rebuild rationale, [doc
 
 ```sh
 uv sync
+uv run pre-commit install   # one-time, wires up the local commit hook
 uv run ruff check
 uv run ruff format --check
 uv run mypy src
 uv run pytest
 ```
 
-CI runs all four on every PR.
+The `pre-commit` hook runs `ruff format` and `ruff check --fix` on every commit; CI runs all four checks above plus `pytest`.
 
 ## License
 

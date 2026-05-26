@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NamedTuple
 
-from ..storage.sqlite import SqliteStorage
+from concord.storage.sqlite import SqliteStorage
 
 
 class IndexStats(NamedTuple):

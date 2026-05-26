@@ -18,7 +18,7 @@ from typing import Any
 import sqlite_vec  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
-from ..embedding import EMBEDDING_DIM, Embedder
+from concord.embedding import EMBEDDING_DIM, Embedder
 
 #: Per-signal retrieval cap. We pull 200 chunks from each index then let
 #: RRF + group-by reduce to the final result page. Larger than any

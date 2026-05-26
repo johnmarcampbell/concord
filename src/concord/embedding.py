@@ -67,7 +67,7 @@ class _EmbeddingsAPI(Protocol):
     needing to construct a real ``openai.OpenAI`` instance.
     """
 
-    def create(self, *, model: str, input: list[str]) -> Any: ...
+    def create(self, *, model: str, input: list[str]) -> Any: ...  # noqa: A002 — matches openai SDK kwarg name
 
 
 class _OpenAILike(Protocol):
@@ -146,7 +146,7 @@ class Embedder:
         # to need it on the import path. The Exception type comparison
         # below falls back to class-name matching when openai isn't loaded.
         try:
-            import openai
+            import openai  # noqa: PLC0415 — guarded so test stubs don't need openai installed
 
             rate_limit_exc: type[BaseException] = openai.RateLimitError
         except ImportError:  # pragma: no cover - openai is a hard dep in prod
