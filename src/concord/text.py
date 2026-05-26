@@ -8,11 +8,43 @@ dropped but their inner text preserved.
 
 No bs4, no lxml — the format is stable enough that one stdlib parser does the
 job and removes a dependency the rest of the project doesn't need.
+
+Retry policy
+------------
+
+The ``www.congress.gov`` HTML tier is a separate service from
+``api.congress.gov`` and has its own (undocumented) rate limit — bulk pulls
+of many articles can trip 429s. Retries mirror :mod:`concord.api`:
+
+* HTTP 429: retry **indefinitely**, honoring ``Retry-After`` and otherwise
+  backing off exponentially capped at :data:`MAX_BACKOFF`.
+* HTTP 5xx and transport errors (DNS, timeout, connection reset): retry up
+  to :data:`MAX_5XX_RETRIES` times before surfacing a :class:`TextFetchError`.
+
+Retry decisions are logged via :mod:`logging` (logger ``concord.text``).
 """
 
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable
 from html.parser import HTMLParser
 
 import httpx
+
+#: Cap on a single backoff delay, in seconds. Applied to both the exponential
+#: schedule and Retry-After values so a server-suggested 1-hour wait can't
+#: silently stall the pipeline.
+MAX_BACKOFF = 60.0
+
+#: Maximum retries for transient 5xx / transport failures before surfacing
+#: a :class:`TextFetchError`. 429s are retried indefinitely separately.
+MAX_5XX_RETRIES = 5
+
+_BACKOFF_BASE = 2.0
+
+_log = logging.getLogger("concord.text")
 
 
 class TextFetchError(Exception):
@@ -58,29 +90,27 @@ class _PreExtractor(HTMLParser):
         return "".join(self._chunks).strip()
 
 
-def fetch_text(url: str, client: httpx.Client) -> str:
+def fetch_text(
+    url: str,
+    client: httpx.Client,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
     """Fetch an article URL and return its plain text.
 
     The caller owns the :class:`httpx.Client` (so connection pooling, custom
     transports, and timeout policy are external concerns). Redirects are
-    followed automatically.
+    followed automatically. Transient failures (429, 5xx, transport errors)
+    are retried per the module-level policy; ``sleep`` is injectable so tests
+    don't pay real wall time.
 
     Raises :class:`TextFetchError` on:
 
-    - non-success HTTP status (``status_code`` populated)
-    - transport-level failures (``status_code`` is ``None``)
+    - non-success HTTP status after retries are exhausted (``status_code`` populated)
+    - transport-level failures after retries are exhausted (``status_code`` is ``None``)
     - HTML that contains no ``<pre>`` block (``status_code`` is ``None``)
     """
-    try:
-        response = client.get(url, follow_redirects=True)
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise TextFetchError(
-            f"{exc.response.status_code} {exc.response.reason_phrase} fetching {url}",
-            status_code=exc.response.status_code,
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise TextFetchError(f"transport error fetching {url}: {exc}") from exc
+    response = _get_with_retry(url, client, sleep)
 
     extractor = _PreExtractor()
     extractor.feed(response.text)
@@ -88,3 +118,86 @@ def fetch_text(url: str, client: httpx.Client) -> str:
     if not text:
         raise TextFetchError(f"no <pre> content found at {url}")
     return text
+
+
+def _get_with_retry(
+    url: str,
+    client: httpx.Client,
+    sleep: Callable[[float], None],
+) -> httpx.Response:
+    transient_attempts = 0
+    while True:
+        try:
+            response = client.get(url, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            if transient_attempts >= MAX_5XX_RETRIES:
+                raise TextFetchError(
+                    f"transport error fetching {url} "
+                    f"(gave up after {MAX_5XX_RETRIES} attempts): {exc}"
+                ) from exc
+            delay = _backoff_seconds(transient_attempts)
+            _log.warning("transport error on %s (%s); retrying in %.1fs", url, exc, delay)
+            sleep(delay)
+            transient_attempts += 1
+            continue
+
+        status = response.status_code
+
+        if status == 429:
+            delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
+            _log.warning("429 from %s; backing off %.1fs before retry", url, delay)
+            sleep(delay)
+            # 429 retries do not increment transient_attempts — rate-limited
+            # is a wait condition, not a fault.
+            continue
+
+        if 500 <= status < 600:
+            if transient_attempts >= MAX_5XX_RETRIES:
+                raise TextFetchError(
+                    f"{status} {response.reason_phrase} fetching {url} "
+                    f"(gave up after {MAX_5XX_RETRIES} attempts)",
+                    status_code=status,
+                )
+            delay = _backoff_seconds(transient_attempts)
+            _log.warning(
+                "%s from %s; retrying in %.1fs (attempt %d/%d)",
+                status,
+                url,
+                delay,
+                transient_attempts + 1,
+                MAX_5XX_RETRIES,
+            )
+            sleep(delay)
+            transient_attempts += 1
+            continue
+
+        if not response.is_success:
+            raise TextFetchError(
+                f"{status} {response.reason_phrase} fetching {url}",
+                status_code=status,
+            )
+
+        return response
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff capped at :data:`MAX_BACKOFF`. ``attempt`` is 0-based."""
+    return min(_BACKOFF_BASE**attempt, MAX_BACKOFF)
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Parse the ``Retry-After`` header, if any, as seconds.
+
+    Supports the integer-seconds form. Returns ``None`` for the HTTP-date
+    form or when the header is missing/unparseable; callers fall back to
+    exponential backoff in that case. The result is clamped to
+    :data:`MAX_BACKOFF` so a misbehaving server can't park us forever.
+    """
+    raw = response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    return min(max(seconds, 0.0), MAX_BACKOFF)
