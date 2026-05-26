@@ -471,3 +471,78 @@ class TestListMembers:
         with client:
             list(client.list_members(congress=118))
         assert captured == ["/v3/member/congress/118"]
+
+
+# -- list_bills --------------------------------------------------------------
+
+
+class TestListBills:
+    def test_iterates_single_page(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/list_hr_119.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            bills = list(client.list_bills(congress=119, bill_type="hr"))
+        assert [b["number"] for b in bills] == ["1", "22"]
+
+    def test_paginates_until_no_next(self, fixtures_dir: Path) -> None:
+        page1 = json.loads((fixtures_dir / "api/bills/list_hr_119.json").read_text())
+        page1["pagination"] = {"next": "https://example.invalid/next", "count": 4}
+        page2 = {
+            "bills": [
+                {"congress": 119, "type": "HR", "number": "47"},
+                {"congress": 119, "type": "HR", "number": "88"},
+            ],
+            "pagination": {"count": 4},
+        }
+        responses = iter([page1, page2])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response(next(responses))
+
+        client = _make_client(handler)
+        with client:
+            bills = list(client.list_bills(congress=119, bill_type="hr"))
+        assert [b["number"] for b in bills] == ["1", "22", "47", "88"]
+
+    def test_canonicalizes_bill_type_to_lowercase(self) -> None:
+        captured: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request.url.path)
+            return _json_response({"bills": [], "pagination": {"count": 0}})
+
+        client = _make_client(handler)
+        with client:
+            list(client.list_bills(congress=119, bill_type="HR"))
+        assert captured == ["/v3/bill/119/hr"]
+
+
+# -- get_bill_detail ---------------------------------------------------------
+
+
+class TestGetBillDetail:
+    def test_parses_detail_payload(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/detail_119_hr_1.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            bill = client.get_bill_detail(congress=119, bill_type="hr", bill_number=1)
+        assert bill["number"] == "1"
+        assert bill["sponsors"][0]["bioguideId"] == "S001176"
+        assert bill["policyArea"]["name"] == "Energy"
+
+    def test_canonicalizes_bill_type_in_path(self) -> None:
+        captured: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request.url.path)
+            return _json_response({"bill": {"number": "1"}})
+
+        client = _make_client(handler)
+        with client:
+            client.get_bill_detail(congress=119, bill_type="HR", bill_number=1)
+        assert captured == ["/v3/bill/119/hr/1"]
+
+    def test_missing_bill_object_raises(self) -> None:
+        client = _make_client(lambda r: _json_response({"notBill": {}}))
+        with client, pytest.raises(ApiError, match="expected 'bill' object"):
+            client.get_bill_detail(congress=119, bill_type="hr", bill_number=1)

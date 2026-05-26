@@ -1,0 +1,48 @@
+{
+  "bill": {
+    "congress": 119,
+    "type": "HR",
+    "number": "1",
+    "title": "Lower Energy Costs Act",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "introducedDate": "2025-01-09",
+    "updateDate": "2026-04-01",
+    "updateDateIncludingText": "2026-04-01T12:34:56Z",
+    "policyArea": {
+      "name": "Energy"
+    },
+    "sponsors": [
+      {
+        "bioguideId": "S001176",
+        "firstName": "Steve",
+        "lastName": "Scalise",
+        "middleName": null,
+        "fullName": "Rep. Scalise, Steve [R-LA-1]",
+        "party": "R",
+        "state": "LA",
+        "district": 1,
+        "isByRequest": "N",
+        "url": "https://api.congress.gov/v3/member/S001176?format=json"
+      }
+    ],
+    "latestAction": {
+      "actionDate": "2026-03-30",
+      "text": "Became Public Law No: 119-1."
+    },
+    "laws": [
+      {
+        "type": "Public Law",
+        "number": "119-1"
+      }
+    ]
+  },
+  "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/1?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

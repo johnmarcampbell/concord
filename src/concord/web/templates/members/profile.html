@@ -91,11 +91,43 @@
       {% endif %}
     </section>
 
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Sponsored bills</h2>
+      {% if sponsored_bills %}
+        <ul class="space-y-2">
+          {% for b in sponsored_bills %}
+            <li class="border border-stone-200 rounded p-3 bg-white">
+              <div class="flex items-baseline gap-2 mb-1">
+                <a
+                  href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+                  class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+                >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
+                <span class="text-xs text-stone-400">· {{ b.congress }}th</span>
+              </div>
+              <a
+                href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+                class="block text-sm text-stone-800 hover:text-stone-600"
+              >{{ b.title|truncate(120) }}</a>
+            </li>
+          {% endfor %}
+        </ul>
+        {% if sponsored_bills_total > sponsored_bills|length %}
+          <p class="mt-2 text-sm">
+            <a href="/bills?sponsor={{ member.bioguide_id }}" class="text-stone-600 hover:text-stone-900 underline">
+              View all {{ sponsored_bills_total }} &rarr;
+            </a>
+          </p>
+        {% endif %}
+      {% else %}
+        <p class="text-stone-500 text-sm">No sponsored bills indexed for this Member.</p>
+      {% endif %}
+    </section>
+
     <section class="space-y-3">
       <h2 class="text-sm uppercase tracking-wide text-stone-500">Coming in later phases</h2>
       <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-        <div class="font-medium text-stone-600">Sponsored bills (Phase 2)</div>
-        <div class="text-xs">Bills this Member introduced or cosponsored will appear here.</div>
+        <div class="font-medium text-stone-600">Cosponsored bills (Phase 2b)</div>
+        <div class="text-xs">Bills this Member signed on to after introduction will appear here.</div>
       </div>
       <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
         <div class="font-medium text-stone-600">Recent votes (Phase 3)</div>

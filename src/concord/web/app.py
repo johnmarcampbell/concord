@@ -20,6 +20,7 @@ Rate limiting (slowapi, in-process per-IP) is applied to ``/search``
 only — the other routes don't call OpenAI and don't need protection.
 """
 
+import re
 import sqlite3
 from collections.abc import Iterator
 from datetime import date
@@ -28,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -51,10 +52,30 @@ SEARCH_PAGE_SIZE = 20
 #: Page size for the ``/members`` browse-only index.
 MEMBERS_PAGE_SIZE = 50
 
+#: Page size for the ``/bills`` browse-only index.
+BILLS_PAGE_SIZE = 50
+
 #: Cap on Member hits surfaced in a federated ``/search``. Members are an
 #: at-most-N peek alongside Proceedings; deeper exploration goes through
 #: ``/members``.
 MEMBER_RESULT_LIMIT = 10
+
+#: Cap on Bill hits surfaced in a federated ``/search``.
+BILL_RESULT_LIMIT = 10
+
+#: Bill type codes accepted in URL paths. Mirrors
+#: :data:`concord.cli.DEFAULT_BILL_TYPES`; kept here too so the web
+#: package doesn't import the CLI module.
+_VALID_BILL_TYPES = frozenset({"hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres"})
+
+#: Regex that matches a bare Bill identifier like ``"HR 1234"`` or
+#: ``"S.47"``. Used to detect "did you mean this Bill?" queries and
+#: redirect to the Bill page when there's exactly one match across the
+#: in-scope Congresses.
+_BARE_BILL_RE = re.compile(
+    r"^\s*(HR|HRES|HJRES|HCONRES|S|SRES|SJRES|SCONRES)\.?\s*(\d+)\s*$",
+    re.IGNORECASE,
+)
 
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
@@ -146,6 +167,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
         section: str | None = Query(None, description="Senate Section, House Section, etc."),
         page: int = Query(1, ge=1, description="1-based page index."),
         members_on: str = Query("on", alias="members", description="'on' to include Members."),
+        bills_on: str = Query("on", alias="bills", description="'on' to include Bills."),
         proceedings_on: str = Query(
             "on", alias="proceedings", description="'on' to include Proceedings."
         ),
@@ -157,7 +179,29 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
         offset = (page - 1) * SEARCH_PAGE_SIZE
 
         include_members = members_on == "on"
+        include_bills = bills_on == "on"
         include_proceedings = proceedings_on == "on"
+
+        # -- Bare-identifier short-circuit -------------------------------
+        # "HR 1" / "s.47" → redirect to the bill page when there is
+        # exactly one match across in-scope Congresses. Multiple matches
+        # fall through and render via search_bills below; zero matches
+        # also fall through (the FTS section will handle it).
+        bare_match = _BARE_BILL_RE.match(q) if q.strip() else None
+        if bare_match:
+            bill_type_q = bare_match.group(1).lower()
+            bill_number_q = int(bare_match.group(2))
+            rows = db.execute(
+                "SELECT congress FROM bills WHERE bill_type = ? AND bill_number = ? "
+                "ORDER BY congress DESC",
+                (bill_type_q, bill_number_q),
+            ).fetchall()
+            if len(rows) == 1:
+                congress = int(rows[0]["congress"])
+                return RedirectResponse(
+                    url=f"/bills/{congress}/{bill_type_q}/{bill_number_q}",
+                    status_code=307,
+                )
 
         # -- Members section ---------------------------------------------
         member_hits: list[search_mod.MemberHit] = []
@@ -168,6 +212,14 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
                 # FTS5 query syntax errors land here; show no Members
                 # rather than 500 on a malformed query.
                 member_hits = []
+
+        # -- Bills section -----------------------------------------------
+        bill_hits: list[search_mod.BillHit] = []
+        if include_bills and q.strip():
+            try:
+                bill_hits = search_mod.search_bills(db, query=q, limit=BILL_RESULT_LIMIT)
+            except sqlite3.OperationalError:
+                bill_hits = []
 
         # -- Proceedings section -----------------------------------------
         rendered_results: list[dict[str, Any]] = []
@@ -206,7 +258,9 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
             "has_prev": page > 1,
             "sections": _SECTION_OPTIONS,
             "member_hits": member_hits,
+            "bill_hits": bill_hits,
             "include_members": include_members,
+            "include_bills": include_bills,
             "include_proceedings": include_proceedings,
         }
 
@@ -287,10 +341,78 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
             ),
             None,
         )
+        sponsored = search_mod.sponsored_bills_for_member(db, bioguide_id, limit=25)
+        sponsored_total = search_mod.count_sponsored_bills_for_member(db, bioguide_id)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "members/profile.html",
-            {"member": member, "terms": terms, "current_term": current_term},
+            {
+                "member": member,
+                "terms": terms,
+                "current_term": current_term,
+                "sponsored_bills": sponsored,
+                "sponsored_bills_total": sponsored_total,
+            },
+        )
+
+    @app.get("/bills", response_class=HTMLResponse)
+    def bills_index(
+        request: Request,
+        chamber: str | None = Query(None, description="'House', 'Senate', or omitted."),
+        policy_area: str | None = Query(None, description="Filter on CRS policy area."),
+        congress: int | None = Query(None, description="Filter on a Congress number."),
+        sponsor: str | None = Query(None, description="Filter on sponsor Bioguide ID."),
+        page: int = Query(1, ge=1, description="1-based page index."),
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        offset = (page - 1) * BILLS_PAGE_SIZE
+        chamber_filter = chamber if chamber in {"House", "Senate"} else None
+        hits, total = search_mod.list_bills(
+            db,
+            chamber=chamber_filter,
+            policy_area=policy_area or None,
+            congress=congress,
+            sponsor_bioguide_id=sponsor or None,
+            limit=BILLS_PAGE_SIZE,
+            offset=offset,
+        )
+        context = {
+            "bills": hits,
+            "total": total,
+            "page": page,
+            "page_size": BILLS_PAGE_SIZE,
+            "has_next": offset + BILLS_PAGE_SIZE < total,
+            "has_prev": page > 1,
+            "chamber": chamber_filter or "",
+            "policy_area": policy_area or "",
+            "congress": congress,
+            "sponsor": sponsor or "",
+        }
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request, "bills/list.html", context
+        )
+
+    @app.get("/bills/{congress}/{bill_type}/{bill_number}", response_class=HTMLResponse)
+    def bill_profile(
+        request: Request,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        bt = bill_type.lower()
+        if bt not in _VALID_BILL_TYPES:
+            raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
+        bill = search_mod.get_bill(db, congress=congress, bill_type=bt, bill_number=bill_number)
+        if bill is None:
+            return templates.TemplateResponse(  # type: ignore[no-any-return]
+                request,
+                "404.html",
+                {"granule_id": f"{congress}/{bt}/{bill_number}"},
+                status_code=404,
+            )
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request, "bills/profile.html", {"bill": bill}
         )
 
     @app.get("/healthz")
@@ -325,6 +447,8 @@ def _parse_optional_date(value: str | None) -> date | None:
 
 
 __all__: list[Any] = [
+    "BILLS_PAGE_SIZE",
+    "BILL_RESULT_LIMIT",
     "MEMBERS_PAGE_SIZE",
     "MEMBER_RESULT_LIMIT",
     "SEARCH_PAGE_SIZE",

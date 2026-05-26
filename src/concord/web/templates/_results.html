@@ -5,7 +5,7 @@
         type="checkbox" name="members" value="on"
         form=""
         {% if include_members %}checked{% endif %}
-        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}{% else %}on{% endif %}&proceedings={% if include_proceedings %}on{% endif %}"
+        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}{% else %}on{% endif %}&bills={% if include_bills %}on{% endif %}&proceedings={% if include_proceedings %}on{% endif %}"
         hx-target="main"
         hx-push-url="true"
       >
@@ -13,10 +13,21 @@
     </label>
     <label class="flex items-center gap-1">
       <input
+        type="checkbox" name="bills" value="on"
+        form=""
+        {% if include_bills %}checked{% endif %}
+        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}on{% endif %}&bills={% if include_bills %}{% else %}on{% endif %}&proceedings={% if include_proceedings %}on{% endif %}"
+        hx-target="main"
+        hx-push-url="true"
+      >
+      <span>Bills</span>
+    </label>
+    <label class="flex items-center gap-1">
+      <input
         type="checkbox" name="proceedings" value="on"
         form=""
         {% if include_proceedings %}checked{% endif %}
-        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}on{% endif %}&proceedings={% if include_proceedings %}{% else %}on{% endif %}"
+        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}on{% endif %}&bills={% if include_bills %}on{% endif %}&proceedings={% if include_proceedings %}{% else %}on{% endif %}"
         hx-target="main"
         hx-push-url="true"
       >
@@ -67,6 +78,49 @@
       {% else %}
         <p class="text-stone-500 text-sm">
           No Members match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.
+        </p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% if include_bills %}
+    <section class="mb-8">
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-3">
+        Bills ({{ bill_hits|length }})
+      </h2>
+      {% if bill_hits %}
+        <ul class="space-y-2">
+          {% for b in bill_hits %}
+            <li class="border border-stone-200 rounded p-3 bg-white">
+              <div class="flex items-baseline gap-2 mb-1">
+                <span class="text-xs uppercase tracking-wide px-2 py-0.5 rounded
+                  {% if b.origin_chamber == 'House' %}bg-blue-50 text-blue-800{% else %}bg-amber-50 text-amber-800{% endif %}">
+                  {{ b.origin_chamber }}
+                </span>
+                <a
+                  href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+                  class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+                >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
+                <span class="text-xs text-stone-400">· {{ b.congress }}th</span>
+              </div>
+              <a
+                href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+                class="block text-stone-800 hover:text-stone-600"
+              >{{ b.title|truncate(120) }}</a>
+              <div class="text-xs text-stone-500 mt-1 flex flex-wrap gap-x-3">
+                {% if b.sponsor_display_name %}
+                  <span>Sponsor: {{ b.sponsor_display_name }}</span>
+                {% endif %}
+                {% if b.latest_action_date %}
+                  <span>Latest action: {{ b.latest_action_date }}</span>
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-stone-500 text-sm">
+          No Bills match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.
         </p>
       {% endif %}
     </section>

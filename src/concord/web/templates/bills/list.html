@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Bills — Concord{% endblock %}
+{% block content %}
+<div>
+  <div class="flex items-baseline justify-between mb-4">
+    <h1 class="text-2xl font-serif font-semibold text-stone-900">Bills</h1>
+    <span class="text-sm text-stone-500">{{ total }} matching</span>
+  </div>
+
+  <form method="get" action="/bills" class="mb-6 flex flex-wrap gap-4 text-sm text-stone-600">
+    <fieldset class="flex flex-wrap gap-3">
+      <legend class="text-stone-500 uppercase tracking-wide text-xs mr-2">Chamber</legend>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="chamber" value="" {% if not chamber %}checked{% endif %}>
+        <span>All</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="chamber" value="House" {% if chamber == "House" %}checked{% endif %}>
+        <span>House</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="chamber" value="Senate" {% if chamber == "Senate" %}checked{% endif %}>
+        <span>Senate</span>
+      </label>
+    </fieldset>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500 uppercase tracking-wide text-xs">Congress</span>
+      <input
+        type="number" name="congress" value="{{ congress or '' }}"
+        min="1" max="999"
+        class="w-20 rounded border border-stone-300 px-2 py-1 text-sm"
+      >
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500 uppercase tracking-wide text-xs">Policy area</span>
+      <input
+        type="text" name="policy_area" value="{{ policy_area }}"
+        class="rounded border border-stone-300 px-2 py-1 text-sm"
+      >
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500 uppercase tracking-wide text-xs">Sponsor</span>
+      <input
+        type="text" name="sponsor" value="{{ sponsor }}" placeholder="Bioguide ID"
+        class="rounded border border-stone-300 px-2 py-1 text-sm"
+      >
+    </label>
+    <button
+      type="submit"
+      class="rounded bg-stone-900 px-3 py-1 text-white text-xs font-medium hover:bg-stone-700"
+    >Apply</button>
+  </form>
+
+  {% if bills %}
+    <ul class="space-y-3">
+      {% for b in bills %}
+        <li class="border border-stone-200 rounded p-3 bg-white">
+          <div class="flex items-baseline gap-2 mb-1">
+            <span class="text-xs uppercase tracking-wide px-2 py-0.5 rounded
+              {% if b.origin_chamber == 'House' %}bg-blue-50 text-blue-800{% else %}bg-amber-50 text-amber-800{% endif %}">
+              {{ b.origin_chamber }}
+            </span>
+            <a
+              href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+              class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+            >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
+            <span class="text-xs text-stone-400">· {{ b.congress }}th Congress</span>
+          </div>
+          <a
+            href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+            class="block text-stone-800 hover:text-stone-600"
+          >{{ b.title|truncate(120) }}</a>
+          <div class="text-xs text-stone-500 mt-1 flex flex-wrap gap-x-3">
+            {% if b.policy_area %}<span>{{ b.policy_area }}</span>{% endif %}
+            {% if b.sponsor_bioguide_id %}
+              <span>
+                Sponsor:
+                <a href="/members/{{ b.sponsor_bioguide_id }}" class="underline hover:text-stone-700">
+                  {{ b.sponsor_display_name or b.sponsor_bioguide_id }}
+                </a>
+              </span>
+            {% endif %}
+            {% if b.latest_action_date %}
+              <span>Latest action: {{ b.latest_action_date }}</span>
+            {% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+
+    {% if has_prev or has_next %}
+      <nav class="mt-8 flex justify-between text-sm">
+        {% if has_prev %}
+          <a
+            class="text-stone-600 hover:text-stone-900 underline"
+            href="/bills?chamber={{ chamber }}&policy_area={{ policy_area|urlencode }}&congress={{ congress or '' }}&sponsor={{ sponsor }}&page={{ page - 1 }}"
+          >&larr; Previous</a>
+        {% else %}<span></span>{% endif %}
+        {% if has_next %}
+          <a
+            class="text-stone-600 hover:text-stone-900 underline"
+            href="/bills?chamber={{ chamber }}&policy_area={{ policy_area|urlencode }}&congress={{ congress or '' }}&sponsor={{ sponsor }}&page={{ page + 1 }}"
+          >Next &rarr;</a>
+        {% else %}<span></span>{% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    <p class="text-stone-600">No Bills match the current filters.</p>
+  {% endif %}
+</div>
+{% endblock %}

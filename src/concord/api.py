@@ -47,6 +47,11 @@ ARTICLES_PAGE_SIZE = 250
 #: Per-page size when walking ``/member/congress/{congress}``.
 MEMBERS_PAGE_SIZE = 250
 
+#: Per-page size when walking ``/bill/{congress}/{billType}``. The API
+#: caps at 250; using the max keeps pagination cost down on a 6K-bill
+#: Congress.
+BILLS_PAGE_SIZE = 250
+
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
 #: silently stall the pipeline.
@@ -200,6 +205,53 @@ class Client:
                 # Defensive: server advertises "next" but returned nothing.
                 return
             offset += MEMBERS_PAGE_SIZE
+
+    def list_bills(self, congress: int, bill_type: str) -> Iterator[dict[str, Any]]:
+        """Yield every Bill stub for one Congress + bill type.
+
+        Walks ``GET /v3/bill/{congress}/{bill_type}`` until
+        ``pagination.next`` is absent. Returns raw stub dicts — the full
+        identity record lives on :meth:`get_bill_detail`. ``bill_type``
+        is canonicalized to lowercase before URL formatting; the API
+        accepts both cases but the rest of the codebase stores lowercase.
+        """
+        bt = bill_type.lower()
+        offset = 0
+        path = f"/bill/{congress}/{bt}"
+        while True:
+            payload = self._get(path, params={"limit": BILLS_PAGE_SIZE, "offset": offset})
+            page_count = 0
+            for raw in payload.get("bills", []):
+                yield raw
+                page_count += 1
+            if "next" not in payload.get("pagination", {}):
+                return
+            if page_count == 0:
+                # Defensive: server advertises "next" but returned nothing.
+                return
+            offset += BILLS_PAGE_SIZE
+
+    def get_bill_detail(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> dict[str, Any]:
+        """Fetch the detail record for one Bill.
+
+        Returns the ``bill`` object from ``/v3/bill/{c}/{t}/{n}`` — the
+        full identity payload (sponsor, latestAction, policyArea, …).
+        ``bill_type`` is canonicalized to lowercase before URL formatting.
+        """
+        bt = bill_type.lower()
+        payload = self._get(f"/bill/{congress}/{bt}/{bill_number}")
+        bill = payload.get("bill")
+        if not isinstance(bill, dict):
+            raise ApiError(
+                f"expected 'bill' object in detail response for "
+                f"{congress}/{bt}/{bill_number}; got {type(bill).__name__}"
+            )
+        return bill
 
     # -- internals -----------------------------------------------------------
 

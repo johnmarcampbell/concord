@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ bill.bill_type|upper }} {{ bill.bill_number }} — Concord{% endblock %}
+{% block content %}
+<article class="grid grid-cols-1 md:grid-cols-4 gap-6">
+  <aside class="md:col-span-1 text-sm text-stone-600 space-y-3">
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Chamber</div>
+      <div>{{ bill.origin_chamber }}</div>
+    </div>
+    <div>
+      <div class="uppercase text-xs tracking-wide text-stone-400">Congress</div>
+      <div>{{ bill.congress }}th</div>
+    </div>
+    {% if bill.introduced_date %}
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Introduced</div>
+        <div>{{ bill.introduced_date }}</div>
+      </div>
+    {% endif %}
+    {% if bill.policy_area %}
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Policy area</div>
+        <div>{{ bill.policy_area }}</div>
+      </div>
+    {% endif %}
+    <div class="text-xs text-stone-400">
+      Updated: {{ bill.fetched_at }}
+    </div>
+  </aside>
+
+  <div class="md:col-span-3 space-y-8">
+    <header>
+      <div class="font-mono text-sm text-stone-500 mb-1">
+        {{ bill.bill_type|upper }} {{ bill.bill_number }} · {{ bill.congress }}th Congress
+      </div>
+      <h1 class="text-2xl font-serif font-semibold leading-snug">{{ bill.title }}</h1>
+    </header>
+
+    {% if bill.latest_action_date or bill.latest_action_text %}
+      <section>
+        <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Latest action</h2>
+        <p class="text-stone-800">
+          {% if bill.latest_action_date %}
+            <span class="font-medium">{{ bill.latest_action_date }}</span> —
+          {% endif %}
+          {{ bill.latest_action_text or "—" }}
+        </p>
+      </section>
+    {% endif %}
+
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Sponsor</h2>
+      {% if bill.sponsor_bioguide_id %}
+        {% if bill.sponsor_display_name %}
+          <a
+            href="/members/{{ bill.sponsor_bioguide_id }}"
+            class="text-stone-900 hover:text-stone-700 underline"
+          >{{ bill.sponsor_display_name }}</a>
+        {% else %}
+          <span class="text-stone-700">
+            Bioguide
+            <span class="font-mono">{{ bill.sponsor_bioguide_id }}</span>
+            <span class="text-stone-400 text-xs">(not indexed)</span>
+          </span>
+        {% endif %}
+      {% else %}
+        <span class="text-stone-500">No sponsor recorded.</span>
+      {% endif %}
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-sm uppercase tracking-wide text-stone-500">Coming in later phases</h2>
+
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Cosponsors (Phase 2b)</div>
+        <div class="text-xs">Members who signed on after introduction will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Action history (Phase 2b)</div>
+        <div class="text-xs">Full chronological action list will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Subjects (Phase 2b)</div>
+        <div class="text-xs">CRS-assigned subject tags will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Titles (Phase 2b)</div>
+        <div class="text-xs">Short, popular, and official titles will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Summaries (Phase 2b)</div>
+        <div class="text-xs">CRS summaries will appear here as the bill progresses.</div>
+      </div>
+
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Vote history (Phase 3)</div>
+        <div class="text-xs">Roll-call votes referencing this bill will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Committee path (Phase 4)</div>
+        <div class="text-xs">Committee referrals and reports will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Search within this bill (Phase 5)</div>
+        <div class="text-xs">Bill text will become searchable here.</div>
+      </div>
+    </section>
+  </div>
+</article>
+{% endblock %}
