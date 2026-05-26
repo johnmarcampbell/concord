@@ -1,0 +1,35 @@
+{
+  "summaries": [
+    {
+      "versionCode": "00",
+      "actionDate": "2025-01-09",
+      "actionDesc": "Introduced in House",
+      "updateDate": "2025-01-20T10:11:12Z",
+      "text": "<p><strong>Lower Energy Costs Act</strong></p><p>This bill addresses energy production, exports, and infrastructure.</p>"
+    },
+    {
+      "versionCode": "18",
+      "actionDate": "2026-03-20",
+      "actionDesc": "Passed House",
+      "updateDate": "2026-03-22T08:00:00Z",
+      "text": "<p>As passed by the House, this bill...</p>"
+    },
+    {
+      "versionCode": "55",
+      "actionDate": "2026-03-29",
+      "actionDesc": "Public Law",
+      "updateDate": "2026-04-01T12:34:56Z",
+      "text": "<p>This Act was signed into law on 2026-03-29 and addresses energy production, exports, and infrastructure.</p>"
+    }
+  ],
+  "pagination": {
+    "count": 3
+  },
+  "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

@@ -30,7 +30,17 @@ from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 
-from concord.models import Bill, Member, Proceeding, Term
+from concord.models import (
+    Bill,
+    BillAction,
+    BillSubject,
+    BillSummary,
+    BillTitle,
+    Cosponsor,
+    Member,
+    Proceeding,
+    Term,
+)
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,
@@ -189,6 +199,11 @@ CREATE TABLE IF NOT EXISTS bills (
     latest_action_text   TEXT,
     update_date          TEXT NOT NULL,
     fetched_at           TEXT NOT NULL,
+    cosponsors_fetched_at TEXT,
+    actions_fetched_at    TEXT,
+    subjects_fetched_at   TEXT,
+    titles_fetched_at     TEXT,
+    summaries_fetched_at  TEXT,
     UNIQUE (congress, bill_type, bill_number)
 );
 
@@ -201,11 +216,65 @@ CREATE INDEX IF NOT EXISTS idx_bills_policy_area
 CREATE INDEX IF NOT EXISTS idx_bills_congress
     ON bills (congress);
 
+-- Tier-2 child tables (Phase 2b). Each row points back to bills via
+-- bill_id with ON DELETE CASCADE so wiping a Bill takes its enrichment
+-- with it. bioguide_id on bill_cosponsors is bare TEXT (no FK) so the
+-- table doesn't depend on Phase 1 having indexed every cosponsoring
+-- Member.
+CREATE TABLE IF NOT EXISTS bill_cosponsors (
+    bill_id                     TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    bioguide_id                 TEXT NOT NULL,
+    sponsorship_date            TEXT,
+    sponsorship_withdrawn_date  TEXT,
+    is_original_cosponsor       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bill_id, bioguide_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bill_cosponsors_bioguide
+    ON bill_cosponsors (bioguide_id);
+
+CREATE TABLE IF NOT EXISTS bill_actions (
+    bill_id        TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    ord            INTEGER NOT NULL,
+    action_date    TEXT NOT NULL,
+    action_text    TEXT NOT NULL,
+    action_code    TEXT,
+    source_system  TEXT,
+    PRIMARY KEY (bill_id, ord)
+);
+CREATE INDEX IF NOT EXISTS idx_bill_actions_date
+    ON bill_actions (action_date DESC);
+
+CREATE TABLE IF NOT EXISTS bill_subjects (
+    bill_id  TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    subject  TEXT NOT NULL,
+    PRIMARY KEY (bill_id, subject)
+);
+
+CREATE TABLE IF NOT EXISTS bill_titles (
+    bill_id     TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    ord         INTEGER NOT NULL,
+    title_type  TEXT NOT NULL,
+    title_text  TEXT NOT NULL,
+    chamber     TEXT,
+    PRIMARY KEY (bill_id, ord)
+);
+
+CREATE TABLE IF NOT EXISTS bill_summaries (
+    bill_id        TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    version_code   TEXT NOT NULL,
+    action_date    TEXT,
+    action_desc    TEXT,
+    summary_text   TEXT NOT NULL,
+    PRIMARY KEY (bill_id, version_code)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS bills_fts USING fts5(
     bill_id UNINDEXED,
     identifier,
     title,
     policy_area,
+    short_title,
+    subjects,
     tokenize = 'porter'
 );
 """
@@ -270,6 +339,21 @@ _BILL_COLUMNS: tuple[str, ...] = (
     "fetched_at",
 )
 
+# The five *_fetched_at columns are upserted only when their tier-2
+# loader has new snapshots to flush; the parent bills row uses the
+# columns above. Listed for use by per-section UPDATE statements.
+BILL_TIER2_SECTIONS: tuple[str, ...] = (
+    "cosponsors",
+    "actions",
+    "subjects",
+    "titles",
+    "summaries",
+)
+
+# UPSERT on the parent row. The five *_fetched_at columns are *not*
+# touched here — they're owned by the tier-2 loaders, and clobbering
+# them on every tier-1 upsert would reset the "enriched" state every
+# time `concord load bills` runs. Keep them under per-section UPDATEs.
 _BILL_UPSERT_SQL = (
     "INSERT INTO bills ("
     + ", ".join(_BILL_COLUMNS)
@@ -278,6 +362,60 @@ _BILL_UPSERT_SQL = (
     + ") ON CONFLICT(bill_id) DO UPDATE SET "
     + ", ".join(f"{col} = excluded.{col}" for col in _BILL_COLUMNS if col != "bill_id")
 )
+
+# Per-child column tuples — used to generate INSERT SQL and to project
+# pydantic models into row tuples.
+_COSPONSOR_COLUMNS: tuple[str, ...] = (
+    "bill_id",
+    "bioguide_id",
+    "sponsorship_date",
+    "sponsorship_withdrawn_date",
+    "is_original_cosponsor",
+)
+
+_ACTION_COLUMNS: tuple[str, ...] = (
+    "bill_id",
+    "ord",
+    "action_date",
+    "action_text",
+    "action_code",
+    "source_system",
+)
+
+_SUBJECT_COLUMNS: tuple[str, ...] = ("bill_id", "subject")
+
+_TITLE_COLUMNS: tuple[str, ...] = (
+    "bill_id",
+    "ord",
+    "title_type",
+    "title_text",
+    "chamber",
+)
+
+_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "bill_id",
+    "version_code",
+    "action_date",
+    "action_desc",
+    "summary_text",
+)
+
+
+def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    return (
+        f"INSERT INTO {table} ("
+        + ", ".join(columns)
+        + ") VALUES ("
+        + ", ".join("?" for _ in columns)
+        + ")"
+    )
+
+
+_COSPONSOR_INSERT_SQL = _insert_sql("bill_cosponsors", _COSPONSOR_COLUMNS)
+_ACTION_INSERT_SQL = _insert_sql("bill_actions", _ACTION_COLUMNS)
+_SUBJECT_INSERT_SQL = _insert_sql("bill_subjects", _SUBJECT_COLUMNS)
+_TITLE_INSERT_SQL = _insert_sql("bill_titles", _TITLE_COLUMNS)
+_SUMMARY_INSERT_SQL = _insert_sql("bill_summaries", _SUMMARY_COLUMNS)
 
 # Vec-only schema. Only created when load_vec=True.
 _VEC_SCHEMA = """
@@ -504,6 +642,224 @@ class SqliteStorage:
         )
         row: sqlite3.Row | None = cursor.fetchone()
         return row
+
+    # -- Bills tier-2 child tables (Phase 2b) -----------------------------
+
+    def replace_bill_cosponsors(
+        self,
+        bill_id: str,
+        cosponsors: Sequence[Cosponsor],
+        *,
+        fetched_at: str,
+    ) -> None:
+        """DELETE-then-INSERT every Cosponsor for one bill_id; stamp the fetched_at column.
+
+        Idempotent: re-running with the same set produces the same final
+        state. Safe to call for a Bill not in the ``bills`` table — the
+        FK will block the INSERT before any rows are written; callers
+        should filter out unknown ``bill_id`` before invoking.
+        """
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM bill_cosponsors WHERE bill_id = ?", (bill_id,))
+            if cosponsors:
+                self._conn.executemany(
+                    _COSPONSOR_INSERT_SQL,
+                    [
+                        (
+                            bill_id,
+                            c.bioguide_id,
+                            c.sponsorship_date,
+                            c.sponsorship_withdrawn_date,
+                            1 if c.is_original_cosponsor else 0,
+                        )
+                        for c in cosponsors
+                    ],
+                )
+            self._conn.execute(
+                "UPDATE bills SET cosponsors_fetched_at = ? WHERE bill_id = ?",
+                (fetched_at, bill_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def replace_bill_actions(
+        self,
+        bill_id: str,
+        actions: Sequence[BillAction],
+        *,
+        fetched_at: str,
+    ) -> None:
+        """DELETE-then-INSERT every BillAction for one bill_id; stamp the column."""
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM bill_actions WHERE bill_id = ?", (bill_id,))
+            if actions:
+                self._conn.executemany(
+                    _ACTION_INSERT_SQL,
+                    [
+                        (
+                            bill_id,
+                            i,
+                            a.action_date,
+                            a.action_text,
+                            a.action_code,
+                            a.source_system,
+                        )
+                        for i, a in enumerate(actions)
+                    ],
+                )
+            self._conn.execute(
+                "UPDATE bills SET actions_fetched_at = ? WHERE bill_id = ?",
+                (fetched_at, bill_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def replace_bill_subjects(
+        self,
+        bill_id: str,
+        subjects: Sequence[BillSubject],
+        *,
+        fetched_at: str,
+    ) -> None:
+        """DELETE-then-INSERT every BillSubject for one bill_id; stamp the column.
+
+        Duplicate ``name`` values in the input are dedup'd before INSERT
+        so the per-row PK (``bill_id, subject``) doesn't trip.
+        """
+        seen: set[str] = set()
+        deduped: list[BillSubject] = []
+        for s in subjects:
+            if s.name in seen:
+                continue
+            seen.add(s.name)
+            deduped.append(s)
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM bill_subjects WHERE bill_id = ?", (bill_id,))
+            if deduped:
+                self._conn.executemany(
+                    _SUBJECT_INSERT_SQL,
+                    [(bill_id, s.name) for s in deduped],
+                )
+            self._conn.execute(
+                "UPDATE bills SET subjects_fetched_at = ? WHERE bill_id = ?",
+                (fetched_at, bill_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def replace_bill_titles(
+        self,
+        bill_id: str,
+        titles: Sequence[BillTitle],
+        *,
+        fetched_at: str,
+    ) -> None:
+        """DELETE-then-INSERT every BillTitle for one bill_id; stamp the column."""
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM bill_titles WHERE bill_id = ?", (bill_id,))
+            if titles:
+                self._conn.executemany(
+                    _TITLE_INSERT_SQL,
+                    [
+                        (bill_id, i, t.title_type, t.title_text, t.chamber)
+                        for i, t in enumerate(titles)
+                    ],
+                )
+            self._conn.execute(
+                "UPDATE bills SET titles_fetched_at = ? WHERE bill_id = ?",
+                (fetched_at, bill_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def replace_bill_summaries(
+        self,
+        bill_id: str,
+        summaries: Sequence[BillSummary],
+        *,
+        fetched_at: str,
+    ) -> None:
+        """DELETE-then-INSERT every BillSummary for one bill_id; stamp the column.
+
+        Duplicate ``version_code`` values in the input are dedup'd; the
+        latest by list order wins.
+        """
+        latest_per_version: dict[str, BillSummary] = {}
+        for s in summaries:
+            latest_per_version[s.version_code] = s
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM bill_summaries WHERE bill_id = ?", (bill_id,))
+            if latest_per_version:
+                self._conn.executemany(
+                    _SUMMARY_INSERT_SQL,
+                    [
+                        (
+                            bill_id,
+                            s.version_code,
+                            s.action_date,
+                            s.action_desc,
+                            s.summary_text,
+                        )
+                        for s in latest_per_version.values()
+                    ],
+                )
+            self._conn.execute(
+                "UPDATE bills SET summaries_fetched_at = ? WHERE bill_id = ?",
+                (fetched_at, bill_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def cosponsors_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
+        cursor = self._conn.execute(
+            "SELECT * FROM bill_cosponsors WHERE bill_id = ? "
+            "ORDER BY is_original_cosponsor DESC, sponsorship_date ASC, bioguide_id ASC",
+            (bill_id,),
+        )
+        return cursor.fetchall()
+
+    def actions_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
+        cursor = self._conn.execute(
+            "SELECT * FROM bill_actions WHERE bill_id = ? ORDER BY ord ASC",
+            (bill_id,),
+        )
+        return cursor.fetchall()
+
+    def subjects_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
+        cursor = self._conn.execute(
+            "SELECT * FROM bill_subjects WHERE bill_id = ? ORDER BY subject ASC",
+            (bill_id,),
+        )
+        return cursor.fetchall()
+
+    def titles_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
+        cursor = self._conn.execute(
+            "SELECT * FROM bill_titles WHERE bill_id = ? ORDER BY ord ASC",
+            (bill_id,),
+        )
+        return cursor.fetchall()
+
+    def summaries_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
+        cursor = self._conn.execute(
+            "SELECT * FROM bill_summaries WHERE bill_id = ? ORDER BY action_date ASC",
+            (bill_id,),
+        )
+        return cursor.fetchall()
 
     # -- introspection ----------------------------------------------------
 

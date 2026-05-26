@@ -14,7 +14,7 @@ from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_bills import load as load_bills
 from concord.pipeline.load_members import load as load_members
-from concord.scraper.bills import BILLS_JSONL_NAME
+from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app
 
@@ -161,9 +161,85 @@ def test_bills_end_to_end(tmp_path: Path) -> None:
 
     resp = client.get("/bills/119/hr/1")
     assert resp.status_code == 200
-    assert "Cosponsors (Phase 2b)" in resp.text
+    # Bill is tier-1 only — the five tier-2 sections render their
+    # "not yet fetched" empty states.
+    assert "Cosponsors not yet fetched" in resp.text
 
     # Bare-identifier query: with only one Bill in scope, this redirects.
     resp = client.get("/search?q=HR+1", follow_redirects=False)
     assert resp.status_code == 307
     assert resp.headers["location"] == "/bills/119/hr/1"
+
+
+def test_bills_tier2_end_to_end(tmp_path: Path) -> None:
+    """Phase 2b smoke: write tier-1 + tier-2 JSONL for one bill, load + index,
+    poke routes for both the enriched bill and a tier-1-only bill.
+    """
+    fixtures = Path(__file__).parent / "fixtures" / "api" / "bills"
+    storage_dir = tmp_path / "data"
+    storage_dir.mkdir()
+    fetched_at = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC).isoformat()
+
+    def _envelope(payload: dict, key: dict) -> str:
+        return json.dumps({"fetched_at": fetched_at, "key": key, "payload": payload}) + "\n"
+
+    bill_hr_1 = json.loads((fixtures / "detail_119_hr_1.json").read_text())["bill"]
+    bill_hr_22 = json.loads((fixtures / "detail_119_hr_22.json").read_text())["bill"]
+    (storage_dir / BILLS_JSONL_NAME).write_text(
+        _envelope(bill_hr_1, {"congress": 119, "bill_type": "hr", "bill_number": 1})
+        + _envelope(bill_hr_22, {"congress": 119, "bill_type": "hr", "bill_number": 22}),
+        encoding="utf-8",
+    )
+    # Enrichment only for 119-hr-1.
+    section_fixtures = {
+        "cosponsors": "cosponsors_119_hr_22.json",
+        "actions": "actions_119_hr_1.json",
+        "subjects": "subjects_119_hr_1.json",
+        "titles": "titles_119_hr_1.json",
+        "summaries": "summaries_119_hr_1.json",
+    }
+    for section, name in section_fixtures.items():
+        payload = json.loads((fixtures / name).read_text())
+        (storage_dir / enrichment_jsonl_name(section)).write_text(
+            _envelope(payload, {"congress": 119, "bill_type": "hr", "bill_number": 1}),
+            encoding="utf-8",
+        )
+
+    db = tmp_path / "test.db"
+    SqliteStorage(db).close()
+    load_bills(storage_dir=storage_dir, db_path=db)
+    index_bills(db_path=db)
+
+    class _StubResp:
+        def __init__(self, vectors: list[list[float]]) -> None:
+            self.data = [type("D", (), {"embedding": v})() for v in vectors]
+
+    class _StubEmb:
+        def create(self, *, model: str, input: list[str]) -> _StubResp:
+            return _StubResp([[0.5] * EMBEDDING_DIM for _ in input])
+
+    class _Stub:
+        embeddings = _StubEmb()
+
+    app = create_app(db, embedder=Embedder(_Stub()))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # Enriched bill renders live sections.
+    resp = client.get("/bills/119/hr/1")
+    assert resp.status_code == 200
+    assert "Cosponsors not yet fetched" not in resp.text
+    # First cosponsor bioguide id from the fixture should be present.
+    assert "B001302" in resp.text
+    # First action text from the fixture.
+    assert "Became Public Law No: 119-1." in resp.text
+    # Subject chip.
+    assert "Pipelines" in resp.text
+
+    # Tier-1-only bill shows the empty-state for every tier-2 section.
+    resp = client.get("/bills/119/hr/22")
+    assert resp.status_code == 200
+    assert "Cosponsors not yet fetched" in resp.text
+    assert "Action history not yet fetched" in resp.text
+    assert "Subjects not yet fetched" in resp.text
+    assert "Titles not yet fetched" in resp.text
+    assert "Summaries not yet fetched" in resp.text

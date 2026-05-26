@@ -1175,3 +1175,202 @@ class TestLoadBillsCommand:
         plain = _strip(result.output)
         assert "No input file" in plain
         assert "scrape bills" in plain
+
+
+# -- `concord scrape bills enrich` -------------------------------------------
+
+
+def _enrichment_handler():
+    """Return an httpx handler that answers /cosponsors, /actions, ... from fixtures."""
+    fixtures_path = Path(__file__).parent / "fixtures" / "api" / "bills"
+    fixtures = {
+        "cosponsors": json.loads((fixtures_path / "cosponsors_119_hr_22.json").read_text()),
+        "actions": json.loads((fixtures_path / "actions_119_hr_1.json").read_text()),
+        "subjects": json.loads((fixtures_path / "subjects_119_hr_1.json").read_text()),
+        "titles": json.loads((fixtures_path / "titles_119_hr_1.json").read_text()),
+        "summaries": json.loads((fixtures_path / "summaries_119_hr_1.json").read_text()),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        parts = request.url.path.rstrip("/").split("/")
+        if len(parts) != 7:
+            return httpx.Response(404)
+        section = parts[-1]
+        return httpx.Response(
+            200,
+            content=json.dumps(fixtures[section]),
+            headers={"content-type": "application/json"},
+        )
+
+    return handler
+
+
+class TestScrapeBillsEnrichCommand:
+    def test_help_lists_flags(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["scrape", "bills", "enrich", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--bill-ids", "--sections", "--storage-dir", "--db", "--limit"]:
+            assert flag in plain
+
+    def test_requires_bill_ids_or_db(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--storage-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code == 2
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert "--bill-ids" in plain
+        assert "--db" in plain
+
+    def test_writes_one_envelope_per_section(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        handler = _enrichment_handler()
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--bill-ids",
+                "119-hr-1",
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        for section in ("cosponsors", "actions", "subjects", "titles", "summaries"):
+            path = tmp_path / f"bill_{section}.jsonl"
+            assert path.exists(), f"missing {path}"
+            assert len(path.read_text().splitlines()) == 1
+
+    def test_sections_subset(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        handler = _enrichment_handler()
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--bill-ids",
+                "119-hr-1",
+                "--sections",
+                "cosponsors,actions",
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        files = {p.name for p in tmp_path.iterdir()}
+        assert files == {"bill_cosponsors.jsonl", "bill_actions.jsonl"}
+
+    def test_rejects_unknown_section(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--bill-ids",
+                "119-hr-1",
+                "--sections",
+                "wibble",
+                "--storage-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code != 0
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert "unknown section" in plain.lower()
+
+    def test_rejects_bad_bill_id(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--bill-ids",
+                "bad-token",
+                "--storage-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_db_autoselect_no_unenriched(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+    ) -> None:
+        # Empty DB → empty result; should report "nothing to do".
+        db = tmp_path / "test.db"
+        SqliteStorage(db, load_vec=False).close()
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--db",
+                str(db),
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "nothing to do" in _strip(result.output).lower()

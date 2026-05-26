@@ -546,3 +546,136 @@ class TestGetBillDetail:
         client = _make_client(lambda r: _json_response({"notBill": {}}))
         with client, pytest.raises(ApiError, match="expected 'bill' object"):
             client.get_bill_detail(congress=119, bill_type="hr", bill_number=1)
+
+
+# -- bill sub-endpoints (Phase 2b) -------------------------------------------
+
+
+class TestGetBillCosponsors:
+    def test_returns_cosponsors_payload(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/cosponsors_119_hr_22.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            result = client.get_bill_cosponsors(119, "hr", 22)
+        assert len(result["cosponsors"]) == 3
+        assert result["cosponsors"][0]["bioguideId"] == "B001302"
+
+    def test_paginates_until_no_next(self, fixtures_dir: Path) -> None:
+        page1 = json.loads((fixtures_dir / "api/bills/cosponsors_119_hr_22.json").read_text())
+        page1 = {**page1, "pagination": {"count": 5, "next": "https://example.invalid/next"}}
+        page2 = {
+            "cosponsors": [
+                {
+                    "bioguideId": "X000001",
+                    "sponsorshipDate": "2025-03-01",
+                    "isOriginalCosponsor": False,
+                    "sponsorshipWithdrawnDate": None,
+                },
+                {
+                    "bioguideId": "X000002",
+                    "sponsorshipDate": "2025-03-02",
+                    "isOriginalCosponsor": False,
+                    "sponsorshipWithdrawnDate": None,
+                },
+            ],
+            "pagination": {"count": 5},
+        }
+        responses = iter([page1, page2])
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            return _json_response(next(responses))
+
+        client = _make_client(handler)
+        with client:
+            result = client.get_bill_cosponsors(119, "hr", 22)
+        assert len(result["cosponsors"]) == 5
+        assert result["cosponsors"][-1]["bioguideId"] == "X000002"
+
+    def test_canonicalizes_bill_type(self) -> None:
+        captured: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request.url.path)
+            return _json_response({"cosponsors": [], "pagination": {"count": 0}})
+
+        client = _make_client(handler)
+        with client:
+            client.get_bill_cosponsors(119, "HR", 1)
+        assert captured == ["/v3/bill/119/hr/1/cosponsors"]
+
+
+class TestGetBillActions:
+    def test_returns_actions_payload(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/actions_119_hr_1.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            result = client.get_bill_actions(119, "hr", 1)
+        assert len(result["actions"]) == 6
+        assert result["actions"][0]["actionDate"] == "2026-03-30"
+
+    def test_paginates(self) -> None:
+        page1 = {
+            "actions": [{"actionDate": "2026-03-30", "text": "A"}],
+            "pagination": {"count": 2, "next": "..."},
+        }
+        page2 = {
+            "actions": [{"actionDate": "2026-03-29", "text": "B"}],
+            "pagination": {"count": 2},
+        }
+        responses = iter([page1, page2])
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            return _json_response(next(responses))
+
+        client = _make_client(handler)
+        with client:
+            result = client.get_bill_actions(119, "hr", 1)
+        assert [a["text"] for a in result["actions"]] == ["A", "B"]
+
+
+class TestGetBillSubjects:
+    def test_concatenates_legislative_subjects_across_pages(self) -> None:
+        page1 = {
+            "subjects": {
+                "legislativeSubjects": [{"name": "Energy"}, {"name": "Oil"}],
+                "policyArea": {"name": "Energy"},
+            },
+            "pagination": {"count": 4, "next": "..."},
+        }
+        page2 = {
+            "subjects": {
+                "legislativeSubjects": [{"name": "Gas"}, {"name": "Renewables"}],
+                "policyArea": {"name": "Energy"},
+            },
+            "pagination": {"count": 4},
+        }
+        responses = iter([page1, page2])
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            return _json_response(next(responses))
+
+        client = _make_client(handler)
+        with client:
+            result = client.get_bill_subjects(119, "hr", 1)
+        names = [s["name"] for s in result["subjects"]["legislativeSubjects"]]
+        assert names == ["Energy", "Oil", "Gas", "Renewables"]
+        assert result["subjects"]["policyArea"]["name"] == "Energy"
+
+
+class TestGetBillTitles:
+    def test_returns_titles_payload(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/titles_119_hr_1.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            result = client.get_bill_titles(119, "hr", 1)
+        assert len(result["titles"]) == 4
+
+
+class TestGetBillSummaries:
+    def test_returns_summaries_payload(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/summaries_119_hr_1.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            result = client.get_bill_summaries(119, "hr", 1)
+        assert len(result["summaries"]) == 3
+        assert result["summaries"][0]["versionCode"] == "00"

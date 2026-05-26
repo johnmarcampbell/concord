@@ -8,7 +8,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Bill, Member, Term
+from concord.models import (
+    Bill,
+    BillAction,
+    BillSubject,
+    BillSummary,
+    BillTitle,
+    Cosponsor,
+    Member,
+    Term,
+)
 from concord.pipeline.index_bills import index as index_bills
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app
@@ -189,9 +198,12 @@ class TestBillProfile:
         # Sponsor link present (Member in table).
         assert "Steve Scalise" in body
         assert "/members/S001176" in body
-        # Phase 2b placeholders visible.
-        assert "Cosponsors (Phase 2b)" in body
-        assert "Action history (Phase 2b)" in body
+        # Tier-2 empty-states are visible — this bill has no enrichment loaded.
+        assert "Cosponsors not yet fetched" in body
+        assert "Action history not yet fetched" in body
+        assert "Subjects not yet fetched" in body
+        assert "Titles not yet fetched" in body
+        assert "Summaries not yet fetched" in body
         # Phase 3/4/5 placeholders.
         assert "Vote history (Phase 3)" in body
         assert "Committee path (Phase 4)" in body
@@ -212,6 +224,78 @@ class TestBillProfile:
         body = resp.text
         assert "R000614" in body
         assert "(not indexed)" in body
+
+    def test_enriched_bill_renders_sections(self, client: TestClient) -> None:
+        db_path = client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors(
+                "119-hr-1",
+                [
+                    Cosponsor(
+                        bioguide_id="S001176",
+                        sponsorship_date="2025-01-09",
+                        is_original_cosponsor=True,
+                    ),
+                    Cosponsor(
+                        bioguide_id="Z999999",
+                        sponsorship_date="2025-02-01",
+                        sponsorship_withdrawn_date="2025-03-15",
+                    ),
+                ],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+            storage.replace_bill_actions(
+                "119-hr-1",
+                [
+                    BillAction(action_date="2026-03-30", action_text="Became Public Law"),
+                    BillAction(action_date="2025-01-09", action_text="Introduced in House"),
+                ],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+            storage.replace_bill_subjects(
+                "119-hr-1",
+                [BillSubject(name="Energy"), BillSubject(name="Pipelines")],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+            storage.replace_bill_titles(
+                "119-hr-1",
+                [
+                    BillTitle(
+                        title_type="Short Title(s) as Introduced",
+                        title_text="Lower Energy Costs Act",
+                    ),
+                ],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+            storage.replace_bill_summaries(
+                "119-hr-1",
+                [
+                    BillSummary(
+                        version_code="00",
+                        action_date="2025-01-09",
+                        action_desc="Introduced",
+                        summary_text="<p>Intro summary</p>",
+                    ),
+                ],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+
+        resp = client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        body = resp.text
+        # Empty states are gone for this bill.
+        assert "Cosponsors not yet fetched" not in body
+        # Cosponsor: indexed Member shows up by name.
+        assert "Steve Scalise" in body
+        # Withdrawn cosponsor renders as <del> with a (withdrawn ...) marker.
+        assert "(withdrawn 2025-03-15)" in body
+        assert "<del" in body
+        # Action history present with reverse-chrono date.
+        assert "Became Public Law" in body
+        # Subjects rendered as chips.
+        assert "Pipelines" in body
+        # Summary's HTML body is rendered (safe).
+        assert "Intro summary" in body
 
 
 class TestFederatedBillsSearch:
@@ -252,5 +336,33 @@ class TestMemberProfileSponsoredCrossLink:
         body = resp.text
         assert "Sponsored bills" in body
         assert "Lower Energy Costs Act" in body
-        # Cosponsored placeholder still visible, but relabeled for 2b.
-        assert "Cosponsored bills (Phase 2b)" in body
+        # Cosponsored section is now live; with no enrichment in the seed,
+        # it shows the empty-state CLI hint.
+        assert "Cosponsored bills" in body
+        assert "No cosponsored bills indexed" in body
+
+
+class TestMemberProfileCosponsoredEnriched:
+    def test_cosponsored_lists_bill_when_enriched(self, client: TestClient, tmp_path: Path) -> None:
+        # Reach into the seeded DB and add a cosponsor edge.
+        db_path = client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors(
+                "119-hr-22",
+                [
+                    Cosponsor(
+                        bioguide_id="S001176",
+                        sponsorship_date="2025-02-04",
+                        is_original_cosponsor=False,
+                    )
+                ],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+
+        resp = client.get("/members/S001176")
+        assert resp.status_code == 200
+        body = resp.text
+        # Scalise now appears in the Cosponsored bills section as 119-hr-22.
+        assert "Safeguard American Voter Eligibility Act" in body
+        # The "No cosponsored" empty-state should be gone for this member.
+        assert "No cosponsored bills indexed" not in body

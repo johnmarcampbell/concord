@@ -1,0 +1,41 @@
+{
+  "cosponsors": [
+    {
+      "bioguideId": "B001302",
+      "fullName": "Rep. Bishop, Dan [R-NC-8]",
+      "firstName": "Dan",
+      "lastName": "Bishop",
+      "party": "R",
+      "state": "NC",
+      "district": 8,
+      "sponsorshipDate": "2025-01-09",
+      "isOriginalCosponsor": true,
+      "sponsorshipWithdrawnDate": null,
+      "url": "https://api.congress.gov/v3/member/B001302?format=json"
+    },
+    {
+      "bioguideId": "Z000001",
+      "fullName": "Rep. Doe, Jane [I-XX-0]",
+      "firstName": "Jane",
+      "lastName": "Doe",
+      "party": "I",
+      "state": "XX",
+      "district": 0,
+      "sponsorshipDate": "2025-01-15",
+      "isOriginalCosponsor": false,
+      "sponsorshipWithdrawnDate": "2025-04-02",
+      "url": "https://api.congress.gov/v3/member/Z000001?format=json"
+    }
+  ],
+  "pagination": {
+    "count": 1,
+    "countIncludingWithdrawnCosponsors": 2
+  },
+  "request": {
+    "billNumber": "22",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

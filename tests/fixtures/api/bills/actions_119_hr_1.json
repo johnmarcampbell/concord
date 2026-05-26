@@ -1,0 +1,56 @@
+{
+  "actions": [
+    {
+      "actionDate": "2026-03-30",
+      "text": "Became Public Law No: 119-1.",
+      "type": "BecameLaw",
+      "actionCode": "E40000",
+      "sourceSystem": {"code": 9, "name": "Library of Congress"}
+    },
+    {
+      "actionDate": "2026-03-29",
+      "text": "Signed by President.",
+      "type": "President",
+      "actionCode": "E30000",
+      "sourceSystem": {"code": 9, "name": "Library of Congress"}
+    },
+    {
+      "actionDate": "2026-03-25",
+      "text": "Presented to President.",
+      "type": "Floor",
+      "actionCode": "E20000",
+      "sourceSystem": {"code": 9, "name": "Library of Congress"}
+    },
+    {
+      "actionDate": "2026-03-20",
+      "text": "Resolving differences -- Senate actions: Senate agreed to House amendment by Unanimous Consent.",
+      "type": "Floor",
+      "actionCode": "17000",
+      "sourceSystem": {"code": 0, "name": "Senate"}
+    },
+    {
+      "actionDate": "2025-01-09",
+      "text": "Referred to the Committee on Energy and Commerce, and in addition to the Committees on Natural Resources, and the Judiciary.",
+      "type": "IntroReferral",
+      "actionCode": "H11100",
+      "sourceSystem": {"code": 2, "name": "House floor actions"}
+    },
+    {
+      "actionDate": "2025-01-09",
+      "text": "Introduced in House",
+      "type": "IntroReferral",
+      "actionCode": "Intro-H",
+      "sourceSystem": {"code": 9, "name": "Library of Congress"}
+    }
+  ],
+  "pagination": {
+    "count": 6
+  },
+  "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

@@ -4,7 +4,13 @@ Populates the ``bills_fts`` FTS5 virtual table from the ``bills`` table.
 Truncate-then-repopulate keeps the index in lockstep with the current
 projection without triggers.
 
-Bill search is FTS5-only in Phase 2a; embeddings come in Phase 5 when
+Per Phase 2b, the indexer also pulls a bill's first short title from
+``bill_titles`` and its CRS subjects from ``bill_subjects`` so federated
+search matches on short-title and subject text once enrichment has run.
+Tier-1-only bills are still indexed; their short_title/subjects columns
+are simply empty.
+
+Bill search is FTS5-only in Phase 2a/2b; embeddings come in Phase 5 when
 the ``chunks`` table generalizes to ``source_type='bill'`` per ADR 0008.
 """
 
@@ -34,10 +40,31 @@ def index(*, db_path: Path, limit: int | None = None) -> IndexStats:
         rows = conn.execute(sql).fetchall()
         for row in rows:
             identifier = f"{row['bill_type']} {row['bill_number']}"
+            short_title_row = conn.execute(
+                "SELECT title_text FROM bill_titles "
+                "WHERE bill_id = ? AND title_type LIKE 'Short Title%' "
+                "ORDER BY ord LIMIT 1",
+                (row["bill_id"],),
+            ).fetchone()
+            short_title = short_title_row["title_text"] if short_title_row else ""
+            subjects_row = conn.execute(
+                "SELECT GROUP_CONCAT(subject, ' | ') AS joined "
+                "FROM bill_subjects WHERE bill_id = ?",
+                (row["bill_id"],),
+            ).fetchone()
+            subjects = (subjects_row["joined"] if subjects_row else None) or ""
             conn.execute(
-                "INSERT INTO bills_fts (bill_id, identifier, title, policy_area) "
-                "VALUES (?, ?, ?, ?)",
-                (row["bill_id"], identifier, row["title"], row["policy_area"]),
+                "INSERT INTO bills_fts "
+                "(bill_id, identifier, title, policy_area, short_title, subjects) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    row["bill_id"],
+                    identifier,
+                    row["title"],
+                    row["policy_area"],
+                    short_title,
+                    subjects,
+                ),
             )
         conn.commit()
         return IndexStats(indexed_bills=len(rows))

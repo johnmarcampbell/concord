@@ -342,6 +342,8 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         )
         sponsored = search_mod.sponsored_bills_for_member(db, bioguide_id, limit=25)
         sponsored_total = search_mod.count_sponsored_bills_for_member(db, bioguide_id)
+        cosponsored = search_mod.cosponsored_bills_for_member(db, bioguide_id, limit=25)
+        cosponsored_total = search_mod.count_cosponsored_bills_for_member(db, bioguide_id)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "members/profile.html",
@@ -351,6 +353,8 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "current_term": current_term,
                 "sponsored_bills": sponsored,
                 "sponsored_bills_total": sponsored_total,
+                "cosponsored_bills": cosponsored,
+                "cosponsored_bills_total": cosponsored_total,
             },
         )
 
@@ -410,8 +414,23 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 {"granule_id": f"{congress}/{bt}/{bill_number}"},
                 status_code=404,
             )
+        bill_id = bill["bill_id"]
+        cosponsors = search_mod.cosponsors_for_bill(db, bill_id)
+        actions = search_mod.actions_for_bill(db, bill_id)
+        subjects = search_mod.subjects_for_bill(db, bill_id)
+        titles = search_mod.titles_for_bill(db, bill_id)
+        summaries = search_mod.summaries_for_bill(db, bill_id)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
-            request, "bills/profile.html", {"bill": bill}
+            request,
+            "bills/profile.html",
+            {
+                "bill": bill,
+                "cosponsors": cosponsors,
+                "actions": actions,
+                "subjects": subjects,
+                "titles": titles,
+                "summaries": summaries,
+            },
         )
 
     @app.get("/healthz")

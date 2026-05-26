@@ -52,6 +52,12 @@ MEMBERS_PAGE_SIZE = 250
 #: Congress.
 BILLS_PAGE_SIZE = 250
 
+#: Per-page size when walking a Bill sub-endpoint (cosponsors, actions,
+#: subjects, titles, summaries). Same 250 cap as the parent list
+#: endpoint; minimizes round trips on bills with hundreds of cosponsors
+#: or actions.
+BILL_SUB_PAGE_SIZE = 250
+
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
 #: silently stall the pipeline.
@@ -257,6 +263,135 @@ class Client:
                 f"{congress}/{bt}/{bill_number}; got {type(bill).__name__}"
             )
         return bill
+
+    def get_bill_cosponsors(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> dict[str, Any]:
+        """Fetch every cosponsor of one Bill, paginating to completion.
+
+        Returns the sub-endpoint response with the ``cosponsors`` array
+        concatenated across all pages. Other top-level keys (``pagination``,
+        ``request``) come from the final page.
+        """
+        return self._paginate_sub_endpoint(
+            congress, bill_type, bill_number, "cosponsors", array_key="cosponsors"
+        )
+
+    def get_bill_actions(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> dict[str, Any]:
+        """Fetch every action in one Bill's legislative history, paginating to completion."""
+        return self._paginate_sub_endpoint(
+            congress, bill_type, bill_number, "actions", array_key="actions"
+        )
+
+    def get_bill_subjects(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> dict[str, Any]:
+        """Fetch every CRS-assigned subject for one Bill, paginating to completion.
+
+        The subjects endpoint nests its array one level deep
+        (``subjects.legislativeSubjects``); pagination concatenates that
+        inner list across pages while preserving the outer ``policyArea``
+        sibling from the final page.
+        """
+        bt = bill_type.lower()
+        path = f"/bill/{congress}/{bt}/{bill_number}/subjects"
+        offset = 0
+        merged: dict[str, Any] = {}
+        merged_legislative: list[Any] = []
+        while True:
+            payload = self._get(path, params={"limit": BILL_SUB_PAGE_SIZE, "offset": offset})
+            subjects_obj = payload.get("subjects") or {}
+            page_legislative = (
+                subjects_obj.get("legislativeSubjects", [])
+                if isinstance(subjects_obj, dict)
+                else []
+            )
+            merged_legislative.extend(page_legislative)
+            merged = payload
+            if "next" not in payload.get("pagination", {}):
+                break
+            if not page_legislative:
+                break
+            offset += BILL_SUB_PAGE_SIZE
+        # Overwrite the final-page legislativeSubjects with the concatenated list.
+        outer = merged.get("subjects")
+        if isinstance(outer, dict):
+            outer = {**outer, "legislativeSubjects": merged_legislative}
+            merged = {**merged, "subjects": outer}
+        return merged
+
+    def get_bill_titles(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> dict[str, Any]:
+        """Fetch every title variant for one Bill.
+
+        The titles endpoint advertises pagination but in practice every
+        bill's full set of titles fits on one page; the implementation
+        still walks ``pagination.next`` defensively.
+        """
+        return self._paginate_sub_endpoint(
+            congress, bill_type, bill_number, "titles", array_key="titles"
+        )
+
+    def get_bill_summaries(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> dict[str, Any]:
+        """Fetch every CRS-written summary version for one Bill."""
+        return self._paginate_sub_endpoint(
+            congress, bill_type, bill_number, "summaries", array_key="summaries"
+        )
+
+    def _paginate_sub_endpoint(
+        self,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+        sub_path: str,
+        *,
+        array_key: str,
+    ) -> dict[str, Any]:
+        """Walk one Bill sub-endpoint until ``pagination.next`` is absent.
+
+        Returns the final page's payload with ``payload[array_key]``
+        replaced by the concatenation of every page's array. The path is
+        ``/v3/bill/{c}/{t}/{n}/{sub_path}`` with ``bill_type`` canonicalized
+        to lowercase.
+        """
+        bt = bill_type.lower()
+        path = f"/bill/{congress}/{bt}/{bill_number}/{sub_path}"
+        offset = 0
+        merged_array: list[Any] = []
+        merged: dict[str, Any] = {}
+        while True:
+            payload = self._get(path, params={"limit": BILL_SUB_PAGE_SIZE, "offset": offset})
+            page = payload.get(array_key, [])
+            if isinstance(page, list):
+                merged_array.extend(page)
+            merged = payload
+            if "next" not in payload.get("pagination", {}):
+                break
+            if not isinstance(page, list) or not page:
+                # Defensive: server claims "next" but page is empty/wrong shape.
+                break
+            offset += BILL_SUB_PAGE_SIZE
+        return {**merged, array_key: merged_array}
 
     # -- internals -----------------------------------------------------------
 

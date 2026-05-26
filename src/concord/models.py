@@ -587,6 +587,151 @@ class BillSnapshot(BaseModel):
     payload: dict[str, Any]
 
 
+# ---------------------------------------------------------------------------
+# Bill tier-2 entities (Phase 2b)
+# ---------------------------------------------------------------------------
+
+
+class Cosponsor(BaseModel):
+    """One Member's M:N edge to a Bill, as recorded on the Bill's cosponsors list.
+
+    ``sponsorship_withdrawn_date`` is non-NULL for Members who removed
+    their name after signing on. ``is_original_cosponsor`` is True for
+    cosponsors recorded on the day of introduction.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    bioguide_id: str
+    sponsorship_date: str | None = None
+    sponsorship_withdrawn_date: str | None = None
+    is_original_cosponsor: bool = False
+
+
+class BillAction(BaseModel):
+    """One event in a Bill's legislative history."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    action_date: str
+    action_text: str
+    action_code: str | None = None
+    source_system: str | None = None
+
+
+class BillSubject(BaseModel):
+    """One CRS-assigned legislative subject for a Bill.
+
+    A thin wrapper around a single string — modeled so the loader and
+    storage layer can speak the same noun for the row.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    name: str
+
+
+class BillTitle(BaseModel):
+    """One title variant for a Bill (display, official, short, popular)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    title_type: str
+    title_text: str
+    chamber: str | None = None
+
+
+class BillSummary(BaseModel):
+    """One CRS-written summary version for a Bill."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    version_code: str
+    action_date: str | None = None
+    action_desc: str | None = None
+    summary_text: str
+
+
+def parse_cosponsor(payload: dict[str, Any]) -> Cosponsor | None:
+    """Project one ``/cosponsors`` row into a :class:`Cosponsor`.
+
+    Returns ``None`` for rows without a Bioguide ID — the cosponsor row
+    can't be linked without one, and the API has been known to emit
+    placeholder entries for unfilled vacancies.
+    """
+    bioguide = payload.get("bioguideId")
+    if not isinstance(bioguide, str) or not bioguide:
+        return None
+    raw_original = payload.get("isOriginalCosponsor")
+    if isinstance(raw_original, bool):
+        is_original = raw_original
+    elif isinstance(raw_original, str):
+        is_original = raw_original.lower() in {"true", "y", "yes", "1"}
+    else:
+        is_original = False
+    return Cosponsor(
+        bioguide_id=bioguide,
+        sponsorship_date=payload.get("sponsorshipDate"),
+        sponsorship_withdrawn_date=payload.get("sponsorshipWithdrawnDate"),
+        is_original_cosponsor=is_original,
+    )
+
+
+def parse_bill_action(payload: dict[str, Any]) -> BillAction | None:
+    """Project one ``/actions`` row into a :class:`BillAction`.
+
+    Returns ``None`` if the row lacks an ``actionDate`` or ``text`` — both
+    are non-nullable on the column.
+    """
+    action_date = payload.get("actionDate")
+    text = payload.get("text")
+    if not action_date or not text:
+        return None
+    source_raw = payload.get("sourceSystem")
+    source_system = source_raw.get("name") if isinstance(source_raw, dict) else None
+    return BillAction(
+        action_date=str(action_date),
+        action_text=str(text),
+        action_code=payload.get("actionCode"),
+        source_system=source_system,
+    )
+
+
+def parse_bill_subject(payload: dict[str, Any]) -> BillSubject | None:
+    """Project one ``legislativeSubjects`` row into a :class:`BillSubject`."""
+    name = payload.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    return BillSubject(name=name)
+
+
+def parse_bill_title(payload: dict[str, Any]) -> BillTitle | None:
+    """Project one ``/titles`` row into a :class:`BillTitle`."""
+    title_type = payload.get("titleType")
+    title_text = payload.get("title")
+    if not title_type or not title_text:
+        return None
+    return BillTitle(
+        title_type=str(title_type),
+        title_text=str(title_text),
+        chamber=payload.get("chamberName") or payload.get("chamberCode") or None,
+    )
+
+
+def parse_bill_summary(payload: dict[str, Any]) -> BillSummary | None:
+    """Project one ``/summaries`` row into a :class:`BillSummary`."""
+    version_code = payload.get("versionCode")
+    text = payload.get("text")
+    if not version_code or text is None:
+        return None
+    return BillSummary(
+        version_code=str(version_code),
+        action_date=payload.get("actionDate"),
+        action_desc=payload.get("actionDesc"),
+        summary_text=str(text),
+    )
+
+
 def parse_bill(payload: dict[str, Any]) -> Bill:
     """Project a ``/v3/bill/{c}/{t}/{n}`` detail payload into a :class:`Bill`.
 

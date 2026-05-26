@@ -1,0 +1,54 @@
+{
+  "cosponsors": [
+    {
+      "bioguideId": "B001302",
+      "fullName": "Rep. Bishop, Dan [R-NC-8]",
+      "firstName": "Dan",
+      "lastName": "Bishop",
+      "party": "R",
+      "state": "NC",
+      "district": 8,
+      "sponsorshipDate": "2025-01-09",
+      "isOriginalCosponsor": true,
+      "sponsorshipWithdrawnDate": null,
+      "url": "https://api.congress.gov/v3/member/B001302?format=json"
+    },
+    {
+      "bioguideId": "G000591",
+      "fullName": "Rep. Gimenez, Carlos A. [R-FL-28]",
+      "firstName": "Carlos",
+      "lastName": "Gimenez",
+      "party": "R",
+      "state": "FL",
+      "district": 28,
+      "sponsorshipDate": "2025-01-09",
+      "isOriginalCosponsor": true,
+      "sponsorshipWithdrawnDate": null,
+      "url": "https://api.congress.gov/v3/member/G000591?format=json"
+    },
+    {
+      "bioguideId": "M001212",
+      "fullName": "Rep. Mast, Brian J. [R-FL-21]",
+      "firstName": "Brian",
+      "lastName": "Mast",
+      "party": "R",
+      "state": "FL",
+      "district": 21,
+      "sponsorshipDate": "2025-02-04",
+      "isOriginalCosponsor": false,
+      "sponsorshipWithdrawnDate": null,
+      "url": "https://api.congress.gov/v3/member/M001212?format=json"
+    }
+  ],
+  "pagination": {
+    "count": 3,
+    "countIncludingWithdrawnCosponsors": 3
+  },
+  "request": {
+    "billNumber": "22",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}
