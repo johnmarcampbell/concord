@@ -512,3 +512,126 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Bill entity (Phase 2a)
+# ---------------------------------------------------------------------------
+
+
+#: Lowercase canonical Bill type codes accepted across the codebase. The
+#: API returns these in mixed case (``HR``, ``HJRES``); :func:`Bill`'s
+#: validator lowercases on the way in so SQL constraints stay simple.
+BILL_TYPES = ("hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres")
+BillType = Literal["hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres"]
+OriginChamber = Literal["House", "Senate"]
+
+
+def bill_id_from_components(congress: int, bill_type: str, bill_number: int) -> str:
+    """Flatten a Bill's natural key into the single string used as the SQL PK.
+
+    Shape: ``"{congress}-{bill_type_lower}-{bill_number}"`` (e.g.
+    ``"119-hr-1234"``). Chosen to match the named ``source_id`` format
+    in [ADR 0008] so Phase 5 chunks linkage is a mechanical join.
+    """
+    return f"{congress}-{bill_type.lower()}-{bill_number}"
+
+
+class Bill(BaseModel):
+    """A piece of legislation introduced in either chamber.
+
+    Identity record only — the mutable political-graph data (cosponsors,
+    actions, subjects, titles, summaries) lives in child tables added in
+    Phase 2b. Fields here are exactly what the loader writes to the
+    ``bills`` SQLite table.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    bill_id: str
+    congress: int
+    bill_type: BillType
+    bill_number: int
+    origin_chamber: OriginChamber
+    title: str
+    introduced_date: str | None = None  # ISO YYYY-MM-DD
+    policy_area: str | None = None
+    sponsor_bioguide_id: str | None = None
+    latest_action_date: str | None = None
+    latest_action_text: str | None = None
+    update_date: str
+
+    @field_validator("bill_type", mode="before")
+    @classmethod
+    def _coerce_bill_type(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+
+class BillSnapshot(BaseModel):
+    """ADR 0006 envelope wrapping one raw ``/bill`` detail API response.
+
+    Each Stage 0 fetch appends one of these to ``data/bills.jsonl``. The
+    Stage 1 loader groups by ``(key["congress"], key["bill_type"],
+    key["bill_number"])`` and keeps the latest ``fetched_at`` per key.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    fetched_at: datetime
+    key: dict[str, str | int]
+    payload: dict[str, Any]
+
+
+def parse_bill(payload: dict[str, Any]) -> Bill:
+    """Project a ``/v3/bill/{c}/{t}/{n}`` detail payload into a :class:`Bill`.
+
+    The detail endpoint nests sponsors / policyArea / latestAction one
+    level deep; this helper flattens them into the columns the loader
+    writes. The first sponsor is taken (Bills have at most one per
+    Congress's rules — the array is the API's convention, not a
+    multi-sponsor signal).
+    """
+    congress = int(payload["congress"])
+    bill_type_raw = payload["type"]
+    bill_number = int(payload["number"])
+
+    sponsors = payload.get("sponsors") or []
+    sponsor_bioguide = None
+    if sponsors:
+        first = sponsors[0]
+        if isinstance(first, dict):
+            sponsor_bioguide = first.get("bioguideId")
+
+    policy_area_raw = payload.get("policyArea")
+    policy_area = policy_area_raw.get("name") if isinstance(policy_area_raw, dict) else None
+
+    latest_action_raw = payload.get("latestAction") or {}
+    latest_action_date = (
+        latest_action_raw.get("actionDate") if isinstance(latest_action_raw, dict) else None
+    )
+    latest_action_text = (
+        latest_action_raw.get("text") if isinstance(latest_action_raw, dict) else None
+    )
+
+    update_date_raw = payload.get("updateDateIncludingText") or payload.get("updateDate")
+    if not update_date_raw:
+        raise ValueError(f"bill payload missing updateDate: {payload!r}")
+
+    bill_type = str(bill_type_raw).lower()
+
+    return Bill(
+        bill_id=bill_id_from_components(congress, bill_type, bill_number),
+        congress=congress,
+        bill_type=bill_type,  # type: ignore[arg-type]
+        bill_number=bill_number,
+        origin_chamber=payload["originChamber"],
+        title=payload["title"],
+        introduced_date=payload.get("introducedDate"),
+        policy_area=policy_area,
+        sponsor_bioguide_id=sponsor_bioguide,
+        latest_action_date=latest_action_date,
+        latest_action_text=latest_action_text,
+        update_date=str(update_date_raw),
+    )

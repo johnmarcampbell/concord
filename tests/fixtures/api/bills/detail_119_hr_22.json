@@ -1,0 +1,42 @@
+{
+  "bill": {
+    "congress": 119,
+    "type": "HR",
+    "number": "22",
+    "title": "Safeguard American Voter Eligibility Act",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "introducedDate": "2025-01-03",
+    "updateDate": "2026-04-10",
+    "updateDateIncludingText": "2026-04-10T08:00:00Z",
+    "policyArea": {
+      "name": "Government Operations and Politics"
+    },
+    "sponsors": [
+      {
+        "bioguideId": "R000614",
+        "firstName": "Chip",
+        "lastName": "Roy",
+        "middleName": null,
+        "fullName": "Rep. Roy, Chip [R-TX-21]",
+        "party": "R",
+        "state": "TX",
+        "district": 21,
+        "isByRequest": "N",
+        "url": "https://api.congress.gov/v3/member/R000614?format=json"
+      }
+    ],
+    "latestAction": {
+      "actionDate": "2026-04-10",
+      "text": "Received in the Senate and Read twice and referred to the Committee on Rules and Administration."
+    }
+  },
+  "request": {
+    "billNumber": "22",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/22?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

@@ -34,9 +34,10 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import IO, Annotated
+from typing import IO, Annotated, Any
 
 import typer
 from pydantic import ValidationError
@@ -63,9 +64,23 @@ DEFAULT_JSONL = Path("./data/proceedings.jsonl")
 DEFAULT_MEMBERS_JSONL = Path("./data/members.jsonl")
 DEFAULT_DB = Path("./data/proceedings.db")
 
+#: Default storage directory for Bills (and the other Phase 2b
+#: sub-endpoint JSONLs once they exist). One directory because ADR 0009
+#: splits a multi-endpoint entity into multiple sibling files.
+DEFAULT_BILLS_STORAGE_DIR = Path("./data")
+
 #: Congresses scraped by ``concord scrape members`` when ``--congresses``
 #: is not passed. Matches the Phase 1 roadmap scope.
 DEFAULT_MEMBER_CONGRESSES = (117, 118, 119)
+
+#: Congresses scraped by ``concord scrape bills`` when ``--congresses``
+#: is not passed. Matches the Phase 2 roadmap scope.
+DEFAULT_BILL_CONGRESSES = (117, 118, 119)
+
+#: All eight legislative Bill type codes. Used both as the
+#: ``concord scrape bills --bill-types`` default and as the validator
+#: for the ``/bills/{...}/{bill_type}/...`` URL segment.
+DEFAULT_BILL_TYPES = ("hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres")
 
 
 class Progress:
@@ -189,20 +204,45 @@ def _require_openai_key() -> None:
         raise typer.Exit(code=2)
 
 
-def _parse_congresses(raw: str) -> list[int]:
-    """Parse ``--congresses 117,118,119`` into ``[117, 118, 119]``."""
-    out: list[int] = []
+def _parse_csv(raw: str, *, name: str, coerce: "Callable[[str], Any]") -> "list[Any]":
+    """Parse a comma-separated CLI option into a list of values.
+
+    ``coerce`` is applied to each non-empty token (e.g. ``int`` for
+    ``--congresses``, ``str.lower`` for ``--bill-types``). ``name`` is
+    used in error messages.
+    """
+    out: list[Any] = []
     for part in raw.split(","):
         token = part.strip()
         if not token:
             continue
         try:
-            out.append(int(token))
-        except ValueError as exc:
-            raise typer.BadParameter(f"expected comma-separated integers, got {raw!r}") from exc
+            out.append(coerce(token))
+        except (TypeError, ValueError) as exc:
+            raise typer.BadParameter(f"bad value in --{name}: {token!r}") from exc
     if not out:
-        raise typer.BadParameter(f"no congresses parsed from {raw!r}")
+        raise typer.BadParameter(f"no values parsed from --{name} {raw!r}")
     return out
+
+
+def _parse_congresses(raw: str) -> list[int]:
+    """Parse ``--congresses 117,118,119`` into ``[117, 118, 119]``."""
+    return _parse_csv(raw, name="congresses", coerce=int)
+
+
+def _parse_bill_types(raw: str) -> list[str]:
+    """Parse ``--bill-types hr,s,...`` into lowercased codes.
+
+    Rejects unknown codes against :data:`DEFAULT_BILL_TYPES` so a typo
+    fails fast instead of producing zero scraper output.
+    """
+    parsed = _parse_csv(raw, name="bill-types", coerce=str.lower)
+    unknown = [t for t in parsed if t not in DEFAULT_BILL_TYPES]
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown bill type(s): {', '.join(unknown)}. Valid: {', '.join(DEFAULT_BILL_TYPES)}"
+        )
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +470,101 @@ def _run_index_members(
     result = index_members(db_path=db_path)
     typer.echo(f"Indexed {result.indexed_members} member(s) into members_fts.")
     return result.indexed_members
+
+
+# ---------------------------------------------------------------------------
+# Bills stage workers
+# ---------------------------------------------------------------------------
+
+
+def _run_scrape_bills(
+    *,
+    congresses: list[int],
+    bill_types: list[str],
+    storage_dir: Path,
+    limit: int | None,
+    show_progress: bool,
+) -> int:
+    from .api import ApiError
+    from .scraper import bills as bills_scraper
+
+    try:
+        api_client = Client()
+    except ApiError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    progress = Progress(enabled=show_progress)
+
+    def _on_progress(event: bills_scraper.ScrapeProgressEvent) -> None:
+        progress.update(
+            f"  congress {event.congress:>3}  {event.bill_type:<7}  "
+            f"+{event.bills_written:>5} written  "
+            f"({event.bills_seen} seen)"
+        )
+
+    try:
+        with api_client:
+            stats = bills_scraper.scrape_basic(
+                client=api_client,
+                congresses=congresses,
+                storage_dir=storage_dir,
+                fetched_at=datetime.now(UTC),
+                bill_types=bill_types,
+                limit=limit,
+                progress=_on_progress if show_progress else None,
+            )
+    finally:
+        progress.commit()
+
+    typer.echo(
+        f"Wrote {stats.bills_written} bill snapshot(s) to "
+        f"{storage_dir / bills_scraper.BILLS_JSONL_NAME} "
+        f"across {len(congresses)} congress(es) x {len(bill_types)} bill type(s)."
+    )
+    return stats.bills_written
+
+
+def _run_load_bills(
+    *,
+    storage_dir: Path,
+    db_path: Path,
+    limit: int | None,
+) -> int:
+    from .pipeline.load_bills import load as load_bills
+    from .scraper.bills import BILLS_JSONL_NAME
+
+    jsonl_path = storage_dir / BILLS_JSONL_NAME
+    if not jsonl_path.exists():
+        typer.echo(
+            f"No input file at {jsonl_path} — run `concord scrape bills` first. Nothing to load."
+        )
+        return 0
+
+    stats = load_bills(storage_dir=storage_dir, db_path=db_path, limit=limit)
+    typer.echo(
+        f"Loaded {stats.bills_written} bill(s) into {db_path} "
+        f"(read {stats.snapshots_read} snapshot(s)"
+        + (f", {stats.malformed} malformed" if stats.malformed else "")
+        + ")."
+    )
+    return stats.bills_written
+
+
+def _run_index_bills(
+    *,
+    db_path: Path,
+    limit: int | None,
+) -> int:
+    if not db_path.exists():
+        typer.echo(f"error: database not found: {db_path}", err=True)
+        raise typer.Exit(code=2)
+
+    from .pipeline.index_bills import index as index_bills
+
+    stats = index_bills(db_path=db_path, limit=limit)
+    typer.echo(f"Indexed {stats.indexed_bills} bill(s) into bills_fts.")
+    return stats.indexed_bills
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +936,182 @@ def run_members_command(
 
     typer.echo("→ Stage 2: index", err=True)
     _run_index_members(db_path=db_path)
+
+    typer.echo("✓ Done.", err=True)
+
+
+# ---------------------------------------------------------------------------
+# Subcommands — Bills
+# ---------------------------------------------------------------------------
+
+
+@scrape_app.command("bills")
+def scrape_bills_command(
+    congresses: Annotated[
+        str,
+        typer.Option(
+            "--congresses",
+            help="Comma-separated list of congress numbers to scrape.",
+        ),
+    ] = ",".join(str(c) for c in DEFAULT_BILL_CONGRESSES),
+    bill_types: Annotated[
+        str,
+        typer.Option(
+            "--bill-types",
+            help="Comma-separated list of Bill type codes (hr, s, hjres, …).",
+        ),
+    ] = ",".join(DEFAULT_BILL_TYPES),
+    storage_dir: Annotated[
+        Path,
+        typer.Option(
+            "--storage-dir",
+            help="Directory holding bills.jsonl (and Phase 2b's sibling files).",
+        ),
+    ] = DEFAULT_BILLS_STORAGE_DIR,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Maximum number of detail snapshots to write across all pairs.",
+        ),
+    ] = None,
+    show_progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Print a stderr line per (congress, bill_type) pair.",
+        ),
+    ] = True,
+) -> None:
+    """Snapshot Bill identity records into ``<storage-dir>/bills.jsonl``.
+
+    For each ``(congress, bill_type)`` pair the list endpoint is walked
+    to discover Bill numbers, then the detail endpoint is fetched per
+    bill and one ADR 0006 envelope is appended per detail response.
+    Re-running appends new snapshots; the Stage 1 loader projects the
+    latest per key into SQLite.
+    """
+    parsed_congresses = _parse_congresses(congresses)
+    parsed_types = _parse_bill_types(bill_types)
+    _run_scrape_bills(
+        congresses=parsed_congresses,
+        bill_types=parsed_types,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+    )
+
+
+@load_app.command("bills")
+def load_bills_command(
+    storage_dir: Annotated[
+        Path,
+        typer.Option(
+            "--storage-dir",
+            help="Directory holding bills.jsonl (from `concord scrape bills`).",
+        ),
+    ] = DEFAULT_BILLS_STORAGE_DIR,
+    db_path: Annotated[
+        Path,
+        typer.Option("--db", help="SQLite database. Created if missing."),
+    ] = DEFAULT_DB,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum number of bills to UPSERT."),
+    ] = None,
+) -> None:
+    """Project the latest Bill snapshot per key into SQLite.
+
+    Populates the ``bills`` table. Re-running is safe: an UPSERT on
+    ``bill_id`` keeps the row consistent with the JSONL's latest
+    snapshot per ``(congress, bill_type, bill_number)``.
+    """
+    _run_load_bills(storage_dir=storage_dir, db_path=db_path, limit=limit)
+
+
+@index_app.command("bills")
+def index_bills_command(
+    db_path: Annotated[
+        Path,
+        typer.Option("--db", help="SQLite database written by `concord load bills`."),
+    ] = DEFAULT_DB,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Cap on rows written to bills_fts."),
+    ] = None,
+) -> None:
+    """Populate the ``bills_fts`` FTS5 virtual table.
+
+    Truncates and repopulates ``bills_fts`` from the current ``bills``
+    table. Idempotent.
+    """
+    _run_index_bills(db_path=db_path, limit=limit)
+
+
+@run_app.command("bills")
+def run_bills_command(
+    congresses: Annotated[
+        str,
+        typer.Option(
+            "--congresses",
+            help="Comma-separated list of congress numbers to scrape.",
+        ),
+    ] = ",".join(str(c) for c in DEFAULT_BILL_CONGRESSES),
+    bill_types: Annotated[
+        str,
+        typer.Option(
+            "--bill-types",
+            help="Comma-separated list of Bill type codes.",
+        ),
+    ] = ",".join(DEFAULT_BILL_TYPES),
+    storage_dir: Annotated[
+        Path,
+        typer.Option("--storage-dir", help="JSONL canonical store directory."),
+    ] = DEFAULT_BILLS_STORAGE_DIR,
+    db_path: Annotated[
+        Path,
+        typer.Option("--db", help="SQLite derived store. Created if missing."),
+    ] = DEFAULT_DB,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit",
+            help="Cap on new bills scraped. Load and index run unbounded.",
+        ),
+    ] = None,
+    show_progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Print progress to stderr throughout all three stages.",
+        ),
+    ] = True,
+) -> None:
+    """Run all three stages for Bills: scrape → load → index."""
+    if not os.environ.get(ENV_API_KEY):
+        typer.echo(
+            f"error: {ENV_API_KEY} is not set; required for `concord scrape bills`",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    parsed_congresses = _parse_congresses(congresses)
+    parsed_types = _parse_bill_types(bill_types)
+
+    typer.echo("→ Stage 0: scrape", err=True)
+    _run_scrape_bills(
+        congresses=parsed_congresses,
+        bill_types=parsed_types,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+    )
+
+    typer.echo("→ Stage 1: load", err=True)
+    _run_load_bills(storage_dir=storage_dir, db_path=db_path, limit=None)
+
+    typer.echo("→ Stage 2: index", err=True)
+    _run_index_bills(db_path=db_path, limit=None)
 
     typer.echo("✓ Done.", err=True)
 

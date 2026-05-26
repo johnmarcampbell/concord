@@ -1042,3 +1042,169 @@ class TestLoadMembersCommand:
         plain = _strip(result.output)
         assert "No input file" in plain
         assert "scrape members" in plain
+
+
+# -- `concord scrape bills` --------------------------------------------------
+
+
+def _bills_fixture(name: str) -> dict[str, Any]:
+    import json as _json
+
+    here = Path(__file__).parent / "fixtures" / "api" / "bills"
+    return _json.loads((here / name).read_text())
+
+
+def _bills_handler(call_log: list[str] | None = None):
+    """Return an httpx handler that answers list + detail for the bills fixtures."""
+    import json as _json
+
+    import httpx
+
+    list_payload = _bills_fixture("list_hr_119.json")
+    details = {
+        1: _bills_fixture("detail_119_hr_1.json"),
+        22: _bills_fixture("detail_119_hr_22.json"),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if call_log is not None:
+            call_log.append(request.url.path)
+        parts = request.url.path.rstrip("/").split("/")
+        if len(parts) == 5:
+            body = list_payload
+        elif len(parts) == 6:
+            number = int(parts[-1])
+            body = details[number]
+        else:
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            content=_json.dumps(body),
+            headers={"content-type": "application/json"},
+        )
+
+    return handler
+
+
+class TestBillsHelp:
+    def test_scrape_bills_help_lists_flags(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["scrape", "bills", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--congresses", "--bill-types", "--storage-dir", "--limit"]:
+            assert flag in plain
+
+    def test_load_bills_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["load", "bills", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--storage-dir", "--db", "--limit"]:
+            assert flag in plain
+
+    def test_index_bills_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["index", "bills", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--db", "--limit"]:
+            assert flag in plain
+
+    def test_run_bills_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli_module.app, ["run", "bills", "--help"])
+        assert result.exit_code == 0
+        plain = _strip(result.output)
+        for flag in ["--congresses", "--bill-types", "--storage-dir", "--db", "--limit"]:
+            assert flag in plain
+
+
+class TestScrapeBillsCommand:
+    def test_scrapes_with_limit(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import httpx
+
+        from concord.api import Client as ApiClient
+
+        handler = _bills_handler()
+
+        # Monkey-patch the Client to inject the mock transport while still
+        # exercising the real CLI wiring.
+        original_init = ApiClient.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(ApiClient, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "--congresses",
+                "119",
+                "--bill-types",
+                "hr",
+                "--storage-dir",
+                str(tmp_path),
+                "--limit",
+                "2",
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        out = tmp_path / "bills.jsonl"
+        assert out.exists()
+        lines = out.read_text().splitlines()
+        assert len(lines) == 2
+
+    def test_rejects_unknown_bill_type(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "--congresses",
+                "119",
+                "--bill-types",
+                "xxx",
+                "--storage-dir",
+                str(tmp_path),
+            ],
+        )
+        assert result.exit_code != 0
+        plain = _strip(result.output) + _strip(result.stderr or "")
+        assert "unknown bill type" in plain.lower()
+
+
+class TestLoadBillsCommand:
+    def test_missing_file_is_a_no_op(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "load",
+                "bills",
+                "--storage-dir",
+                str(tmp_path / "no_such_dir"),
+                "--db",
+                str(tmp_path / "out.db"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plain = _strip(result.output)
+        assert "No input file" in plain
+        assert "scrape bills" in plain

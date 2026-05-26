@@ -30,7 +30,7 @@ from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 
-from ..models import Member, Proceeding, Term
+from ..models import Bill, Member, Proceeding, Term
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,
@@ -165,6 +165,49 @@ CREATE VIRTUAL TABLE IF NOT EXISTS members_fts USING fts5(
     last_name,
     tokenize = 'porter'
 );
+
+-- Bills (Phase 2a). Identity record per Bill — sponsor goes here too
+-- because Congress's rules cap one Sponsor per Bill. The mutable
+-- political-graph data (cosponsors, actions, subjects, titles,
+-- summaries) is added in Phase 2b as child tables. ``bill_id`` is the
+-- flattened "{congress}-{bill_type}-{bill_number}" PK chosen so Phase 5
+-- chunks linkage matches ADR 0008. The sponsor column is bare TEXT (no
+-- REFERENCES members) so ingest is robust to any Phase 1 gap.
+CREATE TABLE IF NOT EXISTS bills (
+    bill_id              TEXT PRIMARY KEY,
+    congress             INTEGER NOT NULL,
+    bill_type            TEXT NOT NULL
+        CHECK (bill_type IN ('hr', 'hres', 'hjres', 'hconres', 's', 'sres', 'sjres', 'sconres')),
+    bill_number          INTEGER NOT NULL,
+    origin_chamber       TEXT NOT NULL
+        CHECK (origin_chamber IN ('House', 'Senate')),
+    title                TEXT NOT NULL,
+    introduced_date      TEXT,
+    policy_area          TEXT,
+    sponsor_bioguide_id  TEXT,
+    latest_action_date   TEXT,
+    latest_action_text   TEXT,
+    update_date          TEXT NOT NULL,
+    fetched_at           TEXT NOT NULL,
+    UNIQUE (congress, bill_type, bill_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bills_sponsor
+    ON bills (sponsor_bioguide_id);
+CREATE INDEX IF NOT EXISTS idx_bills_latest_action
+    ON bills (latest_action_date DESC);
+CREATE INDEX IF NOT EXISTS idx_bills_policy_area
+    ON bills (policy_area);
+CREATE INDEX IF NOT EXISTS idx_bills_congress
+    ON bills (congress);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS bills_fts USING fts5(
+    bill_id UNINDEXED,
+    identifier,
+    title,
+    policy_area,
+    tokenize = 'porter'
+);
 """
 
 # Column lists for members + member_terms tables. Mirrors the ``_PROCEEDING_COLUMNS``
@@ -209,6 +252,31 @@ _TERM_INSERT_SQL = (
     + ") VALUES ("
     + ", ".join("?" for _ in _TERM_COLUMNS)
     + ")"
+)
+
+_BILL_COLUMNS: tuple[str, ...] = (
+    "bill_id",
+    "congress",
+    "bill_type",
+    "bill_number",
+    "origin_chamber",
+    "title",
+    "introduced_date",
+    "policy_area",
+    "sponsor_bioguide_id",
+    "latest_action_date",
+    "latest_action_text",
+    "update_date",
+    "fetched_at",
+)
+
+_BILL_UPSERT_SQL = (
+    "INSERT INTO bills ("
+    + ", ".join(_BILL_COLUMNS)
+    + ") VALUES ("
+    + ", ".join("?" for _ in _BILL_COLUMNS)
+    + ") ON CONFLICT(bill_id) DO UPDATE SET "
+    + ", ".join(f"{col} = excluded.{col}" for col in _BILL_COLUMNS if col != "bill_id")
 )
 
 # Vec-only schema. Only created when load_vec=True.
@@ -417,6 +485,26 @@ class SqliteStorage:
         )
         return cursor.fetchall()
 
+    # -- Bills (Phase 2a) -------------------------------------------------
+
+    def upsert_bill(self, bill: Bill, *, fetched_at: str) -> None:
+        """UPSERT one Bill row keyed on ``bill_id``.
+
+        Latest snapshot wins per ADR 0006; the loader is responsible for
+        feeding only the latest snapshot per natural key.
+        """
+        row = _row_from_bill(bill, fetched_at=fetched_at)
+        self._conn.execute(_BILL_UPSERT_SQL, row)
+        self._conn.commit()
+
+    def get_bill(self, bill_id: str) -> sqlite3.Row | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM bills WHERE bill_id = ?",
+            (bill_id,),
+        )
+        row: sqlite3.Row | None = cursor.fetchone()
+        return row
+
     # -- introspection ----------------------------------------------------
 
     @property
@@ -475,3 +563,10 @@ def _row_from_term(term: Term) -> tuple[Any, ...]:
     """Project a :class:`Term` into the column tuple expected by SQL."""
     dumped: dict[str, Any] = term.model_dump(mode="json")
     return tuple(dumped[col] for col in _TERM_COLUMNS)
+
+
+def _row_from_bill(bill: Bill, *, fetched_at: str) -> tuple[Any, ...]:
+    """Project a :class:`Bill` into the column tuple expected by SQL."""
+    dumped: dict[str, Any] = bill.model_dump(mode="json")
+    dumped["fetched_at"] = fetched_at
+    return tuple(dumped[col] for col in _BILL_COLUMNS)

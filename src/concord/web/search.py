@@ -364,6 +364,219 @@ def terms_for_member(db: sqlite3.Connection, bioguide_id: str) -> list[dict[str,
     return [dict(r) for r in rows]
 
 
+# -- Bills (Phase 2a) -------------------------------------------------------
+
+
+def _row_get(row: sqlite3.Row, name: str) -> Any:
+    """``row[name]`` with a None fallback when the column isn't in the result."""
+    try:
+        return row[name]
+    except IndexError:
+        return None
+
+
+class BillHit(BaseModel):
+    """One row of the federated ``/search`` Bills section."""
+
+    bill_id: str
+    congress: int
+    bill_type: str
+    bill_number: int
+    title: str
+    origin_chamber: str
+    policy_area: str | None
+    latest_action_date: str | None
+    sponsor_bioguide_id: str | None
+    sponsor_display_name: str | None
+
+
+def _bill_hit_from_row(row: sqlite3.Row) -> BillHit:
+    return BillHit(
+        bill_id=row["bill_id"],
+        congress=row["congress"],
+        bill_type=row["bill_type"],
+        bill_number=row["bill_number"],
+        title=row["title"],
+        origin_chamber=row["origin_chamber"],
+        policy_area=row["policy_area"],
+        latest_action_date=row["latest_action_date"],
+        sponsor_bioguide_id=row["sponsor_bioguide_id"],
+        sponsor_display_name=_row_get(row, "sponsor_display_name"),
+    )
+
+
+def search_bills(
+    db: sqlite3.Connection,
+    *,
+    query: str,
+    limit: int = 10,
+) -> list[BillHit]:
+    """FTS5 search over ``bills_fts`` (title + identifier + policy_area).
+
+    Empty / whitespace-only ``query`` short-circuits to ``[]``. Results
+    are joined back to ``bills`` for the card line on the results page,
+    plus the sponsor's display name (when the Member is indexed).
+    """
+    if not query.strip():
+        return []
+    safe = '"' + query.replace('"', '""') + '"'
+    rows = db.execute(
+        """
+        SELECT
+            b.bill_id              AS bill_id,
+            b.congress             AS congress,
+            b.bill_type            AS bill_type,
+            b.bill_number          AS bill_number,
+            b.title                AS title,
+            b.origin_chamber       AS origin_chamber,
+            b.policy_area          AS policy_area,
+            b.latest_action_date   AS latest_action_date,
+            b.sponsor_bioguide_id  AS sponsor_bioguide_id,
+            m.display_name         AS sponsor_display_name
+        FROM bills_fts f
+        JOIN bills b ON b.bill_id = f.bill_id
+        LEFT JOIN members m ON m.bioguide_id = b.sponsor_bioguide_id
+        WHERE f.bills_fts MATCH ?
+        ORDER BY b.latest_action_date DESC
+        LIMIT ?
+        """,
+        (safe, limit),
+    ).fetchall()
+    return [_bill_hit_from_row(r) for r in rows]
+
+
+def list_bills(
+    db: sqlite3.Connection,
+    *,
+    chamber: str | None = None,
+    policy_area: str | None = None,
+    congress: int | None = None,
+    sponsor_bioguide_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[BillHit], int]:
+    """Return ``(rows, total)`` for the browse-only ``/bills`` index.
+
+    Default sort is ``latest_action_date DESC NULLS LAST``. Filters AND
+    together; an absent filter is a wildcard.
+    """
+    where: list[str] = []
+    params: list[Any] = []
+    if chamber in {"House", "Senate"}:
+        where.append("b.origin_chamber = ?")
+        params.append(chamber)
+    if policy_area:
+        where.append("b.policy_area = ?")
+        params.append(policy_area)
+    if congress is not None:
+        where.append("b.congress = ?")
+        params.append(congress)
+    if sponsor_bioguide_id:
+        where.append("b.sponsor_bioguide_id = ?")
+        params.append(sponsor_bioguide_id)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+    (total,) = db.execute(
+        f"SELECT COUNT(*) FROM bills b{where_sql}",
+        params,
+    ).fetchone()
+
+    rows = db.execute(
+        f"""
+        SELECT
+            b.bill_id              AS bill_id,
+            b.congress             AS congress,
+            b.bill_type            AS bill_type,
+            b.bill_number          AS bill_number,
+            b.title                AS title,
+            b.origin_chamber       AS origin_chamber,
+            b.policy_area          AS policy_area,
+            b.latest_action_date   AS latest_action_date,
+            b.sponsor_bioguide_id  AS sponsor_bioguide_id,
+            m.display_name         AS sponsor_display_name
+        FROM bills b
+        LEFT JOIN members m ON m.bioguide_id = b.sponsor_bioguide_id
+        {where_sql}
+        ORDER BY (b.latest_action_date IS NULL), b.latest_action_date DESC,
+                 b.congress DESC, b.bill_number ASC
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    return [_bill_hit_from_row(r) for r in rows], int(total)
+
+
+def get_bill(
+    db: sqlite3.Connection,
+    *,
+    congress: int,
+    bill_type: str,
+    bill_number: int,
+) -> dict[str, Any] | None:
+    """Fetch one Bill row (joined with the sponsor's display name)."""
+    row = db.execute(
+        """
+        SELECT
+            b.*,
+            m.display_name AS sponsor_display_name
+        FROM bills b
+        LEFT JOIN members m ON m.bioguide_id = b.sponsor_bioguide_id
+        WHERE b.congress = ? AND b.bill_type = ? AND b.bill_number = ?
+        """,
+        (congress, bill_type.lower(), bill_number),
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def sponsored_bills_for_member(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+    *,
+    limit: int = 25,
+) -> list[BillHit]:
+    """Return Bills the Member sponsored, newest introduced first.
+
+    Used by the Member profile's "Sponsored bills" cross-link. The
+    ``bills.sponsor_bioguide_id`` column is indexed (idx_bills_sponsor),
+    so this is sub-millisecond at v1 scale.
+    """
+    rows = db.execute(
+        """
+        SELECT
+            b.bill_id              AS bill_id,
+            b.congress             AS congress,
+            b.bill_type            AS bill_type,
+            b.bill_number          AS bill_number,
+            b.title                AS title,
+            b.origin_chamber       AS origin_chamber,
+            b.policy_area          AS policy_area,
+            b.latest_action_date   AS latest_action_date,
+            b.sponsor_bioguide_id  AS sponsor_bioguide_id,
+            NULL                   AS sponsor_display_name
+        FROM bills b
+        WHERE b.sponsor_bioguide_id = ?
+        ORDER BY (b.introduced_date IS NULL), b.introduced_date DESC,
+                 b.congress DESC, b.bill_number ASC
+        LIMIT ?
+        """,
+        (bioguide_id, limit),
+    ).fetchall()
+    return [_bill_hit_from_row(r) for r in rows]
+
+
+def count_sponsored_bills_for_member(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+) -> int:
+    (count,) = db.execute(
+        "SELECT COUNT(*) FROM bills WHERE sponsor_bioguide_id = ?",
+        (bioguide_id,),
+    ).fetchone()
+    return int(count)
+
+
 def list_current_members(
     db: sqlite3.Connection,
     *,
