@@ -1,0 +1,34 @@
+{
+    "houseRollCallVote": {
+        "congress": 119,
+        "identifier": 119120252,
+        "result": "Johnson (LA)",
+        "rollCallNumber": 2,
+        "sessionNumber": 1,
+        "sourceDataURL": "https://clerk.house.gov/evs/2025/roll002.xml",
+        "startDate": "2025-01-03T14:33:00-05:00",
+        "updateDate": "2025-06-24T08:44:27-04:00",
+        "votePartyTotal": [
+            {
+                "candidate": "Jeffries",
+                "total": 215
+            },
+            {
+                "candidate": "Emmer",
+                "total": 1
+            },
+            {
+                "candidate": "Johnson (LA)",
+                "total": 218
+            }
+        ],
+        "voteQuestion": "Election of the Speaker",
+        "voteType": "Yea-and-Nay"
+    },
+    "request": {
+        "congress": "119",
+        "contentType": "application/json",
+        "format": "json",
+        "session": "1"
+    }
+}

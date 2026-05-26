@@ -69,11 +69,16 @@ Companion ADRs created during Phase 2 planning:
 
 ### Phase 3 — Votes
 
-- Stage 0: scrape `/house-vote` + `/senate-vote`. Augment from clerk.house.gov / senate.gov bulk XML for full per-member positions (the API is thin here).
-- Stage 1: `votes`, `vote_positions` (member × vote → yea/nay/present/not-voting) tables
-- Web: `/votes/{chamber}/{congress}/{session}/{roll}` page; Member page gains "Recent votes" + party-line alignment stat; Bill page gains "Vote history".
+Split into two parts during planning, after an API spike revealed `api.congress.gov` has no Senate vote endpoint at all (the roadmap's original "API is thin" phrase turned out to mean "absent for Senate"), and that the House API exposes full per-member positions via `/v3/house-vote/{c}/{s}/{roll}/members` — so the natural seam is **chamber** rather than metadata-vs-positions. Recorded in ADR 0010.
 
-**Done means:** the Member↔Bill loop closes through Votes. Party-line break stats are computable.
+- **[Phase 3a — Votes (House)](./phase-3a-votes-house.md).** House end-to-end from `api.congress.gov`. `votes`, `vote_positions`, and `member_party_unity` SQLite tables. `/votes` index + `/votes/{chamber}/{congress}/{session}/{roll}` profile with full ~430-row position roster. Bill page gains live "Vote history". House Member pages gain "Recent votes" + Party Unity Score (per ADR 0011); Senate Member pages render "(Phase 3b)" placeholders for both sections. `/about/methodology` page documents the score.
+- **[Phase 3b — Votes (Senate)](./phase-3b-votes-senate.md).** Senate end-to-end from senate.gov LIS XML (`https://www.senate.gov/legislative/LIS/roll_call_votes/...`) and the Senate roster XML (`senators_cfm.xml`). Builds a load-time, in-memory `member_full` → Bioguide bridge — no persistent alias table. Populates the same `votes` + `vote_positions` tables. Refines [ADR 0011](../adr/0011-party-unity-score-methodology.md) in place: party-unity is now chamber-scoped, so `member_party_unity` gains a `chamber` column. Removes the `--chambers senate` no-op and changes the default to include both chambers. Senate Member pages get live Recent-votes + party-unity sections.
+
+Companion ADRs created during Phase 3 planning:
+- ADR 0010 — Votes phased by chamber, not metadata-vs-positions — records the split. Committed in 3a.
+- ADR 0011 — Party Unity Score methodology — defines the methodology behind the Member-page party-line stat. Committed in 3a (House-only); amended in place during 3b to add chamber scoping.
+
+**Done means** (combined across 3a + 3b): the Member↔Bill loop closes through Votes. Party-line break stats are computable for both chambers. After 3a alone: House votes are browsable, Bill vote-history is complete for House votes, and House members have full party-unity coverage. After 3b: the same for Senate members and Senate-originated rolls.
 
 ### Phase 4 — Committees + Amendments
 
@@ -127,7 +132,7 @@ Captured so we don't quietly drift into them mid-v1:
 Tracked here so each phase's plan can re-check them:
 
 - **Staleness.** Each ingest source needs a daily refresh cadence wired up before its surface goes public. Phase plans must specify cadence + failure visibility.
-- **Editorial neutrality.** Phase 7's ranking surfaces are the highest-risk; Phase 3's party-line stat is the first place this bites. Define the stat with a named methodology, not a vibe.
+- **Editorial neutrality.** Phase 7's ranking surfaces are the highest-risk; Phase 3a's party-line stat is the first place this bites. Resolved by ADR 0011 (Party Unity Score, modeled on the CQ Almanac methodology) and a `/about/methodology` page surfaced from each Member profile.
 - **Mutability mismatch.** ADR 0006 handles the storage side. UI side: surface `fetched_at` on every Bill/Vote page so staleness is legible.
 - **Viz-vs-utility.** No network graphs in v1. If the urge appears mid-phase, push it to v2.
 
