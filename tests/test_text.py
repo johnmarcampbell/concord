@@ -85,25 +85,113 @@ class TestFetchTextParseErrors:
 
 
 class TestFetchTextNetworkErrors:
-    @pytest.mark.parametrize("status", [404, 410, 500, 502, 503])
-    def test_http_error_raises(self, status: int) -> None:
+    @pytest.mark.parametrize("status", [404, 410])
+    def test_non_retryable_4xx_raises_immediately(self, status: int) -> None:
+        calls = 0
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(status)
+
         with (
-            _client(lambda r: httpx.Response(status)) as client,
+            _client(handler) as client,
             pytest.raises(TextFetchError) as exc,
         ):
-            fetch_text(SAMPLE_URL, client)
+            fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
         assert exc.value.status_code == status
+        assert calls == 1
 
-    def test_transport_error_raises(self) -> None:
+    @pytest.mark.parametrize("status", [500, 502, 503])
+    def test_5xx_retried_then_surfaces(self, status: int) -> None:
+        calls = 0
+
         def handler(_: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(status)
+
+        with (
+            _client(handler) as client,
+            pytest.raises(TextFetchError) as exc,
+        ):
+            fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
+        assert exc.value.status_code == status
+        # 1 initial + MAX_5XX_RETRIES retries
+        assert calls == 6
+
+    def test_5xx_then_success(self) -> None:
+        responses = iter([httpx.Response(503), _ok("<pre>recovered</pre>")])
+        with _client(lambda r: next(responses)) as client:
+            text = fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
+        assert text == "recovered"
+
+    def test_transport_error_retried_then_surfaces(self) -> None:
+        calls = 0
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
             raise httpx.ConnectError("simulated")
 
         with (
             _client(handler) as client,
             pytest.raises(TextFetchError, match="transport error") as exc,
         ):
-            fetch_text(SAMPLE_URL, client)
+            fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
         assert exc.value.status_code is None
+        assert calls == 6
+
+
+class TestFetchTextRateLimit:
+    def test_429_retries_until_success(self) -> None:
+        responses = iter(
+            [
+                httpx.Response(429),
+                httpx.Response(429),
+                _ok("<pre>after backoff</pre>"),
+            ]
+        )
+        slept: list[float] = []
+        with _client(lambda r: next(responses)) as client:
+            text = fetch_text(SAMPLE_URL, client, sleep=slept.append)
+        assert text == "after backoff"
+        # Two 429s -> two sleeps before the success.
+        assert len(slept) == 2
+
+    def test_429_honors_retry_after_header(self) -> None:
+        responses = iter(
+            [
+                httpx.Response(429, headers={"retry-after": "7"}),
+                _ok("<pre>ok</pre>"),
+            ]
+        )
+        slept: list[float] = []
+        with _client(lambda r: next(responses)) as client:
+            fetch_text(SAMPLE_URL, client, sleep=slept.append)
+        assert slept == [7.0]
+
+    def test_429_retry_after_clamped_to_max_backoff(self) -> None:
+        from concord.text import MAX_BACKOFF
+
+        responses = iter(
+            [
+                httpx.Response(429, headers={"retry-after": "99999"}),
+                _ok("<pre>ok</pre>"),
+            ]
+        )
+        slept: list[float] = []
+        with _client(lambda r: next(responses)) as client:
+            fetch_text(SAMPLE_URL, client, sleep=slept.append)
+        assert slept == [MAX_BACKOFF]
+
+    def test_429_does_not_count_against_5xx_budget(self) -> None:
+        # Many 429s followed by success: must not exhaust the 5xx retry budget.
+        sequence = [httpx.Response(429)] * 20 + [_ok("<pre>finally</pre>")]
+        responses = iter(sequence)
+        with _client(lambda r: next(responses)) as client:
+            text = fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
+        assert text == "finally"
 
 
 # -- redirect handling --------------------------------------------------------
