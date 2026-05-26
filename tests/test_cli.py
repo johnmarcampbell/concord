@@ -1015,3 +1015,30 @@ class TestProgress:
         # Exit calls commit -> newline.
         assert s.getvalue().endswith("\n")
         assert "only update" in s.getvalue()
+
+
+# -- `concord load members` --------------------------------------------------
+
+
+class TestLoadMembersCommand:
+    def test_missing_jsonl_is_a_no_op(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        """`load members` with no input file is informational, not an error."""
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "load",
+                "members",
+                "--storage",
+                str(tmp_path / "missing.jsonl"),
+                "--db",
+                str(tmp_path / "out.db"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plain = _strip(result.output)
+        assert "No input file" in plain
+        assert "scrape members" in plain
