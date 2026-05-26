@@ -1,0 +1,61 @@
+{
+    "houseRollCallVote": {
+        "amendmentAuthor": "Norman of South Carolina Part A Amendment No. 13",
+        "amendmentNumber": "85",
+        "amendmentType": "HAMDT",
+        "congress": 119,
+        "identifier": 11912025245,
+        "legislationNumber": "3838",
+        "legislationType": "HR",
+        "legislationUrl": "https://www.congress.gov/amendment/119/house-amendment/85",
+        "result": "Agreed to",
+        "rollCallNumber": 245,
+        "sessionNumber": 1,
+        "sourceDataURL": "https://clerk.house.gov/evs/2025/roll245.xml",
+        "startDate": "2025-09-10T16:50:00-04:00",
+        "updateDate": "2025-09-11T16:38:20-04:00",
+        "votePartyTotal": [
+            {
+                "nayTotal": 1,
+                "notVotingTotal": 3,
+                "party": {
+                    "name": "Republican",
+                    "type": "R"
+                },
+                "presentTotal": 0,
+                "voteParty": "R",
+                "yeaTotal": 217
+            },
+            {
+                "nayTotal": 209,
+                "notVotingTotal": 3,
+                "party": {
+                    "name": "Democrat",
+                    "type": "D"
+                },
+                "presentTotal": 0,
+                "voteParty": "D",
+                "yeaTotal": 4
+            },
+            {
+                "nayTotal": 0,
+                "notVotingTotal": 0,
+                "party": {
+                    "name": "Independent",
+                    "type": "I"
+                },
+                "presentTotal": 0,
+                "voteParty": "I",
+                "yeaTotal": 0
+            }
+        ],
+        "voteQuestion": "On Agreeing to the Amendment",
+        "voteType": "Recorded Vote"
+    },
+    "request": {
+        "congress": "119",
+        "contentType": "application/json",
+        "format": "json",
+        "session": "1"
+    }
+}
