@@ -1,6 +1,6 @@
 # Concord
 
-A pipeline for collecting the daily [Congressional Record](https://www.congress.gov/congressional-record) via [api.congress.gov](https://api.congress.gov/). For any date range, produces one record per proceeding — full text plus metadata — as a local JSON Lines file.
+A pipeline for collecting U.S. Congress data — currently the daily [Congressional Record](https://www.congress.gov/congressional-record) (proceedings) and the directory of [Members](https://www.congress.gov/members) — via [api.congress.gov](https://api.congress.gov/). Stores everything locally as JSON Lines + SQLite, with a FastAPI search demo on top.
 
 ## Quick start
 
@@ -12,28 +12,63 @@ cd concord
 uv sync
 
 export CONGRESS_API_KEY=...  # free key from https://api.data.gov/signup/
-uv run concord pull --from 2026-05-22 --to 2026-05-22
+export OPENAI_API_KEY=...    # required for proceedings indexing (semantic search)
+
+# Proceedings — one day's articles, end-to-end:
+uv run concord run proceedings --from 2026-05-22 --to 2026-05-22
+
+# Members — current Congress, end-to-end:
+uv run concord run members --congresses 119
+
+# Serve the web demo:
+uv run concord serve
 ```
 
-Output:
+Output for `run proceedings`:
 
 ```
-Wrote 20 new proceedings to proceedings.jsonl (skipped 0 already present)
+→ Stage 0: scrape
+Wrote 20 new proceedings to data/proceedings.jsonl (skipped 0 already present)
+→ Stage 1: load
+Loaded 20 new proceedings into data/proceedings.db (skipped 0 already present)
+→ Stage 2: index
+Indexed: chunked 20 new proceedings (98 new chunks, …); embedded 98 new chunks
+✓ Done.
 ```
 
-Re-running the same command is a no-op — already-pulled articles are detected by their granule ID and skipped without re-fetching their text. This is the resume contract: kill the process at any point and the next run picks up only what's missing.
+Re-running any command is a no-op — already-stored records are detected by their natural key (`granule_id` for proceedings, `bioguide_id` for members) and skipped. Kill the process at any point and the next run resumes.
 
 ## Getting an API key
 
-`api.congress.gov` requires a free key from api.data.gov. Sign up at https://api.data.gov/signup/ — the key arrives by email immediately. Rate limit is 5,000 requests per hour, which is more than enough for any practical backfill (a full ~30-year pull is roughly 6,000 API calls).
+`api.congress.gov` requires a free key from api.data.gov. Sign up at https://api.data.gov/signup/ — the key arrives by email immediately. Rate limit is 5,000 requests per hour.
 
-Pass the key via the `CONGRESS_API_KEY` environment variable. There is no `--api-key` flag — keys belong in your environment, not your shell history.
+`OPENAI_API_KEY` is only needed for `concord index proceedings` (chunk embeddings) and `concord serve` (query embedding). Member name search uses FTS5 only, no embeddings.
 
-## What gets produced
+Pass keys via environment variables; there are no `--api-key` flags.
 
-Concord writes one `Proceeding` per line to a `.jsonl` file. Each record carries the issue-level metadata, the article-level metadata, the granule ID (a stable identifier from govinfo), the plain-text body, and the fetch timestamp.
+## CLI
 
-Fields:
+Concord follows a `<stage> <entity>` shape — every entity type goes through Stage 0 (scrape), Stage 1 (load), Stage 2 (index), and there's a `run` that chains all three.
+
+| Command | What it does |
+| ------- | ------------ |
+| `concord scrape proceedings --from YYYY-MM-DD --to YYYY-MM-DD` | Stage 0 — fetch articles, write JSONL. |
+| `concord load proceedings`   | Stage 1 — mirror the JSONL into the `proceedings` SQLite table. |
+| `concord index proceedings`  | Stage 2 — chunk + embed every proceeding into FTS5 and `sqlite-vec`. |
+| `concord run proceedings --from … --to …` | All three back-to-back. |
+| `concord scrape members --congresses 117,118,119` | Stage 0 — snapshot members of those Congresses. |
+| `concord load members`   | Stage 1 — project the latest snapshot per Bioguide ID into `members` + `member_terms`. |
+| `concord index members`  | Stage 2 — populate the `members_fts` FTS5 table. |
+| `concord run members --congresses …` | All three back-to-back. |
+| `concord serve` | Run the FastAPI search demo via uvicorn. |
+
+Every command supports `--help` for its full flag list. Stage commands accept `--progress / --no-progress` (progress is on by default and overwrites itself in place on a TTY) and store files default to `./data/`.
+
+## Entities
+
+### Proceedings
+
+One `Proceeding` record per article in the daily Congressional Record. Written one-per-line to `data/proceedings.jsonl`.
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
@@ -52,48 +87,44 @@ Fields:
 | `text` | string | The full plain text of the proceeding. |
 | `fetched_at` | datetime | When Concord retrieved this article. |
 
-A sample line, formatted for readability (on disk it's one line):
+### Members
+
+A `Member` is a person who has served in Congress, identified by Bioguide ID. Each fetch appends a snapshot envelope to `data/members.jsonl` (per [ADR 0006](docs/adr/0006-snapshot-on-fetch-for-mutable-entities.md)):
 
 ```json
 {
-  "issue_date": "2026-05-22",
-  "congress": 119,
-  "session": 2,
-  "volume": 172,
-  "issue_number": 88,
-  "update_date": "2026-05-23T06:44:22Z",
-  "section": "Daily Digest",
-  "title": "Daily Digest/Next Meeting of the SENATE + Next Meeting of the HOUSE OF REPRESENTATIVES + Other End Matter; Congressional Record Vol. 172, No. 88",
-  "start_page": "D551",
-  "end_page": "D552",
-  "text_url": "https://www.congress.gov/119/crec/2026/05/22/172/88/modified/CREC-2026-05-22-pt1-PgD551-6.htm",
-  "pdf_url": "https://www.congress.gov/119/crec/2026/05/22/172/88/CREC-2026-05-22-pt1-PgD551-6.pdf",
-  "granule_id": "CREC-2026-05-22-pt1-PgD551-6",
-  "text": "[Daily Digest]\n[Pages D551-D552]\nFrom the Congressional Record Online through the Government Publishing Office [www.gpo.gov]\n\n…\n\nNext Meeting of the SENATE\n8 a.m., Tuesday, May 26\n…",
-  "fetched_at": "2026-05-24T21:42:25.525669Z"
+  "fetched_at": "2026-05-25T14:02:11+00:00",
+  "key": {"bioguide_id": "S000033"},
+  "payload": { "...raw /v3/member payload..." }
 }
 ```
 
-## CLI
+The Stage 1 loader keeps the latest snapshot per Bioguide ID and projects it into two SQLite tables:
 
-```
-concord pull --from YYYY-MM-DD --to YYYY-MM-DD [--storage PATH] [--limit N]
-```
+- **`members`** — identity fields that don't change across a career (name, birth year, photo URL).
+- **`member_terms`** — one row per `(bioguide_id, congress, chamber)`. Carries `party`, `state`, `district` (House only), and `start_date`/`end_date`. A Member who switched parties or chambers between Congresses has multiple Term rows with the historical values intact.
 
-| Flag | Default | Description |
-| ---- | ------- | ----------- |
-| `--from` | _required_ | Inclusive start date. |
-| `--to` | _required_ | Inclusive end date. |
-| `--storage` | `./proceedings.jsonl` | Output JSONL path. Parent directories are created on first write. |
-| `--limit` | _none_ | Cap on new writes. Useful for smoke tests (`--limit 1`). |
+Member name search uses an FTS5 index (`members_fts`) over the direct and inverted name forms. No embeddings — BM25 + porter stemming is the right tool for short proper nouns.
 
-`concord pull --help` shows the same information.
+See [CONTEXT.md](CONTEXT.md) for the full vocabulary and [docs/plans/phase-1-members.md](docs/plans/phase-1-members.md) for the design rationale.
+
+## Web demo (`concord serve`)
+
+Single-process FastAPI + Jinja2 + HTMX, reading the same SQLite file the pipeline writes. Routes:
+
+- `GET /` — landing page with a search box.
+- `GET /search?q=…` — federated search. Renders Members and Proceedings in two grouped sections; checkboxes above the results suppress either independently.
+- `GET /members` — browse all currently-serving Members with chamber/party filters.
+- `GET /members/{bioguide_id}` — Member profile: photo, current role, biography, term history.
+- `GET /proceedings/{granule_id}` — full text of one proceeding.
+
+By default `concord serve` binds to `127.0.0.1:8000` for use behind a reverse proxy.
 
 ## Backfill
 
 The Daily Congressional Record is available via the API from **1995 onward**. (Older material lives under the Bound Congressional Record endpoint with a multi-year publication lag, and is deliberately out of scope for the current rebuild — see [docs/rebuild-plan.md](docs/rebuild-plan.md#out-of-scope).)
 
-A full 1995-to-present backfill is roughly:
+A full 1995-to-present proceedings backfill is roughly:
 - **~5,800 issues** to enumerate (≈24 paginated list calls at the API's 250-per-page max)
 - **~5,800 articles-list calls**, one per in-range issue
 - **~290,000 text fetches** to congress.gov (these don't count against the API rate limit)
@@ -103,29 +134,44 @@ In practice that's several hours, network-bound. Recommended pattern:
 ```sh
 tmux new -s concord
 export CONGRESS_API_KEY=...
-uv run concord pull --from 1995-01-01 --to 2026-12-31 --storage ./record.jsonl
+uv run concord scrape proceedings --from 1995-01-01 --to 2026-12-31
 # detach: Ctrl+b d
 ```
 
 The JSONL file is safe to `tail` or `wc -l` while the pull is in progress. Killing the process (Ctrl+C, OOM, machine reboot) loses at worst the single in-flight record; the next invocation resumes via the dedup index built from the file on disk.
 
+Members are much smaller — the last three Congresses fit in a single `concord run members --congresses 117,118,119` in under a minute.
+
 ## Architecture
 
-API client → text fetcher → storage. Each is a small module with a tight surface:
+Stage 0 (scrape) and Stage 1 (load) are parallel per entity type; Stage 2 (index) and the web layer are shared. See [ADR 0007](docs/adr/0007-parallel-pipelines-per-entity.md) for the rationale.
 
 ```
 src/concord/
-  api.py           # typed wrapper for api.congress.gov
-  text.py          # fetch_text(url, client) — pulls plain text from <pre>-wrapped HTML
-  models.py        # Pydantic: Issue, Article, Proceeding
-  pipeline.py      # pull(start, end, *, client, fetch, storage, limit) -> PullResult
+  api.py               # typed wrapper for api.congress.gov
+  text.py              # fetch_text(url, client) — plain text from <pre>-wrapped HTML
+  models.py            # Pydantic: Issue, Article, Proceeding, Member, Term, MemberSnapshot
+  chunking.py          # chunk(text) -> Chunk[] for Stage 2 indexing
+  embedding.py         # OpenAI Embedder wrapper
+  scraper/
+    proceedings.py     # Stage 0 — congressional record articles
+    members.py         # Stage 0 — /member/congress/{n}
+  pipeline/
+    load_proceedings.py    # Stage 1 — JSONL -> proceedings table
+    load_members.py        # Stage 1 — snapshot JSONL -> members + member_terms
+    index_proceedings.py   # Stage 2 — chunks + FTS5 + vector embeddings
+    index_members.py       # Stage 2 — members_fts
   storage/
-    base.py        # Storage Protocol
-    jsonl.py       # default backend; future Mongo backend will plug in here
-  cli.py           # typer entry point
+    base.py            # Storage Protocol
+    jsonl.py, mongo.py # raw-store backends for Proceedings
+    sqlite.py          # derived store — all entities, all indexes
+  web/
+    app.py, search.py  # FastAPI routes + federated query layer
+    templates/         # Jinja2 + HTMX
+  cli.py               # typer entry point
 ```
 
-See [docs/rebuild-plan.md](docs/rebuild-plan.md) for the rebuild rationale and the full issue roadmap (the original Scrapy implementation was retired in May 2026).
+See [docs/rebuild-plan.md](docs/rebuild-plan.md) for the rebuild rationale, [docs/plans/](docs/plans/) for per-phase plans, and [docs/adr/](docs/adr/) for the design decisions.
 
 ## Development
 
