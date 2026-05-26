@@ -28,10 +28,10 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import NamedTuple
 
-from ..api import Client
-from ..models import Issue, Proceeding
-from ..storage.base import Storage
-from ..text import TextFetchError
+from concord.api import Client
+from concord.models import Issue, Proceeding
+from concord.storage.base import Storage
+from concord.text import TextFetchError
 
 _log = logging.getLogger("concord.pipeline")
 
@@ -69,7 +69,7 @@ class ProgressEvent(NamedTuple):
     total_failed: int
 
 
-def pull(
+def pull(  # noqa: C901 — pipeline orchestrator
     start: date,
     end: date,
     *,

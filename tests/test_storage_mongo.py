@@ -7,6 +7,7 @@ without a real Mongo server.
 from datetime import UTC, datetime
 
 import mongomock
+import pytest
 
 from concord.models import Article, Issue, Proceeding
 from concord.storage import MongoStorage, Storage
@@ -160,9 +161,5 @@ class TestErrorPropagation:
                 raise RuntimeError("disk full")
 
         storage = MongoStorage(collection=_BrokenCollection())
-        try:
+        with pytest.raises(RuntimeError, match="disk full"):
             storage.write(_sample_proceeding())
-        except RuntimeError as exc:
-            assert "disk full" in str(exc)
-        else:
-            raise AssertionError("expected RuntimeError to propagate")

@@ -35,7 +35,7 @@ FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 
 class TestNormalization:
     @pytest.mark.parametrize(
-        "input_, expected",
+        ("input_", "expected"),
         [
             ("Vermont", "VT"),
             ("New York", "NY"),

@@ -33,6 +33,8 @@ from html.parser import HTMLParser
 
 import httpx
 
+from concord.api import HTTP_SERVER_ERROR_MAX, HTTP_SERVER_ERROR_MIN, HTTP_TOO_MANY_REQUESTS
+
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
 #: silently stall the pipeline.
@@ -73,7 +75,7 @@ class _PreExtractor(HTMLParser):
         self._depth = 0
         self._chunks: list[str] = []
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 — HTMLParser override
         if tag == "pre":
             self._depth += 1
 
@@ -143,7 +145,7 @@ def _get_with_retry(
 
         status = response.status_code
 
-        if status == 429:
+        if status == HTTP_TOO_MANY_REQUESTS:
             delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
             _log.warning("429 from %s; backing off %.1fs before retry", url, delay)
             sleep(delay)
@@ -151,7 +153,7 @@ def _get_with_retry(
             # is a wait condition, not a fault.
             continue
 
-        if 500 <= status < 600:
+        if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
             if transient_attempts >= MAX_5XX_RETRIES:
                 raise TextFetchError(
                     f"{status} {response.reason_phrase} fetching {url} "

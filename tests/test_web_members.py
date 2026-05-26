@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
 from concord.models import Member, Term
+from concord.pipeline.index_members import index as index_members
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app
 
@@ -105,8 +106,6 @@ def _seed_members(storage: SqliteStorage) -> None:
     )
 
     # Populate the FTS index the same way `concord index members` would.
-    from concord.pipeline.index_members import index as index_members
-
     storage.close()
     index_members(db_path=storage.path)
 

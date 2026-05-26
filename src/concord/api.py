@@ -64,6 +64,11 @@ MAX_5XX_RETRIES = 5
 #: Exponential schedule for transient backoff: 1s, 2s, 4s, 8s, 16s (capped).
 _BACKOFF_BASE = 2.0
 
+#: HTTP status codes we treat specially.
+HTTP_TOO_MANY_REQUESTS = 429
+HTTP_SERVER_ERROR_MIN = 500
+HTTP_SERVER_ERROR_MAX = 600  # exclusive upper bound
+
 _log = logging.getLogger("concord.api")
 
 
@@ -280,7 +285,7 @@ class Client:
 
             status = response.status_code
 
-            if status == 429:
+            if status == HTTP_TOO_MANY_REQUESTS:
                 delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
                 _log.warning("429 from %s; backing off %.1fs before retry", path, delay)
                 self._sleep(delay)
@@ -288,7 +293,7 @@ class Client:
                 # is a wait condition, not a fault. We could be 429'd for hours.
                 continue
 
-            if 500 <= status < 600:
+            if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
                 if transient_attempts >= MAX_5XX_RETRIES:
                     raise ApiError(
                         f"{status} {response.reason_phrase} from {path} "

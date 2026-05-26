@@ -18,9 +18,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ..models import parse_bill
-from ..scraper.bills import BILLS_JSONL_NAME
-from ..storage.sqlite import SqliteStorage
+from concord.models import parse_bill
+from concord.scraper.bills import BILLS_JSONL_NAME
+from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_bills")
 

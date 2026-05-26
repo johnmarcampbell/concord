@@ -34,8 +34,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ..models import Term, parse_member_identity, parse_member_term
-from ..storage.sqlite import SqliteStorage
+from concord.models import Term, parse_member_identity, parse_member_term
+from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_members")
 
@@ -49,7 +49,7 @@ class LoadStats(NamedTuple):
     malformed: int
 
 
-def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
+def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR0915 — pipeline orchestrator
     """Load the JSONL snapshot stream into SQLite.
 
     Returns the count of Members and Terms written plus diagnostics.

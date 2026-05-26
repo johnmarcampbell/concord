@@ -13,7 +13,7 @@ ability to resume the whole thing.
 import json
 from pathlib import Path
 
-from ..models import Proceeding
+from concord.models import Proceeding
 
 
 class JsonlStorage:

@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from concord.text import TextFetchError, fetch_text
+from concord.text import MAX_BACKOFF, TextFetchError, fetch_text
 
 
 def _client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.Client:
@@ -172,8 +172,6 @@ class TestFetchTextRateLimit:
         assert slept == [7.0]
 
     def test_429_retry_after_clamped_to_max_backoff(self) -> None:
-        from concord.text import MAX_BACKOFF
-
         responses = iter(
             [
                 httpx.Response(429, headers={"retry-after": "99999"}),

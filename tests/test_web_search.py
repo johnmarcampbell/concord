@@ -324,7 +324,8 @@ class TestSnippets:
             ("CREC-2026-05-22-pt1-PgS001-1",),
         ).fetchone()[0]
         snip = keyword_snippet(seeded_db.connection, chunk_id, "banking")
-        assert "<mark>" in snip and "</mark>" in snip
+        assert "<mark>" in snip
+        assert "</mark>" in snip
         assert "banking" in snip.lower()
 
     def test_keyword_snippet_empty_for_non_matching_chunk(self, seeded_db: SqliteStorage) -> None:

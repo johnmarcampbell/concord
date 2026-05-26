@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from ..api import Client
+from concord.api import Client
 
 #: Default Bill type codes scraped when the caller doesn't pass
 #: ``bill_types``. Order matches the API documentation; chamber-grouped

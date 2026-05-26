@@ -6,18 +6,27 @@ itself is covered by tests/test_pipeline.py — here we stub it out and verify
 the CLI does the right thing around it.
 """
 
+import io
+import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+import mongomock
+import openai
 import pytest
+import uvicorn
 from typer.testing import CliRunner
 
 import concord.cli as cli_module
 import concord.scraper.proceedings as scraper_proceedings_module
-from concord.api import ENV_API_KEY, ApiError
+from concord.api import ENV_API_KEY, ApiError, Client
+from concord.models import Article, Issue, Proceeding
+from concord.pipeline.index_proceedings import IndexResult
 from concord.pipeline.load_proceedings import PullResult
+from concord.storage import MongoStorage, SqliteStorage
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -336,15 +345,11 @@ class TestMongoBackend:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """With --mongo-uri, the CLI calls MongoStorage.from_uri instead of JsonlStorage."""
-        from concord.storage import MongoStorage
-
         calls: list[dict[str, Any]] = []
 
         def fake_from_uri(uri: str, *, db: str, collection: str) -> MongoStorage:
             calls.append({"uri": uri, "db": db, "collection": collection})
             # Return a stand-in that satisfies the Storage protocol.
-            import mongomock
-
             return MongoStorage(collection=mongomock.MongoClient()[db][collection])
 
         monkeypatch.setattr(cli_module.MongoStorage, "from_uri", staticmethod(fake_from_uri))
@@ -451,8 +456,6 @@ class TestLoadCommand:
         assert str(db) in plain
 
         # Verify the rows actually landed.
-        from concord.storage import SqliteStorage
-
         with SqliteStorage(db) as storage:
             assert len(storage) == 2
 
@@ -498,8 +501,6 @@ class TestLoadCommand:
         assert result.exit_code == 0, result.output
         plain = _strip(result.output)
         assert "Loaded 2 new proceedings" in plain
-
-        from concord.storage import SqliteStorage
 
         with SqliteStorage(db) as storage:
             assert len(storage) == 2
@@ -579,11 +580,6 @@ class TestLoadCommand:
 
 def _seed_db_for_index(db_path: Path, granule_ids: list[str]) -> None:
     """Pre-populate a SQLite DB with proceedings so `concord index` has work to do."""
-    from datetime import UTC, datetime
-
-    from concord.models import Article, Issue, Proceeding
-    from concord.storage import SqliteStorage
-
     with SqliteStorage(db_path) as storage:
         for gid in granule_ids:
             text_url = f"https://www.congress.gov/119/crec/2026/05/22/172/88/modified/{gid}.htm"
@@ -684,8 +680,6 @@ class TestIndexCommand:
         _seed_db_for_index(db, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
 
         # Patch openai.OpenAI inside the CLI to return our fake.
-        import openai
-
         monkeypatch.setattr(openai, "OpenAI", lambda *a, **kw: _FakeOpenAIClient())
 
         result = runner.invoke(cli_module.app, ["index", "proceedings", "--db", str(db)])
@@ -696,8 +690,6 @@ class TestIndexCommand:
         assert "embedded" in plain
 
         # Verify state on disk: chunks_vec has rows.
-        from concord.storage import SqliteStorage
-
         with SqliteStorage(db) as storage:
             count = storage.connection.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0]
             assert count > 0
@@ -733,8 +725,6 @@ class TestServeCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from concord.storage import SqliteStorage
-
         monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
         db = tmp_path / "out.db"
         SqliteStorage(db).close()
@@ -751,8 +741,6 @@ class TestServeCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify the CLI's wiring up to ``uvicorn.run`` without actually starting a server."""
-        from concord.storage import SqliteStorage
-
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
         db = tmp_path / "out.db"
         SqliteStorage(db).close()
@@ -760,8 +748,6 @@ class TestServeCommand:
         captured: dict[str, Any] = {}
 
         # Stub uvicorn so the test doesn't actually bind a port.
-        import uvicorn
-
         def fake_run(app: Any, **kwargs: Any) -> None:
             captured["app"] = app
             captured["kwargs"] = kwargs
@@ -770,10 +756,8 @@ class TestServeCommand:
 
         # Stub openai.OpenAI so the embedder construction inside create_app
         # doesn't need a real API key.
-        import openai
-
         class _Fake:
-            class embeddings:
+            class embeddings:  # noqa: N801 — mirrors openai SDK attribute name
                 @staticmethod
                 def create(*, model: str, input: list[str]) -> Any:
                     raise AssertionError("should not be called during serve startup")
@@ -782,10 +766,10 @@ class TestServeCommand:
 
         result = runner.invoke(
             cli_module.app,
-            ["serve", "--db", str(db), "--host", "0.0.0.0", "--port", "8123"],
+            ["serve", "--db", str(db), "--host", "0.0.0.0", "--port", "8123"],  # noqa: S104 — verifying CLI passes --host through
         )
         assert result.exit_code == 0, result.output
-        assert captured["kwargs"]["host"] == "0.0.0.0"
+        assert captured["kwargs"]["host"] == "0.0.0.0"  # noqa: S104 — asserting wiring, not deploying
         assert captured["kwargs"]["port"] == 8123
         assert captured["kwargs"]["reload"] is False
 
@@ -801,8 +785,6 @@ class TestDefaults:
         stub_pull: list[dict[str, Any]],
         tmp_path: Path,
     ) -> None:
-        from datetime import UTC, datetime
-
         result = runner.invoke(
             cli_module.app,
             [
@@ -839,9 +821,6 @@ class TestRunCommand:
         tmp_path: Path,
     ) -> None:
         """`concord run` should call _run_pull, _run_load, _run_index in order."""
-        from concord.pipeline.index_proceedings import IndexResult
-        from concord.pipeline.load_proceedings import PullResult
-
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
         calls: list[str] = []
 
@@ -885,7 +864,9 @@ class TestRunCommand:
         assert result.exit_code == 0, result.output
         assert calls == ["pull", "load", "index"]
         plain = _strip(result.output)
-        assert "Stage 0" in plain and "Stage 1" in plain and "Stage 2" in plain
+        assert "Stage 0" in plain
+        assert "Stage 1" in plain
+        assert "Stage 2" in plain
 
     def test_run_fails_fast_on_missing_congress_key(
         self,
@@ -941,8 +922,6 @@ class _FakeTTY:
     """StringIO that pretends to be a TTY for isatty()."""
 
     def __init__(self) -> None:
-        import io
-
         self._buf = io.StringIO()
         self.write = self._buf.write
         self.flush = self._buf.flush
@@ -958,8 +937,6 @@ class _FakeNonTTY:
     """StringIO that pretends to be a pipe / file."""
 
     def __init__(self) -> None:
-        import io
-
         self._buf = io.StringIO()
         self.write = self._buf.write
         self.flush = self._buf.flush
@@ -1048,18 +1025,12 @@ class TestLoadMembersCommand:
 
 
 def _bills_fixture(name: str) -> dict[str, Any]:
-    import json as _json
-
     here = Path(__file__).parent / "fixtures" / "api" / "bills"
-    return _json.loads((here / name).read_text())
+    return json.loads((here / name).read_text())
 
 
 def _bills_handler(call_log: list[str] | None = None):
     """Return an httpx handler that answers list + detail for the bills fixtures."""
-    import json as _json
-
-    import httpx
-
     list_payload = _bills_fixture("list_hr_119.json")
     details = {
         1: _bills_fixture("detail_119_hr_1.json"),
@@ -1079,7 +1050,7 @@ def _bills_handler(call_log: list[str] | None = None):
             return httpx.Response(404)
         return httpx.Response(
             200,
-            content=_json.dumps(body),
+            content=json.dumps(body),
             headers={"content-type": "application/json"},
         )
 
@@ -1124,22 +1095,18 @@ class TestScrapeBillsCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import httpx
-
-        from concord.api import Client as ApiClient
-
         handler = _bills_handler()
 
         # Monkey-patch the Client to inject the mock transport while still
         # exercising the real CLI wiring.
-        original_init = ApiClient.__init__
+        original_init = Client.__init__
 
         def patched_init(self, **kwargs):
             kwargs.setdefault("transport", httpx.MockTransport(handler))
             kwargs.setdefault("sleep", lambda _s: None)
             original_init(self, **kwargs)
 
-        monkeypatch.setattr(ApiClient, "__init__", patched_init)
+        monkeypatch.setattr(Client, "__init__", patched_init)
 
         result = runner.invoke(
             cli_module.app,

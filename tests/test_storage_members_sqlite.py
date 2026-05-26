@@ -7,6 +7,7 @@ contract that keeps the SQL state consistent with the latest snapshot.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -16,14 +17,14 @@ from concord.storage.sqlite import SqliteStorage
 
 
 def _member(bioguide_id: str = "O000172", **overrides: object) -> Member:
-    defaults = dict(
-        bioguide_id=bioguide_id,
-        first_name="Alexandria",
-        last_name="Ocasio-Cortez",
-        display_name="Alexandria Ocasio-Cortez",
-        photo_url="https://example.invalid/o000172.jpg",
-        birth_year=1989,
-    )
+    defaults: dict[str, object] = {
+        "bioguide_id": bioguide_id,
+        "first_name": "Alexandria",
+        "last_name": "Ocasio-Cortez",
+        "display_name": "Alexandria Ocasio-Cortez",
+        "photo_url": "https://example.invalid/o000172.jpg",
+        "birth_year": 1989,
+    }
     defaults.update(overrides)
     return Member(**defaults)  # type: ignore[arg-type]
 
@@ -129,8 +130,6 @@ class TestUpsertMember:
         Bypasses the pydantic validator (which would normalize ``"foo"``)
         by writing the bad value via raw SQL.
         """
-        import sqlite3
-
         storage.connection.execute(
             "INSERT INTO members (bioguide_id, first_name, last_name, display_name, fetched_at) "
             "VALUES (?, ?, ?, ?, ?)",

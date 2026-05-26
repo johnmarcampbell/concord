@@ -253,12 +253,15 @@ _STATE_NAME_TO_CODE = {
 }
 
 
+_STATE_CODE_LEN = 2
+
+
 def normalize_state(value: str | None) -> str | None:
     """Map the API's full state name to a two-letter code; pass through codes."""
     if value is None:
         return None
     stripped = value.strip()
-    if len(stripped) == 2 and stripped.isupper():
+    if len(stripped) == _STATE_CODE_LEN and stripped.isupper():
         return stripped
     return _STATE_NAME_TO_CODE.get(stripped.lower(), stripped)
 
@@ -388,7 +391,7 @@ def parse_member_identity(payload: dict[str, Any]) -> Member:
     )
 
 
-def parse_member_term(payload: dict[str, Any], *, congress: int) -> Term | None:
+def parse_member_term(payload: dict[str, Any], *, congress: int) -> Term | None:  # noqa: C901 — one branch per optional payload field
     """Project a raw ``/member`` payload + queried Congress into one :class:`Term`.
 
     The ``/v3/member/congress/{n}`` list endpoint omits ``congress`` from
