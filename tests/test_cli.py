@@ -913,3 +913,86 @@ class TestRunCommand:
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
         assert cli_module.ENV_OPENAI_API_KEY in plain
+
+
+# -- Progress helper ---------------------------------------------------------
+
+
+class _FakeTTY:
+    """StringIO that pretends to be a TTY for isatty()."""
+
+    def __init__(self) -> None:
+        import io
+
+        self._buf = io.StringIO()
+        self.write = self._buf.write
+        self.flush = self._buf.flush
+
+    def isatty(self) -> bool:
+        return True
+
+    def getvalue(self) -> str:
+        return self._buf.getvalue()
+
+
+class _FakeNonTTY:
+    """StringIO that pretends to be a pipe / file."""
+
+    def __init__(self) -> None:
+        import io
+
+        self._buf = io.StringIO()
+        self.write = self._buf.write
+        self.flush = self._buf.flush
+
+    def isatty(self) -> bool:
+        return False
+
+    def getvalue(self) -> str:
+        return self._buf.getvalue()
+
+
+class TestProgress:
+    def test_tty_overwrites_with_carriage_return(self) -> None:
+        s = _FakeTTY()
+        p = cli_module.Progress(enabled=True, stream=s)
+        p.update("first")
+        p.update("second")
+        p.commit()
+        # Both updates start with \r and clear-to-EOL; commit writes a newline.
+        out = s.getvalue()
+        assert out == "\r\x1b[Kfirst\r\x1b[Ksecond\n"
+
+    def test_non_tty_falls_back_to_per_line(self) -> None:
+        s = _FakeNonTTY()
+        p = cli_module.Progress(enabled=True, stream=s)
+        p.update("first")
+        p.update("second")
+        p.commit()
+        # No carriage returns; one line per update; commit is a no-op
+        # because there was no in-place line open.
+        assert s.getvalue() == "first\nsecond\n"
+
+    def test_disabled_writes_nothing(self) -> None:
+        s = _FakeTTY()
+        p = cli_module.Progress(enabled=False, stream=s)
+        p.update("first")
+        p.update("second")
+        p.commit()
+        assert s.getvalue() == ""
+
+    def test_commit_only_emits_newline_when_inplace_line_open(self) -> None:
+        # On a non-TTY, commit shouldn't emit a trailing newline because
+        # there's no in-place line that needs ending.
+        s = _FakeNonTTY()
+        p = cli_module.Progress(enabled=True, stream=s)
+        p.commit()  # no prior update — must be a no-op
+        assert s.getvalue() == ""
+
+    def test_context_manager_commits_on_exit(self) -> None:
+        s = _FakeTTY()
+        with cli_module.Progress(enabled=True, stream=s) as p:
+            p.update("only update")
+        # Exit calls commit -> newline.
+        assert s.getvalue().endswith("\n")
+        assert "only update" in s.getvalue()

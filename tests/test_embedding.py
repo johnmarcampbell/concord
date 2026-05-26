@@ -1,5 +1,6 @@
 """Tests for the OpenAI embedding wrapper."""
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -122,3 +123,142 @@ class TestErrors:
         client.embeddings.canned_response = [[0.0] * EMBEDDING_DIM]
         with pytest.raises(EmbeddingError, match="expected"):
             embedder.embed(["a", "b", "c"])
+
+
+# -- rate-limit retry ----------------------------------------------------------
+
+
+def _make_rate_limit_error(
+    message: str = "Rate limit reached. Please try again in 500ms.",
+    *,
+    retry_after_ms: str | None = None,
+    retry_after: str | None = None,
+) -> Exception:
+    """Build an exception that looks enough like ``openai.RateLimitError``.
+
+    We don't import ``openai`` in tests; the Embedder falls back to matching
+    by class name when openai isn't loaded. The exception carries a
+    ``.response.headers`` attribute, mirroring the SDK's real shape.
+    """
+
+    class _Headers(dict[str, str]):
+        pass
+
+    class _Response:
+        def __init__(self) -> None:
+            self.headers = _Headers()
+            if retry_after_ms is not None:
+                self.headers["retry-after-ms"] = retry_after_ms
+            if retry_after is not None:
+                self.headers["retry-after"] = retry_after
+
+    class RateLimitError(Exception):
+        def __init__(self, msg: str) -> None:
+            super().__init__(msg)
+            self.response = _Response()
+
+    return RateLimitError(message)
+
+
+class _RateLimitedThenOk:
+    """First N calls raise rate-limit; subsequent calls succeed."""
+
+    def __init__(self, *, fail_count: int, exc_factory: Callable[[], Exception]) -> None:
+        self._remaining = fail_count
+        self._exc_factory = exc_factory
+        self.calls: list[dict[str, Any]] = []
+        self.waits: list[float] = []
+
+    def create(self, *, model: str, input: list[str]) -> _FakeResponse:
+        self.calls.append({"model": model, "input": list(input)})
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise self._exc_factory()
+        return _FakeResponse([[0.0] * EMBEDDING_DIM for _ in input])
+
+
+class _Client:
+    def __init__(self, embeddings: Any) -> None:
+        self.embeddings = embeddings
+
+
+class TestRateLimitRetry:
+    def test_retries_after_rate_limit_using_retry_after_ms_header(self) -> None:
+        waits: list[float] = []
+        api = _RateLimitedThenOk(
+            fail_count=1,
+            exc_factory=lambda: _make_rate_limit_error(retry_after_ms="500"),
+        )
+        embedder = Embedder(_Client(api), sleep=waits.append)
+        result = embedder.embed(["a"])
+        assert len(result) == 1
+        # 0.5s from the header + RATE_LIMIT_BUFFER (0.5s).
+        assert waits == [pytest.approx(1.0)]
+
+    def test_retries_after_rate_limit_using_retry_after_header(self) -> None:
+        waits: list[float] = []
+        api = _RateLimitedThenOk(
+            fail_count=1,
+            exc_factory=lambda: _make_rate_limit_error(retry_after="3"),
+        )
+        embedder = Embedder(_Client(api), sleep=waits.append)
+        embedder.embed(["a"])
+        assert waits == [pytest.approx(3.5)]  # 3s + 0.5s buffer
+
+    def test_falls_back_to_message_parsing_when_no_headers(self) -> None:
+        waits: list[float] = []
+        api = _RateLimitedThenOk(
+            fail_count=1,
+            exc_factory=lambda: _make_rate_limit_error(
+                message="rate limit hit, please try again in 750ms"
+            ),
+        )
+        embedder = Embedder(_Client(api), sleep=waits.append)
+        embedder.embed(["a"])
+        assert waits == [pytest.approx(1.25)]  # 0.75s parsed + 0.5s buffer
+
+    def test_falls_back_to_default_wait_when_unparseable(self) -> None:
+        waits: list[float] = []
+        api = _RateLimitedThenOk(
+            fail_count=1,
+            exc_factory=lambda: _make_rate_limit_error(message="something opaque"),
+        )
+        embedder = Embedder(_Client(api), sleep=waits.append)
+        embedder.embed(["a"])
+        # Default is 1.0s + buffer = 1.5s.
+        assert waits == [pytest.approx(1.5)]
+
+    def test_caps_unreasonable_wait_at_max(self) -> None:
+        from concord.embedding import MAX_RATE_LIMIT_WAIT
+
+        waits: list[float] = []
+        # Server (hypothetically) suggests an hour. Cap to MAX_RATE_LIMIT_WAIT.
+        api = _RateLimitedThenOk(
+            fail_count=1,
+            exc_factory=lambda: _make_rate_limit_error(retry_after="3600"),
+        )
+        embedder = Embedder(_Client(api), sleep=waits.append)
+        embedder.embed(["a"])
+        assert waits == [pytest.approx(MAX_RATE_LIMIT_WAIT)]
+
+    def test_repeated_rate_limits_keep_retrying(self) -> None:
+        waits: list[float] = []
+        # 5 consecutive rate-limits, then success — no give-up budget.
+        api = _RateLimitedThenOk(
+            fail_count=5,
+            exc_factory=lambda: _make_rate_limit_error(retry_after_ms="100"),
+        )
+        embedder = Embedder(_Client(api), sleep=waits.append)
+        result = embedder.embed(["a"])
+        assert len(result) == 1
+        assert len(waits) == 5
+
+    def test_non_rate_limit_error_still_raises_embeddingerror(self) -> None:
+        # Sanity: only RateLimitError gets the retry treatment.
+        class _AlwaysBroken:
+            def create(self, *, model: str, input: list[str]) -> Any:
+                raise RuntimeError("boom")
+
+        embedder = Embedder(_Client(_AlwaysBroken()), sleep=lambda _: None)
+        with pytest.raises(EmbeddingError, match="failed for batch"):
+            embedder.embed(["a"])

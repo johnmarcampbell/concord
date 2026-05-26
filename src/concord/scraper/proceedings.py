@@ -41,6 +41,9 @@ def scrape(
     the article-text fetch. Errors that prevent any work (missing API key,
     failed client construction) exit with code 2 via :class:`typer.Exit`.
     """
+    # Local import to avoid a circular dep on the CLI's Progress helper.
+    from ..cli import Progress
+
     try:
         api_client = Client()
     except ApiError as exc:
@@ -48,18 +51,18 @@ def scrape(
         raise typer.Exit(code=2) from exc
 
     http_client = httpx.Client(timeout=TEXT_FETCH_TIMEOUT)
+    progress = Progress(enabled=show_progress)
 
     def _on_progress(event: ProgressEvent) -> None:
-        typer.echo(
-            f"{event.issue.issue_date}  "
+        progress.update(
+            f"  {event.issue.issue_date}  "
             f"vol {event.issue.volume} iss {event.issue.issue_number:>4}  "
             f"+{event.issue_written:>4} written, "
             f"{event.issue_skipped:>4} skipped, "
             f"{event.issue_failed:>3} failed  "
             f"(total: {event.total_written} / "
             f"{event.total_skipped} / "
-            f"{event.total_failed})",
-            err=True,
+            f"{event.total_failed})"
         )
 
     try:
@@ -75,6 +78,7 @@ def scrape(
             )
     finally:
         http_client.close()
+        progress.commit()
 
     summary = (
         f"Wrote {result.written} new proceedings to {storage_label} "
