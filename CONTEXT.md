@@ -22,6 +22,12 @@ The vocabulary in this section covers the Congressional Record sub-domain — th
 - **Term** — one continuous service period for a Member in one chamber. A Member has 1..N terms. Keyed by `(bioguide_id, congress, chamber)`. Carries party, state, district (House only), and start/end dates.
 - **Chamber** — `house` or `senate`. A property of the Term, not the Member: Members can move between chambers across terms.
 - **Party** — recorded per-Term, not per-Member. Members can change parties between terms; per-Term storage preserves historical state.
+- **Bill** — a piece of legislation introduced in either chamber. Identified by the tuple `(congress, bill_type, bill_number)`; Concord's internal `bill_id` flattens that to `"<congress>-<type>-<number>"` (e.g. `"119-hr-1234"`).
+- **Bill type** — one of eight codes: `hr`, `hres`, `hjres`, `hconres`, `s`, `sres`, `sjres`, `sconres`. Canonical form is lowercase; the API returns uppercase and Concord canonicalizes on ingest.
+- **Sponsor** — the single Member who introduced a Bill. 1:1 with Bill (modeled as a column on the `bills` row, not a separate table).
+- **Cosponsor** — a Member who formally added their name to an existing Bill after introduction. M:N with Bill via `bill_cosponsors`; carries `sponsorship_date` and a nullable `sponsorship_withdrawn_date`.
+- **Bill action** — one event in a Bill's legislative history (e.g. "Referred to the Committee on Foreign Relations", "Passed House"). Many per Bill; stored verbatim and dimmed at display for routine procedural noise.
+- **Policy area** — a single CRS-assigned top-level subject for a Bill (e.g. "Health", "Armed Forces and National Security"). Distinct from the multi-valued **legislative subjects** that live in `bill_subjects`.
 
 ## Pipeline stages
 

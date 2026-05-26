@@ -57,12 +57,15 @@ Smallest entity, most stable, fastest visible win.
 
 ### Phase 2 — Bills (metadata)
 
-- Stage 0: scrape `/bill` → `data/bills.jsonl` (snapshot-on-fetch per ADR 0006)
-- Stage 1: `bills`, `bill_sponsors`, `bill_cosponsors`, `bill_actions` tables
-- Web: `/bills/{congress}/{type}/{number}` page — sponsor + cosponsor list (links to Member pages), action history, status
-- Cross-link from Member page: "Sponsored", "Cosponsored" sections
+Split into two parts during planning. Each ships an independently-useful surface:
 
-**Done means:** a bill page reads like a profile, with every name a working link.
+- **[Phase 2a — Bills (basic)](./phase-2a-bills-basic.md).** List + detail endpoints only. `bills` table, `/bills` index, basic Bill profile (header + sponsor), federated `/search` Bills section, "Sponsored bills" cross-link on Member profile. Tier-2 sections render as muted placeholders.
+- **[Phase 2b — Bills (enrichment)](./phase-2b-bills-enrichment.md).** Five sub-endpoints (cosponsors, actions, subjects, titles, summaries), fetched ad-hoc per bill via `concord scrape bills enrich`. Adds child tables + `*_fetched_at` staleness columns, replaces Bill-profile placeholders with live sections, "Cosponsored bills" cross-link on Member profile.
+
+Companion ADRs created during Phase 2 planning:
+- [ADR 0009 — Multi-endpoint entities split JSONL by sub-endpoint](../adr/0009-multi-endpoint-entities-split-jsonl.md) — six JSONL files per Bill (one for identity, one per sub-endpoint). Committed in 2a; exercised across both 2a and 2b.
+
+**Done means** (combined across 2a + 2b): a bill page reads like a profile, with every name a working link. After 2a alone: bills are browsable and searchable, sponsor cross-links work. After 2b: full cosponsor lists, action history, CRS subjects + summaries, and the Member↔Bill cosponsorship graph is queryable.
 
 ### Phase 3 — Votes
 
