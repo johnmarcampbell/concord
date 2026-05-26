@@ -99,12 +99,17 @@ def load(
         tier2_snapshots_read = 0
         tier2_bills_updated = 0
         tier2_orphans_skipped = 0
-        for section in BILL_ENRICHMENT_SECTIONS:
-            t2 = _load_tier2_section(storage_dir, section, storage)
-            tier2_snapshots_read += t2["snapshots_read"]
-            tier2_bills_updated += t2["bills_updated"]
-            tier2_orphans_skipped += t2["orphans_skipped"]
-            malformed += t2["malformed"]
+        # Collapse the 5N tier-2 per-section transactions into one
+        # batch. Each replace_bill_* joins this transaction via
+        # storage._maybe_transaction. A bulk load that previously
+        # paid the fsync cost per section per bill now pays it once.
+        with storage.transaction():
+            for section in BILL_ENRICHMENT_SECTIONS:
+                t2 = _load_tier2_section(storage_dir, section, storage)
+                tier2_snapshots_read += t2["snapshots_read"]
+                tier2_bills_updated += t2["bills_updated"]
+                tier2_orphans_skipped += t2["orphans_skipped"]
+                malformed += t2["malformed"]
     finally:
         storage.close()
 
@@ -199,8 +204,11 @@ def _load_tier2_section(
             if current is None or fetched_at > current[0]:
                 latest[bill_id] = (fetched_at, payload)
 
+    # One IN-list query instead of N point-lookups: at full-Congress
+    # scale the orphan check used to dominate the loader.
+    present = storage.bill_ids_present(list(latest.keys()))
     for bill_id, (fetched_at, payload) in latest.items():
-        if storage.get_bill(bill_id) is None:
+        if bill_id not in present:
             counters["orphans_skipped"] += 1
             _log.info(
                 "tier-2 orphan: %s in %s but no parent bill row; skipping",

@@ -23,7 +23,8 @@ caller can pass ``load_vec=False`` to skip the extension entirely.
 """
 
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -342,6 +343,13 @@ _BILL_COLUMNS: tuple[str, ...] = (
 # The five *_fetched_at columns are upserted only when their tier-2
 # loader has new snapshots to flush; the parent bills row uses the
 # columns above. Listed for use by per-section UPDATE statements.
+#: Cap on placeholders per ``bill_id IN (...)`` lookup. SQLite defaults to
+#: 32766 in modern builds but historically 999; keeping the chunk well
+#: below either limit avoids the compile-time complaints on older
+#: distros without measurably hurting throughput.
+_BILL_IDS_PRESENT_CHUNK = 500
+
+
 BILL_TIER2_SECTIONS: tuple[str, ...] = (
     "cosponsors",
     "actions",
@@ -454,6 +462,10 @@ class SqliteStorage:
         self._conn = sqlite3.connect(self._path)
         self._conn.row_factory = sqlite3.Row
         self._load_vec = load_vec
+        # Set when a caller-owned :meth:`transaction` context is active.
+        # The per-section ``replace_bill_*`` writers consult this so they
+        # don't open nested BEGIN/COMMITs inside an outer batch.
+        self._in_tx = False
 
         if load_vec:
             self._conn.enable_load_extension(True)
@@ -643,6 +655,29 @@ class SqliteStorage:
         row: sqlite3.Row | None = cursor.fetchone()
         return row
 
+    def bill_ids_present(self, bill_ids: Sequence[str]) -> set[str]:
+        """Return the subset of ``bill_ids`` that already have a row in ``bills``.
+
+        Used by the tier-2 loader to filter out orphan rows in one query
+        instead of an N+1 ``get_bill`` loop. Empty input returns an
+        empty set without touching the DB. The query is chunked at
+        :data:`_BILL_IDS_PRESENT_CHUNK` placeholders to stay under
+        SQLite's compile-time variable cap.
+        """
+        if not bill_ids:
+            return set()
+        present: set[str] = set()
+        ids = list(bill_ids)
+        for start in range(0, len(ids), _BILL_IDS_PRESENT_CHUNK):
+            chunk = ids[start : start + _BILL_IDS_PRESENT_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = self._conn.execute(
+                f"SELECT bill_id FROM bills WHERE bill_id IN ({placeholders})",
+                chunk,
+            )
+            present.update(row["bill_id"] for row in cursor)
+        return present
+
     # -- Bills tier-2 child tables (Phase 2b) -----------------------------
 
     def replace_bill_cosponsors(
@@ -657,10 +692,11 @@ class SqliteStorage:
         Idempotent: re-running with the same set produces the same final
         state. Safe to call for a Bill not in the ``bills`` table — the
         FK will block the INSERT before any rows are written; callers
-        should filter out unknown ``bill_id`` before invoking.
+        should filter out unknown ``bill_id`` before invoking. When the
+        caller has an outer :meth:`transaction` open, the BEGIN/COMMIT
+        here is skipped — the work joins the batch.
         """
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             self._conn.execute("DELETE FROM bill_cosponsors WHERE bill_id = ?", (bill_id,))
             if cosponsors:
                 self._conn.executemany(
@@ -680,10 +716,6 @@ class SqliteStorage:
                 "UPDATE bills SET cosponsors_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def replace_bill_actions(
         self,
@@ -693,8 +725,7 @@ class SqliteStorage:
         fetched_at: str,
     ) -> None:
         """DELETE-then-INSERT every BillAction for one bill_id; stamp the column."""
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             self._conn.execute("DELETE FROM bill_actions WHERE bill_id = ?", (bill_id,))
             if actions:
                 self._conn.executemany(
@@ -715,10 +746,6 @@ class SqliteStorage:
                 "UPDATE bills SET actions_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def replace_bill_subjects(
         self,
@@ -739,8 +766,7 @@ class SqliteStorage:
                 continue
             seen.add(s.name)
             deduped.append(s)
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             self._conn.execute("DELETE FROM bill_subjects WHERE bill_id = ?", (bill_id,))
             if deduped:
                 self._conn.executemany(
@@ -751,10 +777,6 @@ class SqliteStorage:
                 "UPDATE bills SET subjects_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def replace_bill_titles(
         self,
@@ -764,8 +786,7 @@ class SqliteStorage:
         fetched_at: str,
     ) -> None:
         """DELETE-then-INSERT every BillTitle for one bill_id; stamp the column."""
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             self._conn.execute("DELETE FROM bill_titles WHERE bill_id = ?", (bill_id,))
             if titles:
                 self._conn.executemany(
@@ -779,10 +800,6 @@ class SqliteStorage:
                 "UPDATE bills SET titles_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def replace_bill_summaries(
         self,
@@ -799,8 +816,7 @@ class SqliteStorage:
         latest_per_version: dict[str, BillSummary] = {}
         for s in summaries:
             latest_per_version[s.version_code] = s
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             self._conn.execute("DELETE FROM bill_summaries WHERE bill_id = ?", (bill_id,))
             if latest_per_version:
                 self._conn.executemany(
@@ -820,10 +836,6 @@ class SqliteStorage:
                 "UPDATE bills SET summaries_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
 
     def cosponsors_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
         cursor = self._conn.execute(
@@ -886,6 +898,56 @@ class SqliteStorage:
         cursor = self._conn.execute("SELECT COUNT(*) FROM proceedings")
         (count,) = cursor.fetchone()
         return int(count)
+
+    # -- batched writes ---------------------------------------------------
+
+    @contextmanager
+    def _maybe_transaction(self) -> Iterator[None]:
+        """Open BEGIN/COMMIT iff no caller-owned transaction is active.
+
+        Internal helper for the per-section ``replace_bill_*`` writers
+        so the same code path works whether invoked standalone or
+        inside an outer :meth:`transaction` block.
+        """
+        if self._in_tx:
+            yield
+            return
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        else:
+            self._conn.execute("COMMIT")
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group many tier-2 writes into one BEGIN/COMMIT.
+
+        Callers that flush hundreds of bills across five sections
+        benefit substantially (5N small transactions collapse to one). The
+        ``replace_bill_*`` methods check :attr:`_in_tx` and skip their
+        own transaction wrappers when this context is active. Nested
+        ``transaction()`` calls aren't supported — raises if entered
+        recursively.
+
+        Rolls back on any exception so a partial bulk load doesn't
+        leave the DB half-projected.
+        """
+        if self._in_tx:
+            raise RuntimeError("SqliteStorage.transaction() is not re-entrant")
+        self._conn.execute("BEGIN")
+        self._in_tx = True
+        try:
+            yield
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            self._in_tx = False
+            raise
+        else:
+            self._conn.execute("COMMIT")
+            self._in_tx = False
 
     # -- lifecycle --------------------------------------------------------
 

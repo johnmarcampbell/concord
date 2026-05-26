@@ -261,6 +261,18 @@ class TestBillTier2:
         text_00 = next(r["summary_text"] for r in rows if r["version_code"] == "00")
         assert text_00 == "<p>a-newer</p>"
 
+    def test_bill_ids_present_filters_to_known_rows(self, storage: SqliteStorage) -> None:
+        storage.upsert_bill(_bill(bill_id="119-hr-1"), fetched_at="2026-05-25T00:00:00Z")
+        storage.upsert_bill(
+            _bill(bill_id="119-hr-22", bill_number=22, title="X"),
+            fetched_at="2026-05-25T00:00:00Z",
+        )
+        result = storage.bill_ids_present(["119-hr-1", "119-hr-22", "119-hr-9999", "118-s-47"])
+        assert result == {"119-hr-1", "119-hr-22"}
+
+    def test_bill_ids_present_empty_input(self, storage: SqliteStorage) -> None:
+        assert storage.bill_ids_present([]) == set()
+
     def test_bill_delete_cascades_to_children(self, storage: SqliteStorage) -> None:
         bill_id = self._seed_bill(storage)
         storage.replace_bill_cosponsors(
@@ -275,6 +287,59 @@ class TestBillTier2:
         storage.connection.commit()
         assert storage.cosponsors_for_bill(bill_id) == []
         assert storage.actions_for_bill(bill_id) == []
+
+    def test_transaction_batches_writes(self, storage: SqliteStorage) -> None:
+        """All replace_bill_* calls inside one transaction commit together."""
+        bill_id = self._seed_bill(storage)
+        with storage.transaction():
+            storage.replace_bill_cosponsors(
+                bill_id,
+                [Cosponsor(bioguide_id="A000001")],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+            storage.replace_bill_actions(
+                bill_id,
+                [BillAction(action_date="2025-01-09", action_text="Introduced")],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+            storage.replace_bill_subjects(
+                bill_id,
+                [BillSubject(name="Energy")],
+                fetched_at="2026-05-26T00:00:00Z",
+            )
+        # After the block commits, every section is visible.
+        assert len(storage.cosponsors_for_bill(bill_id)) == 1
+        assert len(storage.actions_for_bill(bill_id)) == 1
+        assert len(storage.subjects_for_bill(bill_id)) == 1
+
+    def test_transaction_rolls_back_on_error(self, storage: SqliteStorage) -> None:
+        """An exception inside transaction() must revert every nested replace_*."""
+        bill_id = self._seed_bill(storage)
+
+        def _inside_transaction() -> None:
+            with storage.transaction():
+                storage.replace_bill_cosponsors(
+                    bill_id,
+                    [Cosponsor(bioguide_id="A000001")],
+                    fetched_at="2026-05-26T00:00:00Z",
+                )
+                raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _inside_transaction()
+        assert storage.cosponsors_for_bill(bill_id) == []
+        # The bills row's fetched_at column must also be untouched.
+        row = storage.get_bill(bill_id)
+        assert row is not None
+        assert row["cosponsors_fetched_at"] is None
+
+    def test_transaction_is_not_reentrant(self, storage: SqliteStorage) -> None:
+        def _nested() -> None:
+            with storage.transaction(), storage.transaction():
+                pass
+
+        with pytest.raises(RuntimeError, match="not re-entrant"):
+            _nested()
 
     def test_upsert_bill_preserves_fetched_at_stamps(self, storage: SqliteStorage) -> None:
         """Re-running tier-1 upsert must NOT reset *_fetched_at columns."""
