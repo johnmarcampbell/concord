@@ -646,9 +646,14 @@ def cosponsors_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, 
 
 
 def actions_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, Any]]:
-    """Return action rows in reverse-chronological order (latest first)."""
+    """Return action rows newest-first by ``action_date``, ord ASC as tiebreaker.
+
+    We sort in SQL rather than relying on the API's order so the UI stays
+    correct if the upstream flips.
+    """
     rows = db.execute(
-        "SELECT * FROM bill_actions WHERE bill_id = ? ORDER BY ord ASC",
+        "SELECT * FROM bill_actions WHERE bill_id = ? "
+        "ORDER BY (action_date IS NULL), action_date DESC, ord ASC",
         (bill_id,),
     ).fetchall()
     return [dict(r) for r in rows]

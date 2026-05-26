@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from concord.models import (
 )
 from concord.pipeline.index_bills import index as index_bills
 from concord.storage.sqlite import SqliteStorage
-from concord.web.app import create_app
+from concord.web.app import create_app, humanize_age
 
 
 class _StubData:
@@ -366,3 +367,60 @@ class TestMemberProfileCosponsoredEnriched:
         assert "Safeguard American Voter Eligibility Act" in body
         # The "No cosponsored" empty-state should be gone for this member.
         assert "No cosponsored bills indexed" not in body
+
+
+class TestHumanizeAge:
+    """The Jinja filter that renders ISO timestamps as 'N units ago'."""
+
+    _NOW = datetime(2026, 5, 25, 14, 0, 0, tzinfo=UTC)
+
+    def test_none_returns_empty(self) -> None:
+        assert humanize_age(None) == ""
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert humanize_age("") == ""
+
+    def test_unparseable_returns_empty(self) -> None:
+        assert humanize_age("not-a-timestamp") == ""
+
+    def test_just_now_under_30s(self) -> None:
+        recent = "2026-05-25T13:59:45+00:00"
+        assert humanize_age(recent, now=self._NOW) == "just now"
+
+    def test_seconds_ago(self) -> None:
+        assert humanize_age("2026-05-25T13:59:15+00:00", now=self._NOW) == "45 seconds ago"
+
+    def test_minutes_ago_singular(self) -> None:
+        assert humanize_age("2026-05-25T13:59:00+00:00", now=self._NOW) == "1 minute ago"
+
+    def test_minutes_ago_plural(self) -> None:
+        assert humanize_age("2026-05-25T13:55:00+00:00", now=self._NOW) == "5 minutes ago"
+
+    def test_hours_ago(self) -> None:
+        assert humanize_age("2026-05-25T11:00:00+00:00", now=self._NOW) == "3 hours ago"
+
+    def test_days_ago(self) -> None:
+        assert humanize_age("2026-05-22T14:00:00+00:00", now=self._NOW) == "3 days ago"
+
+    def test_in_the_future(self) -> None:
+        assert humanize_age("2026-05-26T14:00:00+00:00", now=self._NOW) == "in the future"
+
+    def test_naive_timestamp_assumed_utc(self) -> None:
+        assert humanize_age("2026-05-25T13:55:00", now=self._NOW) == "5 minutes ago"
+
+    def test_renders_in_bill_profile(self, client: TestClient) -> None:
+        """End-to-end: the filter renders something other than the raw ISO."""
+        db_path = client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors(
+                "119-hr-1",
+                [Cosponsor(bioguide_id="A000001")],
+                fetched_at="2020-01-01T00:00:00+00:00",
+            )
+        resp = client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        # Raw ISO must not appear in the body.
+        assert "2020-01-01T00:00:00+00:00" not in resp.text
+        # "Fetched ... ago" should appear (years old, so "year(s) ago").
+        assert "year" in resp.text
+        assert "ago" in resp.text

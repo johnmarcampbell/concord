@@ -32,7 +32,7 @@
       </div>
     {% endif %}
     <div class="text-xs text-stone-400">
-      Updated: {{ updated_at }}
+      Updated {{ updated_at|humanize_age }}
     </div>
   </aside>
 
@@ -114,10 +114,10 @@
             </li>
           {% endfor %}
         </ul>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No cosponsors recorded.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
       {% endif %}
     </section>
 
@@ -136,10 +136,10 @@
             {% include "bills/_action_row.html" %}
           {% endfor %}
         </ul>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No actions recorded.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
       {% endif %}
     </section>
 
@@ -158,10 +158,10 @@
             <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
           {% endfor %}
         </div>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No subjects assigned.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
       {% endif %}
     </section>
 
@@ -183,10 +183,10 @@
             </li>
           {% endfor %}
         </ul>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No titles recorded.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
       {% endif %}
     </section>
 
@@ -212,10 +212,10 @@
             </details>
           {% endfor %}
         </div>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.summaries_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.summaries_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No summaries published.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.summaries_fetched_at }}.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.summaries_fetched_at|humanize_age }}.</p>
       {% endif %}
     </section>
 

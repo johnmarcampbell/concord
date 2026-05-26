@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import concord
 from concord.embedding import EMBEDDING_DIM, Embedder
+from concord.models import Member, Term
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_bills import load as load_bills
@@ -210,6 +211,51 @@ def test_bills_tier2_end_to_end(tmp_path: Path) -> None:
     load_bills(storage_dir=storage_dir, db_path=db)
     index_bills(db_path=db)
 
+    # Seed two Members so the Member-profile cross-link assertions can
+    # resolve names — B001302 cosponsored the enriched bill, R000614
+    # sponsored the tier-1-only bill.
+    with SqliteStorage(db, load_vec=False) as storage:
+        storage.upsert_member(
+            Member(
+                bioguide_id="B001302",
+                first_name="Dan",
+                last_name="Bishop",
+                display_name="Dan Bishop",
+            ),
+            [
+                Term(
+                    bioguide_id="B001302",
+                    congress=119,
+                    chamber="house",
+                    state="NC",
+                    district=8,
+                    party="Republican",
+                    start_date="2025-01-03",
+                ),
+            ],
+            fetched_at=fetched_at,
+        )
+        storage.upsert_member(
+            Member(
+                bioguide_id="R000614",
+                first_name="Chip",
+                last_name="Roy",
+                display_name="Chip Roy",
+            ),
+            [
+                Term(
+                    bioguide_id="R000614",
+                    congress=119,
+                    chamber="house",
+                    state="TX",
+                    district=21,
+                    party="Republican",
+                    start_date="2025-01-03",
+                ),
+            ],
+            fetched_at=fetched_at,
+        )
+
     class _StubResp:
         def __init__(self, vectors: list[list[float]]) -> None:
             self.data = [type("D", (), {"embedding": v})() for v in vectors]
@@ -243,3 +289,18 @@ def test_bills_tier2_end_to_end(tmp_path: Path) -> None:
     assert "Subjects not yet fetched" in resp.text
     assert "Titles not yet fetched" in resp.text
     assert "Summaries not yet fetched" in resp.text
+
+    # Cosponsor of the enriched bill: Cosponsored bills section lists it.
+    resp = client.get("/members/B001302")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Cosponsored bills" in body
+    assert "Lower Energy Costs Act" in body
+    assert "No cosponsored bills indexed" not in body
+
+    # Sponsor of the tier-1-only bill: Cosponsored bills section is empty.
+    resp = client.get("/members/R000614")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Cosponsored bills" in body
+    assert "No cosponsored bills indexed" in body

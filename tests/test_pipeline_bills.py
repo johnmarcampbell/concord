@@ -235,6 +235,40 @@ class TestLoadBillsTier2:
         assert stats.bills_written == 0
         assert stats.tier2_orphans_skipped == 1
 
+    def test_rerunning_load_preserves_fetched_at(self, tmp_path: Path) -> None:
+        """Re-running tier-1 load after enrichment must NOT clear *_fetched_at.
+
+        Guards against a regression where the parent UPSERT clobbers the
+        tier-2 stamp columns. The plan's DDL listed them on the bills
+        row, but the upsert SQL deliberately omits them — this test
+        pins that.
+        """
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        self._write_tier1(storage_dir)
+        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+            json.dumps(
+                _envelope_for_section(
+                    _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 1)
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            initial = storage.get_bill("119-hr-1")
+            assert initial is not None
+            assert initial["cosponsors_fetched_at"] is not None
+            initial_stamp = initial["cosponsors_fetched_at"]
+
+        # Re-run the loader; the parent tier-1 row gets UPSERTed again.
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["cosponsors_fetched_at"] == initial_stamp
+
     def test_idempotent_rerun_tier2(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"
         db = tmp_path / "test.db"
@@ -289,6 +323,38 @@ class TestIndexBills:
         with SqliteStorage(db, load_vec=False) as storage:
             (count,) = storage.connection.execute("SELECT COUNT(*) FROM bills_fts").fetchone()
             assert count == 1
+
+    def test_subjects_indexed_alphabetically(self, tmp_path: Path) -> None:
+        """The bills_fts.subjects column must be byte-stable across re-runs."""
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        _write_jsonl(
+            storage_dir,
+            [_envelope_for(_detail_payload("detail_119_hr_1.json"))],
+        )
+        # Subjects in deliberately non-alphabetical order.
+        subjects_payload = {
+            "subjects": {
+                "legislativeSubjects": [
+                    {"name": "Zebra studies"},
+                    {"name": "Apples"},
+                    {"name": "Mangoes"},
+                ],
+                "policyArea": {"name": "Energy"},
+            },
+            "pagination": {"count": 3},
+        }
+        (storage_dir / enrichment_jsonl_name("subjects")).write_text(
+            json.dumps(_envelope_for_section(subjects_payload, bill_key=(119, "hr", 1))) + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        index_bills(db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            row = storage.connection.execute(
+                "SELECT subjects FROM bills_fts WHERE bill_id = ?", ("119-hr-1",)
+            ).fetchone()
+            assert row["subjects"] == "Apples | Mangoes | Zebra studies"
 
     def test_short_title_and_subjects_indexed_when_present(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"

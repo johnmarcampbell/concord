@@ -47,9 +47,13 @@ def index(*, db_path: Path, limit: int | None = None) -> IndexStats:
                 (row["bill_id"],),
             ).fetchone()
             short_title = short_title_row["title_text"] if short_title_row else ""
+            # GROUP_CONCAT row order is not guaranteed without an inner
+            # ORDER BY — fix it to alphabetical so a re-index produces
+            # byte-identical bills_fts.subjects content across runs.
             subjects_row = conn.execute(
                 "SELECT GROUP_CONCAT(subject, ' | ') AS joined "
-                "FROM bill_subjects WHERE bill_id = ?",
+                "FROM (SELECT subject FROM bill_subjects WHERE bill_id = ? "
+                "      ORDER BY subject ASC)",
                 (row["bill_id"],),
             ).fetchone()
             subjects = (subjects_row["joined"] if subjects_row else None) or ""

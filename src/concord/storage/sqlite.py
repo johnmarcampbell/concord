@@ -834,8 +834,13 @@ class SqliteStorage:
         return cursor.fetchall()
 
     def actions_for_bill(self, bill_id: str) -> list[sqlite3.Row]:
+        # Sort newest-first by date; fall back to scrape-order ord for
+        # same-date ties. Sorting in SQL (not relying on the API's
+        # newest-first order) keeps the UI's reverse-chronological
+        # rendering correct if the upstream order ever flips.
         cursor = self._conn.execute(
-            "SELECT * FROM bill_actions WHERE bill_id = ? ORDER BY ord ASC",
+            "SELECT * FROM bill_actions WHERE bill_id = ? "
+            "ORDER BY (action_date IS NULL), action_date DESC, ord ASC",
             (bill_id,),
         )
         return cursor.fetchall()

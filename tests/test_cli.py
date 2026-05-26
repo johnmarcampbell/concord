@@ -1306,6 +1306,45 @@ class TestScrapeBillsEnrichCommand:
         files = {p.name for p in tmp_path.iterdir()}
         assert files == {"bill_cosponsors.jsonl", "bill_actions.jsonl"}
 
+    def test_limit_caps_bill_ids_input(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """--limit applies to --bill-ids count too (Fix #2 regression)."""
+        handler = _enrichment_handler()
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "enrich",
+                "--bill-ids",
+                "119-hr-1,119-hr-22,119-hr-47",
+                "--storage-dir",
+                str(tmp_path),
+                "--limit",
+                "1",
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Only one bill should have been enriched per section, despite
+        # three bill_ids being supplied.
+        cosponsors_lines = (tmp_path / "bill_cosponsors.jsonl").read_text().splitlines()
+        assert len(cosponsors_lines) == 1
+
     def test_rejects_unknown_section(
         self,
         runner: CliRunner,

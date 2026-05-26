@@ -23,7 +23,7 @@ only — the other routes don't call OpenAI and don't need protection.
 import re
 import sqlite3
 from collections.abc import Iterator
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -120,6 +120,7 @@ def create_app(
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates.env.filters["humanize_age"] = humanize_age
     app.state.templates = templates
 
     if _STATIC_DIR.exists():
@@ -453,6 +454,55 @@ def _is_htmx(request: Request) -> bool:
     return request.headers.get("HX-Request", "").lower() == "true"
 
 
+#: Coarse buckets used by :func:`humanize_age`. Order matters: each tuple
+#: is ``(threshold_in_seconds, singular_unit_seconds, unit_name)``; the
+#: first whose threshold the elapsed time crosses determines the unit.
+_AGE_BUCKETS: tuple[tuple[int, int, str], ...] = (
+    (60, 1, "second"),
+    (3600, 60, "minute"),
+    (86_400, 3600, "hour"),
+    (2_592_000, 86_400, "day"),
+    (31_536_000, 2_592_000, "month"),
+    (10**18, 31_536_000, "year"),
+)
+
+#: Threshold (in seconds) below which we collapse to "just now".
+_JUST_NOW_SECONDS = 30
+
+
+def humanize_age(value: str | datetime | None, *, now: datetime | None = None) -> str:
+    """Render an ISO 8601 timestamp as a coarse "N units ago" string.
+
+    Returns ``"just now"`` for ages under 30 seconds, ``"in the future"``
+    for future timestamps (clock skew), and an empty string for ``None``
+    or unparseable input. Used by the Bill profile to label each tier-2
+    section's last-fetched moment.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return ""
+    else:
+        parsed = value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    current = now if now is not None else datetime.now(UTC)
+    delta = (current - parsed).total_seconds()
+    if delta < 0:
+        return "in the future"
+    if delta < _JUST_NOW_SECONDS:
+        return "just now"
+    for threshold, unit_seconds, unit_name in _AGE_BUCKETS:
+        if delta < threshold:
+            count = int(delta // unit_seconds)
+            plural = "" if count == 1 else "s"
+            return f"{count} {unit_name}{plural} ago"
+    return ""
+
+
 def _parse_optional_date(value: str | None) -> date | None:
     if not value:
         return None
@@ -472,4 +522,5 @@ __all__: list[Any] = [
     "SEARCH_PAGE_SIZE",
     "SEARCH_RATE_LIMIT",
     "create_app",
+    "humanize_age",
 ]

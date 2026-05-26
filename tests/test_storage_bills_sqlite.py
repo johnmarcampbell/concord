@@ -205,6 +205,22 @@ class TestBillTier2:
         assert row is not None
         assert row["actions_fetched_at"] == "2026-05-26T00:00:00Z"
 
+    def test_actions_returned_newest_first_regardless_of_ord(self, storage: SqliteStorage) -> None:
+        """Regression: ordering uses action_date, not the insert-order ord."""
+        bill_id = self._seed_bill(storage)
+        # Insert with intentionally-shuffled date order: middle, newest, oldest.
+        storage.replace_bill_actions(
+            bill_id,
+            [
+                BillAction(action_date="2025-06-15", action_text="middle"),
+                BillAction(action_date="2026-03-30", action_text="newest"),
+                BillAction(action_date="2025-01-09", action_text="oldest"),
+            ],
+            fetched_at="2026-05-26T00:00:00Z",
+        )
+        rows = storage.actions_for_bill(bill_id)
+        assert [r["action_text"] for r in rows] == ["newest", "middle", "oldest"]
+
     def test_replace_subjects_deduplicates(self, storage: SqliteStorage) -> None:
         bill_id = self._seed_bill(storage)
         storage.replace_bill_subjects(

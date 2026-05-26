@@ -1189,7 +1189,10 @@ def scrape_bills_enrich_command(
         int,
         typer.Option(
             "--limit",
-            help="Cap on bills enriched. With --db (no --bill-ids), required.",
+            help=(
+                "Cap on bills enriched. Defaults to 25 in --db auto-select mode; "
+                "applied to --bill-ids count when given."
+            ),
         ),
     ] = DEFAULT_ENRICH_AUTO_LIMIT,
     show_progress: Annotated[
@@ -1229,7 +1232,7 @@ def scrape_bills_enrich_command(
         bill_keys=keys,
         sections=parsed_sections,
         storage_dir=storage_dir,
-        limit=limit if bill_ids is None else None,
+        limit=limit,
         show_progress=show_progress,
     )
 
