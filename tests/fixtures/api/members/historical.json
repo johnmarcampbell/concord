@@ -10,28 +10,22 @@
       "lastName": "Jeffords",
       "birthYear": "1934",
       "deathYear": "2014",
+      "partyName": "Independent",
+      "state": "Vermont",
       "depiction": {
         "imageUrl": "https://www.congress.gov/img/member/j000301.jpg"
       },
       "terms": {
         "item": [
           {
-            "chamber": "Senate",
-            "congress": 116,
-            "startYear": 2019,
-            "endYear": 2021,
-            "stateCode": "VT",
-            "stateName": "Vermont",
-            "partyName": "Republican"
+            "chamber": "House of Representatives",
+            "startYear": 1975,
+            "endYear": 1989
           },
           {
             "chamber": "Senate",
-            "congress": 117,
-            "startYear": 2021,
-            "endYear": 2023,
-            "stateCode": "VT",
-            "stateName": "Vermont",
-            "partyName": "Independent"
+            "startYear": 1989,
+            "endYear": 2007
           }
         ]
       },
@@ -41,10 +35,5 @@
   ],
   "pagination": {
     "count": 1
-  },
-  "request": {
-    "congress": "117",
-    "contentType": "application/json",
-    "format": "json"
   }
 }

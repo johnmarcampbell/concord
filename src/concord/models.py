@@ -325,7 +325,7 @@ class MemberSnapshot(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     fetched_at: datetime
-    key: dict[str, str]
+    key: dict[str, str | int]
     payload: dict[str, Any]
 
 
@@ -348,12 +348,12 @@ def _split_inverted_name(name: str) -> tuple[str, str]:
     return first, last
 
 
-def parse_member(payload: dict[str, Any]) -> tuple[Member, list[Term]]:
-    """Project a raw ``/member`` payload into a :class:`Member` + its :class:`Term`s.
+def parse_member_identity(payload: dict[str, Any]) -> Member:
+    """Project a raw ``/member`` payload into the identity-only :class:`Member` row.
 
-    Tolerates the union of fields returned by the list endpoint
-    (``/v3/member/congress/{congress}``) and the detail endpoint
-    (``/v3/member/{bioguideId}``). Missing optional fields become ``None``.
+    Identity fields (name, birth year, photo) are the same regardless of
+    which Congress the API was queried for, so this is the half of a member
+    payload that's safe to project without knowing the queried Congress.
     """
     bioguide_id = str(payload["bioguideId"])
 
@@ -374,7 +374,7 @@ def parse_member(payload: dict[str, Any]) -> tuple[Member, list[Term]]:
     depiction = payload.get("depiction") or {}
     photo_url = depiction.get("imageUrl") if isinstance(depiction, dict) else None
 
-    member = Member(
+    return Member(
         bioguide_id=bioguide_id,
         first_name=first_name or "",
         middle_name=payload.get("middleName"),
@@ -387,58 +387,122 @@ def parse_member(payload: dict[str, Any]) -> tuple[Member, list[Term]]:
         biography=payload.get("biography"),
     )
 
-    # Top-level fallback state/district/party for term rows that don't carry their own
-    # (the list endpoint flattens these onto the member rather than per-term).
+
+def parse_member_term(payload: dict[str, Any], *, congress: int) -> Term | None:
+    """Project a raw ``/member`` payload + queried Congress into one :class:`Term`.
+
+    The ``/v3/member/congress/{n}`` list endpoint omits ``congress`` from
+    each ``terms.item`` — and returns the **same** payload for every
+    Congress a Member served in. So a single payload can't tell us which
+    Congresses it represents; the queried ``congress`` argument provides
+    the missing context.
+
+    Returns the Term row for ``(bioguide_id, congress, chamber)`` where
+    ``chamber`` is found by matching ``congress``'s years against the
+    payload's ``terms.item`` ranges. Returns ``None`` if no item covers
+    the Congress (the payload contradicts its own listing — log + skip
+    rather than 500).
+    """
+    bioguide_id = str(payload["bioguideId"])
+    items = _extract_term_items(payload)
+    item = _term_item_for_congress(items, congress)
+    if item is None:
+        return None
+
+    chamber_raw = item.get("chamber")
+    if chamber_raw is None:
+        return None
+    chamber = _normalize_chamber(chamber_raw)
+    if chamber not in {"house", "senate"}:
+        return None
+
     top_state = payload.get("state")
     top_district = payload.get("district")
     top_party = payload.get("partyName")
 
-    terms_raw = payload.get("terms")
-    items: list[dict[str, Any]] = []
-    if isinstance(terms_raw, dict):
-        items = list(terms_raw.get("item") or [])
-    elif isinstance(terms_raw, list):
-        items = list(terms_raw)
+    state = item.get("stateCode") or item.get("stateName") or top_state
+    if not state:
+        return None
 
-    terms: list[Term] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        congress = item.get("congress")
-        if congress is None:
-            continue
-        chamber_raw = item.get("chamber")
-        if chamber_raw is None:
-            continue
-        chamber = _normalize_chamber(chamber_raw)
-        if chamber not in {"house", "senate"}:
-            continue
-        state = item.get("stateCode") or item.get("stateName") or top_state
-        if not state:
-            continue
-        district = item.get("district")
-        if district is None and chamber == "house":
-            district = top_district
-        if isinstance(district, str):
-            try:
-                district = int(district)
-            except ValueError:
-                district = None
-        if chamber == "senate":
+    district = item.get("district")
+    if district is None and chamber == "house":
+        district = top_district
+    if isinstance(district, str):
+        try:
+            district = int(district)
+        except ValueError:
             district = None
-        terms.append(
-            Term(
-                bioguide_id=bioguide_id,
-                congress=int(congress),
-                chamber=chamber,
-                party=item.get("partyName") or top_party,
-                state=state,  # validator normalizes to 2-letter
-                district=district,
-                start_date=_year_to_iso(item.get("startYear")),
-                end_date=_year_to_iso(item.get("endYear")),
-            )
-        )
-    return member, terms
+    if chamber == "senate":
+        district = None
+
+    # Clip the chamber-career window (API's startYear/endYear) to this
+    # Congress's window. Each (member, congress) row should describe the
+    # service inside that Congress, not the broader career stretch.
+    cong_start_year = 2 * congress + 1787  # Congress 1 began 1789-01-03
+    cong_end_year = 2 * congress + 1789  # = next Congress's start year
+
+    api_start = _coerce_int(item.get("startYear"))
+    if api_start is not None and api_start > cong_start_year:
+        start_date = f"{api_start:04d}-01-03"  # joined mid-Congress
+    else:
+        start_date = f"{cong_start_year:04d}-01-03"
+
+    api_end = _coerce_int(item.get("endYear"))
+    if api_end is not None and api_end < cong_end_year:
+        end_date = f"{api_end:04d}-01-03"  # left mid-Congress
+    else:
+        end_date = f"{cong_end_year:04d}-01-03"
+
+    return Term(
+        bioguide_id=bioguide_id,
+        congress=congress,
+        chamber=chamber,
+        party=item.get("partyName") or top_party,
+        state=state,  # validator normalizes to 2-letter
+        district=district,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def parse_member(payload: dict[str, Any], *, congress: int) -> tuple[Member, Term | None]:
+    """Convenience wrapper: identity + one Term for the queried Congress."""
+    return parse_member_identity(payload), parse_member_term(payload, congress=congress)
+
+
+def _extract_term_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull the ``terms.item`` list from a /member payload, tolerating both
+    list-endpoint (``{"terms": {"item": [...]}}``) and detail-endpoint
+    (``{"terms": [...]}``) shapes."""
+    terms_raw = payload.get("terms")
+    if isinstance(terms_raw, dict):
+        return [i for i in (terms_raw.get("item") or []) if isinstance(i, dict)]
+    if isinstance(terms_raw, list):
+        return [i for i in terms_raw if isinstance(i, dict)]
+    return []
+
+
+def _term_item_for_congress(items: list[dict[str, Any]], congress: int) -> dict[str, Any] | None:
+    """Return the term item whose year range contains ``congress``, or None.
+
+    A term item covers Congress N if its ``startYear`` falls on or before
+    N's last year, and its ``endYear`` (when set) falls on or after N's
+    first year. If multiple items overlap, returns the last match — useful
+    for the rare member who switches chambers mid-Congress (a member is
+    only listed under one chamber per Congress in practice).
+    """
+    cong_first_year = 2 * congress + 1787
+    cong_last_year = cong_first_year + 1
+    match: dict[str, Any] | None = None
+    for item in items:
+        start = _coerce_int(item.get("startYear"))
+        if start is None or start > cong_last_year:
+            continue
+        end = _coerce_int(item.get("endYear"))
+        if end is not None and end < cong_first_year:
+            continue
+        match = item
+    return match
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -448,23 +512,3 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _year_to_iso(value: Any) -> str | None:
-    """Normalize a ``startYear``/``endYear`` integer to an ISO date string.
-
-    The API returns just a year; we project it to ``YYYY-01-01`` for start
-    dates and leave end dates ``None`` when the API omits them (current
-    service). Year-only inputs are preserved as-is so callers that pass an
-    already-ISO date round-trip cleanly.
-    """
-    if value is None or value == "":
-        return None
-    if isinstance(value, int):
-        return f"{value:04d}-01-01"
-    text = str(value).strip()
-    if not text:
-        return None
-    if text.isdigit() and len(text) == 4:
-        return f"{int(text):04d}-01-01"
-    return text

@@ -18,32 +18,7 @@
         "item": [
           {
             "chamber": "House of Representatives",
-            "congress": 117,
-            "startYear": 2021,
-            "endYear": 2023,
-            "stateCode": "NY",
-            "stateName": "New York",
-            "district": 14,
-            "partyName": "Democratic"
-          },
-          {
-            "chamber": "House of Representatives",
-            "congress": 118,
-            "startYear": 2023,
-            "endYear": 2025,
-            "stateCode": "NY",
-            "stateName": "New York",
-            "district": 14,
-            "partyName": "Democratic"
-          },
-          {
-            "chamber": "House of Representatives",
-            "congress": 119,
-            "startYear": 2025,
-            "stateCode": "NY",
-            "stateName": "New York",
-            "district": 14,
-            "partyName": "Democratic"
+            "startYear": 2019
           }
         ]
       },
