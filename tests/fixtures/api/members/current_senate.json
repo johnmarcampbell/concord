@@ -18,39 +18,12 @@
         "item": [
           {
             "chamber": "House of Representatives",
-            "congress": 102,
             "startYear": 1991,
-            "endYear": 1993,
-            "stateCode": "VT",
-            "stateName": "Vermont",
-            "district": 0,
-            "partyName": "Independent"
+            "endYear": 2007
           },
           {
             "chamber": "Senate",
-            "congress": 117,
-            "startYear": 2021,
-            "endYear": 2023,
-            "stateCode": "VT",
-            "stateName": "Vermont",
-            "partyName": "Independent"
-          },
-          {
-            "chamber": "Senate",
-            "congress": 118,
-            "startYear": 2023,
-            "endYear": 2025,
-            "stateCode": "VT",
-            "stateName": "Vermont",
-            "partyName": "Independent"
-          },
-          {
-            "chamber": "Senate",
-            "congress": 119,
-            "startYear": 2025,
-            "stateCode": "VT",
-            "stateName": "Vermont",
-            "partyName": "Independent"
+            "startYear": 2007
           }
         ]
       },

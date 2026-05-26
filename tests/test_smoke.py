@@ -41,16 +41,23 @@ def test_members_end_to_end(tmp_path: Path) -> None:
 
     fetched_at = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC).isoformat()
     jsonl = tmp_path / "members.jsonl"
+    # The two current Members get a 119 snapshot; the historical one
+    # gets a 109 snapshot (the last Congress Jeffords was in the Senate).
+    snapshots = [
+        (payloads[0], 119),
+        (payloads[1], 119),
+        (payloads[2], 109),
+    ]
     jsonl.write_text(
         "\n".join(
             json.dumps(
                 {
                     "fetched_at": fetched_at,
-                    "key": {"bioguide_id": p["bioguideId"]},
+                    "key": {"bioguide_id": p["bioguideId"], "congress": congress},
                     "payload": p,
                 }
             )
-            for p in payloads
+            for p, congress in snapshots
         )
         + "\n",
         encoding="utf-8",

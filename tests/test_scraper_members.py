@@ -68,7 +68,7 @@ class TestScrape:
         assert len(lines) == 1
         envelope = json.loads(lines[0])
         assert envelope["fetched_at"] == FIXED_FETCHED_AT.isoformat()
-        assert envelope["key"] == {"bioguide_id": "O000172"}
+        assert envelope["key"] == {"bioguide_id": "O000172", "congress": 119}
         assert envelope["payload"]["bioguideId"] == "O000172"
 
     def test_writes_across_multiple_congresses(self, tmp_path: Path) -> None:
@@ -132,6 +132,31 @@ class TestScrape:
         assert [e.congress for e in events] == [117, 119]
         assert events[0].total_written == 1
         assert events[1].total_written == 2
+
+    def test_same_member_in_multiple_congresses_writes_distinct_envelopes(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression — the list endpoint returns identical payloads for the
+        same Member across every Congress they served in. Without the queried
+        Congress in the envelope key, the loader would collapse them and only
+        produce one Term row instead of three."""
+        out = tmp_path / "members.jsonl"
+        fixture = _load_fixture("current_senate.json")
+        client = _client_serving({117: fixture, 118: fixture, 119: fixture})
+
+        with client:
+            n = scrape(
+                client=client,
+                congresses=[117, 118, 119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+
+        assert n == 3
+        envelopes = [json.loads(line) for line in out.read_text().splitlines()]
+        # Same bioguide_id, distinct congress, distinct envelopes.
+        assert [e["key"]["bioguide_id"] for e in envelopes] == ["S000033"] * 3
+        assert [e["key"]["congress"] for e in envelopes] == [117, 118, 119]
 
     def test_creates_parent_directory(self, tmp_path: Path) -> None:
         out = tmp_path / "nested" / "data" / "members.jsonl"

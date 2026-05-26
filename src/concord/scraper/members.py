@@ -56,7 +56,13 @@ def scrape(
                     continue
                 envelope = {
                     "fetched_at": iso,
-                    "key": {"bioguide_id": bioguide_id},
+                    # Composite key: the same Member appears in the listing
+                    # for every Congress they served in, and the payload is
+                    # identical across those queries. Without ``congress``
+                    # in the key we'd lose track of which Congress this
+                    # snapshot represents and the loader would collapse
+                    # multi-Congress careers into a single Term row.
+                    "key": {"bioguide_id": bioguide_id, "congress": congress},
                     "payload": payload,
                 }
                 fh.write(json.dumps(envelope, ensure_ascii=False))
