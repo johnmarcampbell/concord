@@ -82,6 +82,16 @@ DEFAULT_BILL_CONGRESSES = (117, 118, 119)
 #: for the ``/bills/{...}/{bill_type}/...`` URL segment.
 DEFAULT_BILL_TYPES = ("hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres")
 
+#: Tier-2 sub-endpoint names that ``concord scrape bills enrich`` defaults to.
+DEFAULT_BILL_SECTIONS = ("cosponsors", "actions", "subjects", "titles", "summaries")
+
+#: Default cap on the auto-selected enrichment batch when --bill-ids is
+#: not given. Operators tweak via ``--limit N``.
+DEFAULT_ENRICH_AUTO_LIMIT = 25
+
+#: Expected number of dash-separated parts in a ``--bill-ids`` token.
+_BILL_ID_PART_COUNT = 3
+
 
 class Progress:
     """Progress lines that overwrite themselves on a TTY.
@@ -525,6 +535,83 @@ def _run_scrape_bills(
     return stats.bills_written
 
 
+def _autoselect_unenriched_bills(
+    db_path: Path,
+    *,
+    limit: int,
+) -> list[tuple[int, str, int]]:
+    """Return ``[(congress, bill_type, bill_number)]`` for un-enriched bills, newest first."""
+    if not db_path.exists():
+        typer.echo(f"error: database not found: {db_path}", err=True)
+        raise typer.Exit(code=2)
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT congress, bill_type, bill_number FROM bills "
+            "WHERE cosponsors_fetched_at IS NULL "
+            "ORDER BY (introduced_date IS NULL), introduced_date DESC, "
+            "         congress DESC, bill_number ASC "
+            "LIMIT ?",
+            (limit,),
+        )
+        return [(int(c), str(t), int(n)) for c, t, n in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def _run_scrape_bills_enrich(
+    *,
+    bill_keys: list[tuple[int, str, int]],
+    sections: list[str],
+    storage_dir: Path,
+    limit: int | None,
+    show_progress: bool,
+) -> int:
+    from .api import ApiError
+    from .scraper import bills as bills_scraper
+
+    try:
+        api_client = Client()
+    except ApiError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    progress = Progress(enabled=show_progress)
+
+    def _on_progress(event: bills_scraper.EnrichProgressEvent) -> None:
+        c, t, n = event.bill_key
+        suffix = ""
+        if event.partial_failures:
+            suffix = f" (failed: {', '.join(event.partial_failures)})"
+        progress.update(
+            f"  {c}-{t}-{n}  +{event.sections_written}/{len(sections)} sections{suffix}"
+        )
+
+    try:
+        with api_client:
+            stats = bills_scraper.scrape_enrichment(
+                client=api_client,
+                bill_keys=bill_keys,
+                storage_dir=storage_dir,
+                fetched_at=datetime.now(UTC),
+                sections=sections,
+                limit=limit,
+                progress=_on_progress if show_progress else None,
+            )
+    finally:
+        progress.commit()
+
+    typer.echo(
+        f"Enriched {stats.bills_enriched} bill(s); "
+        f"wrote {stats.snapshots_written} snapshot(s) to {storage_dir}"
+        + (f" ({stats.section_failures} section failure(s))" if stats.section_failures else "")
+        + "."
+    )
+    return stats.snapshots_written
+
+
 def _run_load_bills(
     *,
     storage_dir: Path,
@@ -945,8 +1032,65 @@ def run_members_command(
 # ---------------------------------------------------------------------------
 
 
-@scrape_app.command("bills")
+scrape_bills_app = typer.Typer(
+    no_args_is_help=False,
+    add_completion=False,
+    pretty_exceptions_enable=False,
+    help=(
+        "Stage 0 — scrape Bills. Without a sub-command, snapshots Bill identity "
+        "records into bills.jsonl. Use `enrich` for tier-2 sub-endpoints."
+    ),
+    invoke_without_command=True,
+)
+scrape_app.add_typer(scrape_bills_app, name="bills")
+
+
+def _parse_bill_ids(raw: str) -> list[tuple[int, str, int]]:
+    """Parse ``--bill-ids 119-hr-1,119-hr-22`` into ``[(119,"hr",1), ...]``."""
+    out: list[tuple[int, str, int]] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        bits = token.split("-")
+        if len(bits) != _BILL_ID_PART_COUNT:
+            raise typer.BadParameter(
+                f"bad --bill-ids token {token!r}; expected '<congress>-<type>-<number>'"
+            )
+        try:
+            congress = int(bits[0])
+            bill_type = bits[1].lower()
+            bill_number = int(bits[2])
+        except ValueError as exc:
+            raise typer.BadParameter(f"bad --bill-ids token {token!r}: {exc}") from exc
+        if bill_type not in DEFAULT_BILL_TYPES:
+            raise typer.BadParameter(
+                f"unknown bill type in {token!r}: {bill_type}. Valid: "
+                + ", ".join(DEFAULT_BILL_TYPES)
+            )
+        out.append((congress, bill_type, bill_number))
+    if not out:
+        raise typer.BadParameter(f"no values parsed from --bill-ids {raw!r}")
+    return out
+
+
+def _parse_sections(raw: str) -> list[str]:
+    """Parse ``--sections cosponsors,actions`` into a validated list."""
+    from .scraper.bills import BILL_ENRICHMENT_SECTIONS
+
+    parsed = _parse_csv(raw, name="sections", coerce=str.lower)
+    unknown = [s for s in parsed if s not in BILL_ENRICHMENT_SECTIONS]
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown section(s): {', '.join(unknown)}. "
+            f"Valid: {', '.join(BILL_ENRICHMENT_SECTIONS)}"
+        )
+    return parsed
+
+
+@scrape_bills_app.callback(invoke_without_command=True)
 def scrape_bills_command(
+    ctx: typer.Context,
     congresses: Annotated[
         str,
         typer.Option(
@@ -991,11 +1135,102 @@ def scrape_bills_command(
     Re-running appends new snapshots; the Stage 1 loader projects the
     latest per key into SQLite.
     """
+    # When the user invoked a sub-command (e.g. `scrape bills enrich`),
+    # let the sub-command run instead of the basic scrape.
+    if ctx.invoked_subcommand is not None:
+        return
     parsed_congresses = _parse_congresses(congresses)
     parsed_types = _parse_bill_types(bill_types)
     _run_scrape_bills(
         congresses=parsed_congresses,
         bill_types=parsed_types,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+    )
+
+
+@scrape_bills_app.command("enrich")
+def scrape_bills_enrich_command(
+    bill_ids: Annotated[
+        str | None,
+        typer.Option(
+            "--bill-ids",
+            help=(
+                "Comma-separated bill IDs like '119-hr-1,119-hr-22'. "
+                "Required when --db is not provided."
+            ),
+        ),
+    ] = None,
+    sections: Annotated[
+        str,
+        typer.Option(
+            "--sections",
+            help="Comma-separated sub-endpoint sections to fetch.",
+        ),
+    ] = ",".join(DEFAULT_BILL_SECTIONS),
+    storage_dir: Annotated[
+        Path,
+        typer.Option(
+            "--storage-dir",
+            help="Directory holding the bill_<section>.jsonl files.",
+        ),
+    ] = DEFAULT_BILLS_STORAGE_DIR,
+    db_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--db",
+            help=(
+                "SQLite DB used to auto-select un-enriched bills when --bill-ids is not provided."
+            ),
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            help=(
+                "Cap on bills enriched. Defaults to 25 in --db auto-select mode; "
+                "applied to --bill-ids count when given."
+            ),
+        ),
+    ] = DEFAULT_ENRICH_AUTO_LIMIT,
+    show_progress: Annotated[
+        bool,
+        typer.Option(
+            "--progress/--no-progress",
+            help="Print a stderr line per bill enriched.",
+        ),
+    ] = True,
+) -> None:
+    """Fetch tier-2 sub-endpoints for selected Bills.
+
+    Either pass ``--bill-ids`` (explicit selection) or ``--db`` (auto-
+    selects bills with ``cosponsors_fetched_at IS NULL`` ordered by
+    ``introduced_date DESC``, capped by ``--limit``).
+    """
+    parsed_sections = _parse_sections(sections)
+    if bill_ids is None and db_path is None:
+        typer.echo(
+            "error: provide --bill-ids or --db (or both); neither was set",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if bill_ids is not None:
+        keys = _parse_bill_ids(bill_ids)
+    elif db_path is not None:
+        keys = _autoselect_unenriched_bills(db_path, limit=limit)
+        if not keys:
+            typer.echo(f"No un-enriched bills found in {db_path}; nothing to do.")
+            return
+    else:
+        # Unreachable: the earlier guard already exited with code 2.
+        return
+
+    _run_scrape_bills_enrich(
+        bill_keys=keys,
+        sections=parsed_sections,
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,

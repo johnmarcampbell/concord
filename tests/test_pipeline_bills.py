@@ -9,7 +9,7 @@ from typing import Any
 
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.load_bills import load as load_bills
-from concord.scraper.bills import BILLS_JSONL_NAME
+from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
 from concord.storage.sqlite import SqliteStorage
 
 from ._snapshots import wrap_snapshot
@@ -48,6 +48,24 @@ def _write_jsonl(storage_dir: Path, envelopes: list[dict[str, Any]]) -> None:
     (storage_dir / BILLS_JSONL_NAME).write_text(
         "\n".join(json.dumps(e) for e in envelopes) + "\n",
         encoding="utf-8",
+    )
+
+
+def _envelope_for_section(
+    payload: dict[str, Any],
+    *,
+    bill_key: tuple[int, str, int],
+    fetched_at: datetime = FIXED_FETCHED_AT,
+) -> dict[str, Any]:
+    congress, bill_type, bill_number = bill_key
+    return wrap_snapshot(
+        payload,
+        fetched_at=fetched_at,
+        key={
+            "congress": congress,
+            "bill_type": bill_type.lower(),
+            "bill_number": bill_number,
+        },
     )
 
 
@@ -110,7 +128,12 @@ class TestLoadBills:
         storage_dir = tmp_path / "no_such_dir"
         db = tmp_path / "test.db"
         stats = load_bills(storage_dir=storage_dir, db_path=db)
-        assert stats == (0, 0, 0)
+        assert stats.bills_written == 0
+        assert stats.snapshots_read == 0
+        assert stats.malformed == 0
+        assert stats.tier2_snapshots_read == 0
+        assert stats.tier2_bills_updated == 0
+        assert stats.tier2_orphans_skipped == 0
 
     def test_idempotent_rerun(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"
@@ -124,6 +147,146 @@ class TestLoadBills:
         with SqliteStorage(db, load_vec=False) as storage:
             count = storage.connection.execute("SELECT COUNT(*) FROM bills").fetchone()[0]
             assert count == 1
+
+
+class TestLoadBillsTier2:
+    def _write_tier1(self, storage_dir: Path) -> None:
+        _write_jsonl(
+            storage_dir,
+            [
+                _envelope_for(_detail_payload("detail_119_hr_1.json")),
+                _envelope_for(_detail_payload("detail_119_hr_22.json")),
+            ],
+        )
+
+    def test_tier1_only_leaves_fetched_at_columns_null(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        self._write_tier1(storage_dir)
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["cosponsors_fetched_at"] is None
+            assert row["actions_fetched_at"] is None
+            assert row["subjects_fetched_at"] is None
+            assert row["titles_fetched_at"] is None
+            assert row["summaries_fetched_at"] is None
+
+    def test_loads_all_five_sections_when_present(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        self._write_tier1(storage_dir)
+
+        # Write tier-2 files for 119-hr-1.
+        section_to_fixture = {
+            "cosponsors": "cosponsors_119_hr_22.json",
+            "actions": "actions_119_hr_1.json",
+            "subjects": "subjects_119_hr_1.json",
+            "titles": "titles_119_hr_1.json",
+            "summaries": "summaries_119_hr_1.json",
+        }
+        for section, name in section_to_fixture.items():
+            (storage_dir / enrichment_jsonl_name(section)).write_text(
+                json.dumps(_envelope_for_section(_fixture(name), bill_key=(119, "hr", 1))) + "\n",
+                encoding="utf-8",
+            )
+
+        stats = load_bills(storage_dir=storage_dir, db_path=db)
+        assert stats.tier2_bills_updated == 5  # one bill, five sections
+        assert stats.tier2_orphans_skipped == 0
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["cosponsors_fetched_at"] is not None
+            assert row["actions_fetched_at"] is not None
+            cosponsors = storage.cosponsors_for_bill("119-hr-1")
+            assert len(cosponsors) == 3
+            actions = storage.actions_for_bill("119-hr-1")
+            assert len(actions) == 6
+            subjects = storage.subjects_for_bill("119-hr-1")
+            assert len(subjects) == 10
+            titles = storage.titles_for_bill("119-hr-1")
+            assert len(titles) == 4
+            summaries = storage.summaries_for_bill("119-hr-1")
+            assert len(summaries) == 3
+            # The other bill (119-hr-22) stays tier-1-only.
+            other = storage.get_bill("119-hr-22")
+            assert other is not None
+            assert other["cosponsors_fetched_at"] is None
+
+    def test_tier2_orphan_skipped(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        # Tier-2 only, with a bill_id that isn't in bills.jsonl (because
+        # bills.jsonl doesn't exist).
+        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+            json.dumps(
+                _envelope_for_section(
+                    _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 22)
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        stats = load_bills(storage_dir=storage_dir, db_path=db)
+        assert stats.bills_written == 0
+        assert stats.tier2_orphans_skipped == 1
+
+    def test_rerunning_load_preserves_fetched_at(self, tmp_path: Path) -> None:
+        """Re-running tier-1 load after enrichment must NOT clear *_fetched_at.
+
+        Guards against a regression where the parent UPSERT clobbers the
+        tier-2 stamp columns. The plan's DDL listed them on the bills
+        row, but the upsert SQL deliberately omits them — this test
+        pins that.
+        """
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        self._write_tier1(storage_dir)
+        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+            json.dumps(
+                _envelope_for_section(
+                    _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 1)
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            initial = storage.get_bill("119-hr-1")
+            assert initial is not None
+            assert initial["cosponsors_fetched_at"] is not None
+            initial_stamp = initial["cosponsors_fetched_at"]
+
+        # Re-run the loader; the parent tier-1 row gets UPSERTed again.
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["cosponsors_fetched_at"] == initial_stamp
+
+    def test_idempotent_rerun_tier2(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        self._write_tier1(storage_dir)
+        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+            json.dumps(
+                _envelope_for_section(
+                    _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 1)
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            cosponsors = storage.cosponsors_for_bill("119-hr-1")
+            assert len(cosponsors) == 3
 
 
 class TestIndexBills:
@@ -160,6 +323,72 @@ class TestIndexBills:
         with SqliteStorage(db, load_vec=False) as storage:
             (count,) = storage.connection.execute("SELECT COUNT(*) FROM bills_fts").fetchone()
             assert count == 1
+
+    def test_subjects_indexed_alphabetically(self, tmp_path: Path) -> None:
+        """The bills_fts.subjects column must be byte-stable across re-runs."""
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        _write_jsonl(
+            storage_dir,
+            [_envelope_for(_detail_payload("detail_119_hr_1.json"))],
+        )
+        # Subjects in deliberately non-alphabetical order.
+        subjects_payload = {
+            "subjects": {
+                "legislativeSubjects": [
+                    {"name": "Zebra studies"},
+                    {"name": "Apples"},
+                    {"name": "Mangoes"},
+                ],
+                "policyArea": {"name": "Energy"},
+            },
+            "pagination": {"count": 3},
+        }
+        (storage_dir / enrichment_jsonl_name("subjects")).write_text(
+            json.dumps(_envelope_for_section(subjects_payload, bill_key=(119, "hr", 1))) + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        index_bills(db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            row = storage.connection.execute(
+                "SELECT subjects FROM bills_fts WHERE bill_id = ?", ("119-hr-1",)
+            ).fetchone()
+            assert row["subjects"] == "Apples | Mangoes | Zebra studies"
+
+    def test_short_title_and_subjects_indexed_when_present(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        _write_jsonl(
+            storage_dir,
+            [_envelope_for(_detail_payload("detail_119_hr_1.json"))],
+        )
+        # Tier-2: titles + subjects.
+        titles_payload = _fixture("titles_119_hr_1.json")
+        subjects_payload = _fixture("subjects_119_hr_1.json")
+        (storage_dir / enrichment_jsonl_name("titles")).write_text(
+            json.dumps(_envelope_for_section(titles_payload, bill_key=(119, "hr", 1))) + "\n",
+            encoding="utf-8",
+        )
+        (storage_dir / enrichment_jsonl_name("subjects")).write_text(
+            json.dumps(_envelope_for_section(subjects_payload, bill_key=(119, "hr", 1))) + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        index_bills(db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            # Short title is "Lower Energy Costs Act" — matches "lower".
+            rows = storage.connection.execute(
+                "SELECT bill_id FROM bills_fts WHERE bills_fts MATCH ?",
+                ("lower",),
+            ).fetchall()
+            assert [r["bill_id"] for r in rows] == ["119-hr-1"]
+            # Subjects column contains "Pipelines".
+            rows = storage.connection.execute(
+                "SELECT bill_id FROM bills_fts WHERE bills_fts MATCH ?",
+                ("pipelines",),
+            ).fetchall()
+            assert [r["bill_id"] for r in rows] == ["119-hr-1"]
 
     def test_fts_matches_title_and_policy_area(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"

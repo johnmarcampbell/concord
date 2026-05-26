@@ -1,0 +1,38 @@
+{
+  "titles": [
+    {
+      "titleType": "Display Title",
+      "title": "Lower Energy Costs Act",
+      "chamberCode": null,
+      "chamberName": null
+    },
+    {
+      "titleType": "Official Title as Introduced",
+      "title": "To lower energy costs by increasing American energy production, exports, infrastructure, and critical minerals processing, by promoting transparency, accountability, permitting, and production of American resources, and by improving water quality certification and energy projects, and for other purposes.",
+      "chamberCode": null,
+      "chamberName": null
+    },
+    {
+      "titleType": "Short Title(s) as Introduced",
+      "title": "Lower Energy Costs Act",
+      "chamberCode": null,
+      "chamberName": null
+    },
+    {
+      "titleType": "Short Title(s) as Passed House",
+      "title": "Lower Energy Costs Act",
+      "chamberCode": "H",
+      "chamberName": "House"
+    }
+  ],
+  "pagination": {
+    "count": 4
+  },
+  "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

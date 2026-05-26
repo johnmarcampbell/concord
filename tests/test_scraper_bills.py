@@ -8,9 +8,18 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from concord.api import Client
-from concord.scraper.bills import BILLS_JSONL_NAME, ScrapeProgressEvent, scrape_basic
+from concord.scraper.bills import (
+    BILL_ENRICHMENT_SECTIONS,
+    BILLS_JSONL_NAME,
+    EnrichProgressEvent,
+    ScrapeProgressEvent,
+    enrichment_jsonl_name,
+    scrape_basic,
+    scrape_enrichment,
+)
 
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 
@@ -187,3 +196,133 @@ class TestScrapeBasic:
                 bill_types=["hr"],
             )
         assert (nested / BILLS_JSONL_NAME).exists()
+
+
+def _enrichment_client(
+    *,
+    failing_sections: set[str] | None = None,
+) -> Client:
+    """Return a Client that answers all five sub-endpoints from local fixtures."""
+    fixtures = {
+        "cosponsors": _fixture("cosponsors_119_hr_22.json"),
+        "actions": _fixture("actions_119_hr_1.json"),
+        "subjects": _fixture("subjects_119_hr_1.json"),
+        "titles": _fixture("titles_119_hr_1.json"),
+        "summaries": _fixture("summaries_119_hr_1.json"),
+    }
+    failing = failing_sections or set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        parts = request.url.path.rstrip("/").split("/")
+        # /v3/bill/{c}/{t}/{n}/{section}
+        if len(parts) != 7:
+            return httpx.Response(404)
+        section = parts[-1]
+        if section in failing:
+            return httpx.Response(500)
+        body = fixtures[section]
+        return httpx.Response(
+            200,
+            content=json.dumps(body),
+            headers={"content-type": "application/json"},
+        )
+
+    return Client(
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _s: None,
+    )
+
+
+class TestScrapeEnrichment:
+    def test_writes_one_envelope_per_section(self, tmp_path: Path) -> None:
+        client = _enrichment_client()
+        with client:
+            stats = scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+        assert stats.bills_enriched == 1
+        assert stats.snapshots_written == 5
+        for section in BILL_ENRICHMENT_SECTIONS:
+            path = tmp_path / enrichment_jsonl_name(section)
+            assert path.exists()
+            lines = path.read_text().splitlines()
+            assert len(lines) == 1
+            env = json.loads(lines[0])
+            assert env["key"] == {"congress": 119, "bill_type": "hr", "bill_number": 1}
+            assert env["fetched_at"] == FIXED_FETCHED_AT.isoformat()
+
+    def test_sections_subset_only_writes_listed_files(self, tmp_path: Path) -> None:
+        client = _enrichment_client()
+        with client:
+            scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sections=["cosponsors", "actions"],
+            )
+        files = {p.name for p in tmp_path.iterdir()}
+        assert files == {
+            enrichment_jsonl_name("cosponsors"),
+            enrichment_jsonl_name("actions"),
+        }
+
+    def test_partial_failure_leaves_other_sections_intact(self, tmp_path: Path) -> None:
+        client = _enrichment_client(failing_sections={"summaries"})
+        events: list[EnrichProgressEvent] = []
+        with client:
+            stats = scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                progress=events.append,
+            )
+        # Four sections written, one failed.
+        assert stats.snapshots_written == 4
+        assert stats.section_failures == 1
+        assert (tmp_path / enrichment_jsonl_name("cosponsors")).exists()
+        assert (tmp_path / enrichment_jsonl_name("summaries")).read_text() == ""
+        assert events[0].partial_failures == ("summaries",)
+
+    def test_limit_caps_bills(self, tmp_path: Path) -> None:
+        client = _enrichment_client()
+        with client:
+            stats = scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1), (119, "hr", 22), (119, "hr", 47)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                limit=2,
+            )
+        assert stats.bills_enriched == 2
+
+    def test_canonicalizes_bill_type(self, tmp_path: Path) -> None:
+        client = _enrichment_client()
+        with client:
+            scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "HR", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sections=["cosponsors"],
+            )
+        env = json.loads(
+            (tmp_path / enrichment_jsonl_name("cosponsors")).read_text().splitlines()[0]
+        )
+        assert env["key"]["bill_type"] == "hr"
+
+    def test_unknown_section_raises(self, tmp_path: Path) -> None:
+        client = _enrichment_client()
+        with client, pytest.raises(ValueError, match="unknown enrichment section"):
+            scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sections=["nonsense"],
+            )

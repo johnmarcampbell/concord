@@ -1,0 +1,21 @@
+{# One row of a Bill's action history list.
+
+   Procedural noise (committee referrals, motions to recommit, sponsor
+   remarks) is visually dimmed so the eye can latch onto the substantive
+   milestones (introductions, passage, presidential signature, becoming
+   law). The pattern lives here in the template — extending it doesn't
+   require a re-scrape. #}
+{%- set minor_codes = (
+  "H11000", "H11100",   "Referred-H",
+  "S11000", "S11100",   "Referred-S",
+  "H37300",
+  "H38310", "S38310"
+) -%}
+{%- set is_minor = action.action_code in minor_codes -%}
+<li class="border-t border-stone-100 py-2 text-sm {% if is_minor %}text-stone-400{% else %}text-stone-800{% endif %}">
+  <span class="font-mono text-xs text-stone-500 mr-2">{{ action.action_date }}</span>
+  <span>{{ action.action_text }}</span>
+  {% if action.source_system %}
+    <span class="text-xs text-stone-400 ml-1">· {{ action.source_system }}</span>
+  {% endif %}
+</li>

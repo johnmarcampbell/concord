@@ -577,6 +577,120 @@ def count_sponsored_bills_for_member(
     return int(count)
 
 
+def cosponsored_bills_for_member(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+    *,
+    limit: int = 25,
+) -> list[BillHit]:
+    """Return Bills the Member cosponsored, newest introduced first.
+
+    Joins ``bill_cosponsors`` to ``bills`` so the row carries the same
+    columns as :func:`sponsored_bills_for_member`. Empty when no
+    enrichment has run for any of the Member's cosponsorships.
+    """
+    rows = db.execute(
+        """
+        SELECT
+            b.bill_id              AS bill_id,
+            b.congress             AS congress,
+            b.bill_type            AS bill_type,
+            b.bill_number          AS bill_number,
+            b.title                AS title,
+            b.origin_chamber       AS origin_chamber,
+            b.policy_area          AS policy_area,
+            b.latest_action_date   AS latest_action_date,
+            b.sponsor_bioguide_id  AS sponsor_bioguide_id,
+            NULL                   AS sponsor_display_name
+        FROM bills b
+        JOIN bill_cosponsors c ON c.bill_id = b.bill_id
+        WHERE c.bioguide_id = ?
+        ORDER BY (b.introduced_date IS NULL), b.introduced_date DESC,
+                 b.congress DESC, b.bill_number ASC
+        LIMIT ?
+        """,
+        (bioguide_id, limit),
+    ).fetchall()
+    return [_bill_hit_from_row(r) for r in rows]
+
+
+def count_cosponsored_bills_for_member(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+) -> int:
+    (count,) = db.execute(
+        "SELECT COUNT(*) FROM bill_cosponsors WHERE bioguide_id = ?",
+        (bioguide_id,),
+    ).fetchone()
+    return int(count)
+
+
+def cosponsors_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, Any]]:
+    """Return cosponsor rows joined with the Member's display name when indexed."""
+    rows = db.execute(
+        """
+        SELECT
+            c.bioguide_id                  AS bioguide_id,
+            c.sponsorship_date             AS sponsorship_date,
+            c.sponsorship_withdrawn_date   AS sponsorship_withdrawn_date,
+            c.is_original_cosponsor        AS is_original_cosponsor,
+            m.display_name                 AS display_name
+        FROM bill_cosponsors c
+        LEFT JOIN members m ON m.bioguide_id = c.bioguide_id
+        WHERE c.bill_id = ?
+        ORDER BY c.is_original_cosponsor DESC, c.sponsorship_date ASC, c.bioguide_id ASC
+        """,
+        (bill_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def actions_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, Any]]:
+    """Return action rows newest-first by ``action_date``, ord ASC as tiebreaker.
+
+    We sort in SQL rather than relying on the API's order so the UI stays
+    correct if the upstream flips.
+    """
+    rows = db.execute(
+        "SELECT * FROM bill_actions WHERE bill_id = ? "
+        "ORDER BY (action_date IS NULL), action_date DESC, ord ASC",
+        (bill_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def subjects_for_bill(db: sqlite3.Connection, bill_id: str) -> list[str]:
+    """Return the bill's CRS legislative subjects, alphabetical."""
+    rows = db.execute(
+        "SELECT subject FROM bill_subjects WHERE bill_id = ? ORDER BY subject ASC",
+        (bill_id,),
+    ).fetchall()
+    return [r["subject"] for r in rows]
+
+
+def titles_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, Any]]:
+    """Return all title variants for a bill in scrape order."""
+    rows = db.execute(
+        "SELECT * FROM bill_titles WHERE bill_id = ? ORDER BY ord ASC",
+        (bill_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def summaries_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, Any]]:
+    """Return all CRS summary versions for a bill, oldest first.
+
+    The template renders the most recent (last in the list) open by
+    default and collapses the rest.
+    """
+    rows = db.execute(
+        "SELECT * FROM bill_summaries WHERE bill_id = ? "
+        "ORDER BY (action_date IS NULL), action_date ASC, version_code ASC",
+        (bill_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_current_members(
     db: sqlite3.Connection,
     *,

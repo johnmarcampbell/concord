@@ -14,6 +14,11 @@ from concord.models import (
     BillSnapshot,
     bill_id_from_components,
     parse_bill,
+    parse_bill_action,
+    parse_bill_subject,
+    parse_bill_summary,
+    parse_bill_title,
+    parse_cosponsor,
 )
 
 from ._snapshots import wrap_snapshot
@@ -105,6 +110,78 @@ class TestParseBill:
         assert bill.sponsor_bioguide_id is None
         assert bill.policy_area is None
         assert bill.latest_action_date is None
+
+
+class TestParseCosponsor:
+    def test_parses_cosponsor_fixture(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/cosponsors_119_hr_22.json").read_text())
+        rows = [parse_cosponsor(p) for p in payload["cosponsors"]]
+        assert all(r is not None for r in rows)
+        first = rows[0]
+        assert first is not None
+        assert first.bioguide_id == "B001302"
+        assert first.is_original_cosponsor is True
+        assert first.sponsorship_withdrawn_date is None
+
+    def test_parses_withdrawn_row(self, fixtures_dir: Path) -> None:
+        payload = json.loads(
+            (fixtures_dir / "api/bills/cosponsors_119_hr_22_withdrawn.json").read_text()
+        )
+        rows = [parse_cosponsor(p) for p in payload["cosponsors"]]
+        withdrawn = next(r for r in rows if r is not None and r.sponsorship_withdrawn_date)
+        assert withdrawn.sponsorship_withdrawn_date == "2025-04-02"
+        assert withdrawn.is_original_cosponsor is False
+
+    def test_returns_none_for_row_without_bioguide(self) -> None:
+        assert parse_cosponsor({"sponsorshipDate": "2025-01-09"}) is None
+
+
+class TestParseBillAction:
+    def test_parses_action_fixture(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/actions_119_hr_1.json").read_text())
+        rows = [parse_bill_action(p) for p in payload["actions"]]
+        assert all(r is not None for r in rows)
+        first = rows[0]
+        assert first is not None
+        assert first.action_date == "2026-03-30"
+        assert first.action_text == "Became Public Law No: 119-1."
+        assert first.source_system == "Library of Congress"
+
+    def test_returns_none_for_action_without_date(self) -> None:
+        assert parse_bill_action({"text": "Some action"}) is None
+
+
+class TestParseBillSubject:
+    def test_parses_subjects_fixture(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/subjects_119_hr_1.json").read_text())
+        rows = [parse_bill_subject(p) for p in payload["subjects"]["legislativeSubjects"]]
+        assert all(r is not None for r in rows)
+        names = [r.name for r in rows if r is not None]
+        assert "Energy" in names
+        assert "Pipelines" in names
+
+    def test_returns_none_for_empty_name(self) -> None:
+        assert parse_bill_subject({"name": ""}) is None
+
+
+class TestParseBillTitle:
+    def test_parses_titles_fixture(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/titles_119_hr_1.json").read_text())
+        rows = [parse_bill_title(p) for p in payload["titles"]]
+        assert all(r is not None for r in rows)
+        short = next(r for r in rows if r is not None and r.title_type.startswith("Short Title"))
+        assert short.title_text == "Lower Energy Costs Act"
+
+
+class TestParseBillSummary:
+    def test_parses_summaries_fixture(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/bills/summaries_119_hr_1.json").read_text())
+        rows = [parse_bill_summary(p) for p in payload["summaries"]]
+        assert all(r is not None for r in rows)
+        first = rows[0]
+        assert first is not None
+        assert first.version_code == "00"
+        assert "<p>" in first.summary_text
 
 
 class TestBillSnapshot:
