@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import TracebackType
 from typing import Any
 
@@ -43,6 +43,9 @@ ENV_API_KEY = "CONGRESS_API_KEY"
 #: at 250 results per page; using the max minimizes round trips on issues
 #: with hundreds of proceedings (the Senate routinely produces 100+).
 ARTICLES_PAGE_SIZE = 250
+
+#: Per-page size when walking ``/member/congress/{congress}``.
+MEMBERS_PAGE_SIZE = 250
 
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
@@ -174,6 +177,29 @@ class Client:
                 break
             offset += ARTICLES_PAGE_SIZE
         return out
+
+    def list_members(self, congress: int) -> Iterator[dict[str, Any]]:
+        """Yield every Member of one Congress as a raw API payload dict.
+
+        Walks ``GET /v3/member/congress/{congress}`` until ``pagination.next``
+        is absent. Returns raw dicts; structured parsing into
+        :class:`concord.models.Member` happens at the next layer per
+        ADR 0007.
+        """
+        offset = 0
+        path = f"/member/congress/{congress}"
+        while True:
+            payload = self._get(path, params={"limit": MEMBERS_PAGE_SIZE, "offset": offset})
+            page_count = 0
+            for raw in payload.get("members", []):
+                yield raw
+                page_count += 1
+            if "next" not in payload.get("pagination", {}):
+                return
+            if page_count == 0:
+                # Defensive: server advertises "next" but returned nothing.
+                return
+            offset += MEMBERS_PAGE_SIZE
 
     # -- internals -----------------------------------------------------------
 

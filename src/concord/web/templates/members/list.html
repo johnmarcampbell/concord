@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Members — Concord{% endblock %}
+{% block content %}
+<div>
+  <div class="flex items-baseline justify-between mb-4">
+    <h1 class="text-2xl font-serif font-semibold text-stone-900">Members</h1>
+    <span class="text-sm text-stone-500">{{ total }} currently serving</span>
+  </div>
+
+  <form method="get" action="/members" class="mb-6 flex flex-wrap gap-4 text-sm text-stone-600">
+    <fieldset class="flex flex-wrap gap-3">
+      <legend class="text-stone-500 uppercase tracking-wide text-xs mr-2">Chamber</legend>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="chamber" value="" {% if not chamber %}checked{% endif %}>
+        <span>All</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="chamber" value="house" {% if chamber == "house" %}checked{% endif %}>
+        <span>House</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="chamber" value="senate" {% if chamber == "senate" %}checked{% endif %}>
+        <span>Senate</span>
+      </label>
+    </fieldset>
+    <fieldset class="flex flex-wrap gap-3">
+      <legend class="text-stone-500 uppercase tracking-wide text-xs mr-2">Party</legend>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="party" value="" {% if not party %}checked{% endif %}>
+        <span>All</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="party" value="Democratic" {% if party == "Democratic" %}checked{% endif %}>
+        <span>D</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="party" value="Republican" {% if party == "Republican" %}checked{% endif %}>
+        <span>R</span>
+      </label>
+      <label class="flex items-center gap-1">
+        <input type="radio" name="party" value="Independent" {% if party == "Independent" %}checked{% endif %}>
+        <span>I</span>
+      </label>
+    </fieldset>
+    <button
+      type="submit"
+      class="rounded bg-stone-900 px-3 py-1 text-white text-xs font-medium hover:bg-stone-700"
+    >Apply</button>
+  </form>
+
+  {% if members %}
+    <ul class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {% for m in members %}
+        <li class="flex items-center gap-3 border border-stone-200 rounded p-3 bg-white">
+          {% if m.photo_url %}
+            <img
+              src="{{ m.photo_url }}"
+              alt=""
+              class="w-12 h-12 rounded-full object-cover border border-stone-200"
+              loading="lazy"
+            >
+          {% else %}
+            <div class="w-12 h-12 rounded-full bg-stone-100 border border-stone-200"></div>
+          {% endif %}
+          <div class="min-w-0">
+            <a
+              href="/members/{{ m.bioguide_id }}"
+              class="font-medium text-stone-900 hover:text-stone-700 truncate block"
+            >{{ m.display_name }}</a>
+            <div class="text-xs text-stone-500 truncate">
+              {{ "Sen." if m.chamber == "senate" else "Rep." }}
+              {{ m.state }}{% if m.district %}-{{ "%02d"|format(m.district) }}{% endif %}
+              {% if m.party %} · {{ m.party }}{% endif %}
+            </div>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+
+    {% if has_prev or has_next %}
+      <nav class="mt-8 flex justify-between text-sm">
+        {% if has_prev %}
+          <a
+            class="text-stone-600 hover:text-stone-900 underline"
+            href="/members?chamber={{ chamber }}&party={{ party|urlencode }}&page={{ page - 1 }}"
+          >&larr; Previous</a>
+        {% else %}<span></span>{% endif %}
+        {% if has_next %}
+          <a
+            class="text-stone-600 hover:text-stone-900 underline"
+            href="/members?chamber={{ chamber }}&party={{ party|urlencode }}&page={{ page + 1 }}"
+          >Next &rarr;</a>
+        {% else %}<span></span>{% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    <p class="text-stone-600">No Members match the current filters.</p>
+  {% endif %}
+</div>
+{% endblock %}

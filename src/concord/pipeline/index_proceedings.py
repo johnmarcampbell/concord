@@ -18,10 +18,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import NamedTuple
 
-from .chunking import Chunk, Chunker
-from .embedding import Embedder
-from .models import Proceeding
-from .storage.sqlite import SqliteStorage
+from ..chunking import Chunk, Chunker
+from ..embedding import Embedder
+from ..models import Proceeding
+from ..storage.sqlite import SqliteStorage
 
 
 class IndexResult(NamedTuple):

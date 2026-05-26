@@ -1,0 +1,69 @@
+{
+  "members": [
+    {
+      "bioguideId": "S000033",
+      "name": "Sanders, Bernard",
+      "directOrderName": "Bernard Sanders",
+      "invertedOrderName": "Sanders, Bernard",
+      "firstName": "Bernard",
+      "lastName": "Sanders",
+      "birthYear": "1941",
+      "partyName": "Independent",
+      "state": "Vermont",
+      "district": null,
+      "depiction": {
+        "imageUrl": "https://www.congress.gov/img/member/s000033.jpg"
+      },
+      "terms": {
+        "item": [
+          {
+            "chamber": "House of Representatives",
+            "congress": 102,
+            "startYear": 1991,
+            "endYear": 1993,
+            "stateCode": "VT",
+            "stateName": "Vermont",
+            "district": 0,
+            "partyName": "Independent"
+          },
+          {
+            "chamber": "Senate",
+            "congress": 117,
+            "startYear": 2021,
+            "endYear": 2023,
+            "stateCode": "VT",
+            "stateName": "Vermont",
+            "partyName": "Independent"
+          },
+          {
+            "chamber": "Senate",
+            "congress": 118,
+            "startYear": 2023,
+            "endYear": 2025,
+            "stateCode": "VT",
+            "stateName": "Vermont",
+            "partyName": "Independent"
+          },
+          {
+            "chamber": "Senate",
+            "congress": 119,
+            "startYear": 2025,
+            "stateCode": "VT",
+            "stateName": "Vermont",
+            "partyName": "Independent"
+          }
+        ]
+      },
+      "updateDate": "2026-01-15T00:00:00Z",
+      "url": "https://api.congress.gov/v3/member/S000033"
+    }
+  ],
+  "pagination": {
+    "count": 1
+  },
+  "request": {
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

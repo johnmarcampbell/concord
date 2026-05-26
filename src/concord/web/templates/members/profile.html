@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}{{ member.display_name }} — Concord{% endblock %}
+{% block content %}
+<article class="grid grid-cols-1 md:grid-cols-4 gap-6">
+  <aside class="md:col-span-1 text-sm text-stone-600 space-y-3">
+    {% if member.photo_url %}
+      <img
+        src="{{ member.photo_url }}"
+        alt=""
+        class="w-full rounded border border-stone-200"
+      >
+    {% endif %}
+    {% if current_term %}
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Currently serving</div>
+        <div>
+          {{ "Senator" if current_term.chamber == "senate" else "Representative" }}
+          for {{ current_term.state }}{% if current_term.district %}-{{ "%02d"|format(current_term.district) }}{% endif %}
+        </div>
+        {% if current_term.party %}<div>{{ current_term.party }}</div>{% endif %}
+      </div>
+    {% else %}
+      <div class="text-stone-500">Not currently serving.</div>
+    {% endif %}
+    {% if member.birth_year %}
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Born</div>
+        <div>{{ member.birth_year }}{% if member.death_year %} – {{ member.death_year }}{% endif %}</div>
+      </div>
+    {% endif %}
+    <div class="text-xs text-stone-400">
+      Bioguide: <span class="font-mono">{{ member.bioguide_id }}</span>
+    </div>
+    <div class="text-xs text-stone-400">
+      Snapshot: {{ member.fetched_at }}
+    </div>
+  </aside>
+
+  <div class="md:col-span-3 space-y-8">
+    <h1 class="text-2xl font-serif font-semibold">{{ member.display_name }}</h1>
+
+    {% if member.biography %}
+      <section>
+        <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Biography</h2>
+        {% if member.biography|length > 300 %}
+          <details>
+            <summary class="cursor-pointer text-stone-700">
+              {{ member.biography[:300] }}…
+              <span class="text-stone-500 text-xs ml-1">(expand)</span>
+            </summary>
+            <p class="mt-2 leading-relaxed text-stone-800">{{ member.biography }}</p>
+          </details>
+        {% else %}
+          <p class="leading-relaxed text-stone-800">{{ member.biography }}</p>
+        {% endif %}
+      </section>
+    {% endif %}
+
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Term history</h2>
+      {% if terms %}
+        <table class="w-full text-sm">
+          <thead class="text-left text-xs uppercase tracking-wide text-stone-500">
+            <tr>
+              <th class="py-1 pr-3">Congress</th>
+              <th class="py-1 pr-3">Chamber</th>
+              <th class="py-1 pr-3">State</th>
+              <th class="py-1 pr-3">District</th>
+              <th class="py-1 pr-3">Party</th>
+              <th class="py-1 pr-3">Years</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in terms %}
+              <tr class="border-t border-stone-100">
+                <td class="py-1 pr-3">{{ t.congress }}</td>
+                <td class="py-1 pr-3">{{ t.chamber|capitalize }}</td>
+                <td class="py-1 pr-3">{{ t.state }}</td>
+                <td class="py-1 pr-3">{% if t.district %}{{ "%02d"|format(t.district) }}{% else %}—{% endif %}</td>
+                <td class="py-1 pr-3">{{ t.party or "—" }}</td>
+                <td class="py-1 pr-3 text-stone-500">
+                  {{ t.start_date[:4] if t.start_date else "?" }} –
+                  {{ t.end_date[:4] if t.end_date else "present" }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="text-stone-500">No term history recorded.</p>
+      {% endif %}
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-sm uppercase tracking-wide text-stone-500">Coming in later phases</h2>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Sponsored bills (Phase 2)</div>
+        <div class="text-xs">Bills this Member introduced or cosponsored will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Recent votes (Phase 3)</div>
+        <div class="text-xs">Recent roll-call positions will appear here.</div>
+      </div>
+      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+        <div class="font-medium text-stone-600">Mentioned in proceedings (Phase 6)</div>
+        <div class="text-xs">Floor statements that name this Member will appear here.</div>
+      </div>
+    </section>
+  </div>
+</article>
+{% endblock %}

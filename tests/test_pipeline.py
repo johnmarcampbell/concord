@@ -17,7 +17,7 @@ import pytest
 
 from concord.api import Client
 from concord.models import Article, Issue, Proceeding
-from concord.pipeline import pull
+from concord.pipeline.load_proceedings import pull
 from concord.storage import JsonlStorage
 from concord.text import fetch_text
 

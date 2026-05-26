@@ -1,0 +1,149 @@
+"""Integration tests for the Members Stage 0 scraper.
+
+Drives :func:`concord.scraper.members.scrape` end-to-end against the
+captured ``tests/fixtures/api/members/*.json`` fixtures via
+``httpx.MockTransport``.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from concord.api import Client
+from concord.scraper.members import ScrapeProgressEvent, scrape
+
+FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
+
+
+def _client_serving(payloads_by_congress: dict[int, dict[str, Any]]) -> Client:
+    """Build a test Client that returns the right payload per ``congress``.
+
+    Single page per congress, ``pagination`` is left empty so the iterator
+    terminates after one call.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Path is ``/v3/member/congress/{n}``
+        parts = request.url.path.split("/")
+        congress = int(parts[-1])
+        body = payloads_by_congress.get(congress, {"members": [], "pagination": {}})
+        return httpx.Response(
+            200,
+            content=json.dumps(body),
+            headers={"content-type": "application/json"},
+        )
+
+    return Client(
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _s: None,
+    )
+
+
+def _load_fixture(name: str) -> dict[str, Any]:
+    here = Path(__file__).parent / "fixtures" / "api" / "members"
+    return json.loads((here / name).read_text())
+
+
+class TestScrape:
+    def test_writes_one_envelope_per_member(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        client = _client_serving({119: _load_fixture("current_house.json")})
+
+        with client:
+            n = scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+
+        assert n == 1
+        lines = out.read_text().splitlines()
+        assert len(lines) == 1
+        envelope = json.loads(lines[0])
+        assert envelope["fetched_at"] == FIXED_FETCHED_AT.isoformat()
+        assert envelope["key"] == {"bioguide_id": "O000172"}
+        assert envelope["payload"]["bioguideId"] == "O000172"
+
+    def test_writes_across_multiple_congresses(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        client = _client_serving(
+            {
+                117: _load_fixture("historical.json"),
+                119: _load_fixture("current_senate.json"),
+            }
+        )
+
+        with client:
+            n = scrape(
+                client=client,
+                congresses=[117, 119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+
+        assert n == 2
+        envelopes = [json.loads(line) for line in out.read_text().splitlines()]
+        keys = [e["key"]["bioguide_id"] for e in envelopes]
+        assert keys == ["J000301", "S000033"]
+
+    def test_appends_does_not_truncate(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        out.write_text('{"existing": true}\n', encoding="utf-8")
+        client = _client_serving({119: _load_fixture("current_house.json")})
+
+        with client:
+            scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+
+        lines = out.read_text().splitlines()
+        assert lines[0] == '{"existing": true}'
+        assert len(lines) == 2
+
+    def test_emits_per_congress_progress(self, tmp_path: Path) -> None:
+        events: list[ScrapeProgressEvent] = []
+        out = tmp_path / "members.jsonl"
+        client = _client_serving(
+            {
+                117: _load_fixture("historical.json"),
+                119: _load_fixture("current_senate.json"),
+            }
+        )
+
+        with client:
+            scrape(
+                client=client,
+                congresses=[117, 119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+                progress=events.append,
+            )
+
+        assert [e.congress for e in events] == [117, 119]
+        assert events[0].total_written == 1
+        assert events[1].total_written == 2
+
+    def test_creates_parent_directory(self, tmp_path: Path) -> None:
+        out = tmp_path / "nested" / "data" / "members.jsonl"
+        client = _client_serving({119: _load_fixture("current_house.json")})
+
+        with client:
+            scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+
+        assert out.exists()

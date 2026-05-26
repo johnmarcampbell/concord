@@ -30,7 +30,7 @@ from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 
-from ..models import Proceeding
+from ..models import Member, Proceeding, Term
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,
@@ -124,7 +124,92 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
 END;
+
+-- Members (Phase 1). Per-person identity fields; per-Term records the
+-- mutable career attributes (party, chamber, state, district). See ADR 0007.
+CREATE TABLE IF NOT EXISTS members (
+    bioguide_id  TEXT PRIMARY KEY,
+    first_name   TEXT NOT NULL,
+    middle_name  TEXT,
+    last_name    TEXT NOT NULL,
+    suffix       TEXT,
+    birth_year   INTEGER,
+    death_year   INTEGER,
+    display_name TEXT NOT NULL,
+    photo_url    TEXT,
+    biography    TEXT,
+    fetched_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS member_terms (
+    bioguide_id TEXT NOT NULL REFERENCES members(bioguide_id) ON DELETE CASCADE,
+    congress    INTEGER NOT NULL,
+    chamber     TEXT NOT NULL CHECK (chamber IN ('house', 'senate')),
+    party       TEXT,
+    state       TEXT NOT NULL,
+    district    INTEGER,
+    start_date  TEXT,
+    end_date    TEXT,
+    PRIMARY KEY (bioguide_id, congress, chamber)
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_terms_congress
+    ON member_terms (congress);
+CREATE INDEX IF NOT EXISTS idx_member_terms_state
+    ON member_terms (state);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS members_fts USING fts5(
+    bioguide_id UNINDEXED,
+    direct_order_name,
+    inverted_order_name,
+    last_name,
+    tokenize = 'porter'
+);
 """
+
+# Column lists for members + member_terms tables. Mirrors the ``_PROCEEDING_COLUMNS``
+# pattern: one source of truth for INSERT order.
+_MEMBER_COLUMNS: tuple[str, ...] = (
+    "bioguide_id",
+    "first_name",
+    "middle_name",
+    "last_name",
+    "suffix",
+    "birth_year",
+    "death_year",
+    "display_name",
+    "photo_url",
+    "biography",
+    "fetched_at",
+)
+
+_TERM_COLUMNS: tuple[str, ...] = (
+    "bioguide_id",
+    "congress",
+    "chamber",
+    "party",
+    "state",
+    "district",
+    "start_date",
+    "end_date",
+)
+
+_MEMBER_UPSERT_SQL = (
+    "INSERT INTO members ("
+    + ", ".join(_MEMBER_COLUMNS)
+    + ") VALUES ("
+    + ", ".join("?" for _ in _MEMBER_COLUMNS)
+    + ") ON CONFLICT(bioguide_id) DO UPDATE SET "
+    + ", ".join(f"{col} = excluded.{col}" for col in _MEMBER_COLUMNS if col != "bioguide_id")
+)
+
+_TERM_INSERT_SQL = (
+    "INSERT INTO member_terms ("
+    + ", ".join(_TERM_COLUMNS)
+    + ") VALUES ("
+    + ", ".join("?" for _ in _TERM_COLUMNS)
+    + ")"
+)
 
 # Vec-only schema. Only created when load_vec=True.
 _VEC_SCHEMA = """
@@ -285,6 +370,53 @@ class SqliteStorage:
             raise
         return len(rows)
 
+    # -- Members (Phase 1) ------------------------------------------------
+
+    def upsert_member(
+        self,
+        member: Member,
+        terms: Sequence[Term],
+        *,
+        fetched_at: str,
+    ) -> None:
+        """Project a Member + its Terms into SQLite atomically.
+
+        The Member row is UPSERTed on ``bioguide_id``; the Term rows for
+        this Member are replaced (DELETE-then-INSERT) so the projection
+        stays consistent with the latest snapshot, including the case
+        where the upstream API drops a Term that used to be present.
+        """
+        member_row = _row_from_member(member, fetched_at=fetched_at)
+        term_rows = [_row_from_term(t) for t in terms]
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute(_MEMBER_UPSERT_SQL, member_row)
+            self._conn.execute(
+                "DELETE FROM member_terms WHERE bioguide_id = ?",
+                (member.bioguide_id,),
+            )
+            if term_rows:
+                self._conn.executemany(_TERM_INSERT_SQL, term_rows)
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def get_member(self, bioguide_id: str) -> sqlite3.Row | None:
+        cursor = self._conn.execute(
+            "SELECT * FROM members WHERE bioguide_id = ?",
+            (bioguide_id,),
+        )
+        return cursor.fetchone()
+
+    def terms_for_member(self, bioguide_id: str) -> list[sqlite3.Row]:
+        cursor = self._conn.execute(
+            "SELECT * FROM member_terms WHERE bioguide_id = ? "
+            "ORDER BY congress ASC, chamber ASC",
+            (bioguide_id,),
+        )
+        return cursor.fetchall()
+
     # -- introspection ----------------------------------------------------
 
     @property
@@ -330,3 +462,16 @@ def _row_from_proceeding(proceeding: Proceeding) -> tuple[Any, ...]:
     """Project a :class:`Proceeding` into the column tuple expected by SQL."""
     dumped: dict[str, Any] = proceeding.model_dump(mode="json")
     return tuple(dumped[col] for col in _PROCEEDING_COLUMNS)
+
+
+def _row_from_member(member: Member, *, fetched_at: str) -> tuple[Any, ...]:
+    """Project a :class:`Member` into the column tuple expected by SQL."""
+    dumped: dict[str, Any] = member.model_dump(mode="json")
+    dumped["fetched_at"] = fetched_at
+    return tuple(dumped[col] for col in _MEMBER_COLUMNS)
+
+
+def _row_from_term(term: Term) -> tuple[Any, ...]:
+    """Project a :class:`Term` into the column tuple expected by SQL."""
+    dumped: dict[str, Any] = term.model_dump(mode="json")
+    return tuple(dumped[col] for col in _TERM_COLUMNS)

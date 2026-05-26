@@ -1,0 +1,50 @@
+{
+  "members": [
+    {
+      "bioguideId": "J000301",
+      "name": "Jeffords, James M.",
+      "directOrderName": "James M. Jeffords",
+      "invertedOrderName": "Jeffords, James M.",
+      "firstName": "James",
+      "middleName": "M.",
+      "lastName": "Jeffords",
+      "birthYear": "1934",
+      "deathYear": "2014",
+      "depiction": {
+        "imageUrl": "https://www.congress.gov/img/member/j000301.jpg"
+      },
+      "terms": {
+        "item": [
+          {
+            "chamber": "Senate",
+            "congress": 116,
+            "startYear": 2019,
+            "endYear": 2021,
+            "stateCode": "VT",
+            "stateName": "Vermont",
+            "partyName": "Republican"
+          },
+          {
+            "chamber": "Senate",
+            "congress": 117,
+            "startYear": 2021,
+            "endYear": 2023,
+            "stateCode": "VT",
+            "stateName": "Vermont",
+            "partyName": "Independent"
+          }
+        ]
+      },
+      "updateDate": "2014-08-19T00:00:00Z",
+      "url": "https://api.congress.gov/v3/member/J000301"
+    }
+  ],
+  "pagination": {
+    "count": 1
+  },
+  "request": {
+    "congress": "117",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

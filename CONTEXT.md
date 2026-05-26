@@ -5,12 +5,23 @@ Implementation lives elsewhere; this file is a dictionary, not a spec.
 
 ## Source domain (Congressional Record)
 
+The vocabulary in this section covers the Congressional Record sub-domain — the original scope of the project. The broader Congress sub-domain (Members, Bills, Votes, …) is defined under "Entities" below.
+
+
 - **Congressional Record** — the official record of the proceedings and debates of the U.S. Congress, published daily that Congress is in session. Data source.
 - **Issue** — one day's edition of the Congressional Record. Identified by `(volume, issue_number)`. Carries metadata: `issue_date`, `congress`, `session`.
 - **Section** — a top-level grouping within an issue: `Senate Section`, `House Section`, `Extensions of Remarks Section`, `Daily Digest`.
 - **Article** — one discrete item within a section. Has `title`, `start_page`, `end_page`, a Formatted Text URL and a PDF URL on congress.gov.
 - **Granule ID** — the stable identifier for an article, e.g. `CREC-2026-05-22-pt1-PgD551-6`. Embedded in both the text and PDF URLs. Used as the primary key across the entire pipeline; dedup is keyed on it.
 - **Proceeding** — the canonical output record of the scrape pipeline. One article's metadata + plain text + fetch timestamp. The unit of analysis throughout the project.
+
+## Entities (broader Congress sub-domain)
+
+- **Member** — a person who has served in the U.S. Congress. The canonical actor entity. Identified by Bioguide ID. "Former" vs "current" is a query filter, not a separate term.
+- **Bioguide ID** — the stable primary key for a Member, assigned by the Biographical Directory of the United States Congress. Example: `O000172`. Never reused, never rewritten.
+- **Term** — one continuous service period for a Member in one chamber. A Member has 1..N terms. Keyed by `(bioguide_id, congress, chamber)`. Carries party, state, district (House only), and start/end dates.
+- **Chamber** — `house` or `senate`. A property of the Term, not the Member: Members can move between chambers across terms.
+- **Party** — recorded per-Term, not per-Member. Members can change parties between terms; per-Term storage preserves historical state.
 
 ## Pipeline stages
 
