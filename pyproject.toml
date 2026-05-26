@@ -29,6 +29,7 @@ concord = "concord.cli:main"
 dev = [
     "mongomock>=4.1",
     "mypy>=1.11",
+    "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.6",
 ]
