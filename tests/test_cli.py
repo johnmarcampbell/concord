@@ -15,8 +15,9 @@ import pytest
 from typer.testing import CliRunner
 
 import concord.cli as cli_module
+import concord.scraper.proceedings as scraper_proceedings_module
 from concord.api import ENV_API_KEY, ApiError
-from concord.pipeline import PullResult
+from concord.pipeline.load_proceedings import PullResult
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -42,14 +43,14 @@ def with_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def stub_pull(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Replace ``concord.cli.pull`` with a recorder; return the call log."""
+    """Replace ``concord.scraper.proceedings.pull`` with a recorder; return the call log."""
     calls: list[dict[str, Any]] = []
 
     def fake_pull(start: date, end: date, **kwargs: Any) -> PullResult:
         calls.append({"start": start, "end": end, **kwargs})
         return PullResult(written=3, skipped=1)
 
-    monkeypatch.setattr(cli_module, "pull", fake_pull)
+    monkeypatch.setattr(scraper_proceedings_module, "pull", fake_pull)
     return calls
 
 
@@ -58,7 +59,7 @@ def stub_pull(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 class TestHelp:
     def test_help_lists_all_flags(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli_module.app, ["pull", "--help"])
+        result = runner.invoke(cli_module.app, ["scrape", "proceedings", "--help"])
         assert result.exit_code == 0
         # All four flags must appear in --help.
         plain = _strip(result.output)
@@ -77,7 +78,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -102,7 +104,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-01",
                 "--to",
@@ -126,7 +129,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -151,7 +155,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -173,7 +178,8 @@ class TestArgParsing:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -198,7 +204,7 @@ class TestArgParsing:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(
             cli_module.app,
-            ["pull", "--from", "2026-05-22", "--to", "2026-05-22"],
+            ["scrape", "proceedings", "--from", "2026-05-22", "--to", "2026-05-22"],
         )
         assert result.exit_code == 0, result.output
         # Default path is ./proceedings.jsonl
@@ -214,7 +220,7 @@ class TestArgParsing:
     ) -> None:
         result = runner.invoke(
             cli_module.app,
-            ["pull", "--from", bad_date, "--to", "2026-05-22"],
+            ["scrape", "proceedings", "--from", bad_date, "--to", "2026-05-22"],
         )
         assert result.exit_code != 0
         # stub_pull should not have been called.
@@ -236,7 +242,8 @@ class TestSuccessOutput:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -269,7 +276,8 @@ class TestMissingApiKey:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -298,11 +306,12 @@ class TestMissingApiKey:
         def boom(**_: Any) -> Any:
             raise ApiError("simulated init failure")
 
-        monkeypatch.setattr(cli_module, "Client", boom)
+        monkeypatch.setattr(scraper_proceedings_module, "Client", boom)
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -342,7 +351,8 @@ class TestMongoBackend:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -378,7 +388,8 @@ class TestMongoBackend:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -415,7 +426,7 @@ def _write_jsonl(path: Path, granule_ids: list[str]) -> None:
 
 class TestLoadCommand:
     def test_help_lists_all_flags(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli_module.app, ["load", "--help"])
+        result = runner.invoke(cli_module.app, ["load", "proceedings", "--help"])
         assert result.exit_code == 0
         plain = _strip(result.output)
         for flag in ["--jsonl", "--db", "--limit"]:
@@ -432,7 +443,7 @@ class TestLoadCommand:
 
         result = runner.invoke(
             cli_module.app,
-            ["load", "--jsonl", str(jsonl), "--db", str(db)],
+            ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)],
         )
         assert result.exit_code == 0, result.output
         plain = _strip(result.output)
@@ -454,9 +465,10 @@ class TestLoadCommand:
         db = tmp_path / "out.db"
         _write_jsonl(jsonl, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
 
-        first = runner.invoke(cli_module.app, ["load", "--jsonl", str(jsonl), "--db", str(db)])
+        args = ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)]
+        first = runner.invoke(cli_module.app, args)
         assert first.exit_code == 0
-        second = runner.invoke(cli_module.app, ["load", "--jsonl", str(jsonl), "--db", str(db)])
+        second = runner.invoke(cli_module.app, args)
         assert second.exit_code == 0, second.output
         plain = _strip(second.output)
         assert "Loaded 0 new proceedings" in plain
@@ -481,7 +493,7 @@ class TestLoadCommand:
         )
         result = runner.invoke(
             cli_module.app,
-            ["load", "--jsonl", str(jsonl), "--db", str(db), "--limit", "2"],
+            ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db), "--limit", "2"],
         )
         assert result.exit_code == 0, result.output
         plain = _strip(result.output)
@@ -512,7 +524,7 @@ class TestLoadCommand:
 
         result = runner.invoke(
             cli_module.app,
-            ["load", "--jsonl", str(jsonl), "--db", str(db)],
+            ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)],
         )
         assert result.exit_code == 0, result.output
         plain = _strip(result.output)
@@ -533,7 +545,7 @@ class TestLoadCommand:
 
         result = runner.invoke(
             cli_module.app,
-            ["load", "--jsonl", str(jsonl), "--db", str(db)],
+            ["load", "proceedings", "--jsonl", str(jsonl), "--db", str(db)],
         )
         assert result.exit_code == 0, result.output
         # Blank lines aren't malformed — they're just skipped silently.
@@ -549,6 +561,7 @@ class TestLoadCommand:
             cli_module.app,
             [
                 "load",
+                "proceedings",
                 "--jsonl",
                 str(tmp_path / "does-not-exist.jsonl"),
                 "--db",
@@ -623,7 +636,7 @@ class _FakeOpenAIClient:
 
 class TestIndexCommand:
     def test_help_lists_all_flags(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli_module.app, ["index", "--help"])
+        result = runner.invoke(cli_module.app, ["index", "proceedings", "--help"])
         assert result.exit_code == 0
         plain = _strip(result.output)
         for flag in ["--db", "--limit"]:
@@ -636,7 +649,10 @@ class TestIndexCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
-        result = runner.invoke(cli_module.app, ["index", "--db", str(tmp_path / "missing.db")])
+        result = runner.invoke(
+            cli_module.app,
+            ["index", "proceedings", "--db", str(tmp_path / "missing.db")],
+        )
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
         assert "not found" in plain
@@ -651,7 +667,7 @@ class TestIndexCommand:
         monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
         db = tmp_path / "out.db"
         _seed_db_for_index(db, ["CREC-2026-05-22-pt1-PgD551-1"])
-        result = runner.invoke(cli_module.app, ["index", "--db", str(db)])
+        result = runner.invoke(cli_module.app, ["index", "proceedings", "--db", str(db)])
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
         assert cli_module.ENV_OPENAI_API_KEY in plain
@@ -672,7 +688,7 @@ class TestIndexCommand:
 
         monkeypatch.setattr(openai, "OpenAI", lambda *a, **kw: _FakeOpenAIClient())
 
-        result = runner.invoke(cli_module.app, ["index", "--db", str(db)])
+        result = runner.invoke(cli_module.app, ["index", "proceedings", "--db", str(db)])
         assert result.exit_code == 0, result.output
         plain = _strip(result.output)
         assert "Indexed:" in plain
@@ -790,7 +806,8 @@ class TestDefaults:
         result = runner.invoke(
             cli_module.app,
             [
-                "pull",
+                "scrape",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--storage",
@@ -808,7 +825,7 @@ class TestDefaults:
 
 class TestRunCommand:
     def test_help_lists_all_flags(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli_module.app, ["run", "--help"])
+        result = runner.invoke(cli_module.app, ["run", "proceedings", "--help"])
         assert result.exit_code == 0
         plain = _strip(result.output)
         for flag in ["--from", "--to", "--storage", "--db", "--limit"]:
@@ -822,8 +839,8 @@ class TestRunCommand:
         tmp_path: Path,
     ) -> None:
         """`concord run` should call _run_pull, _run_load, _run_index in order."""
-        from concord.indexing import IndexResult
-        from concord.pipeline import PullResult
+        from concord.pipeline.index_proceedings import IndexResult
+        from concord.pipeline.load_proceedings import PullResult
 
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
         calls: list[str] = []
@@ -854,6 +871,7 @@ class TestRunCommand:
             cli_module.app,
             [
                 "run",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--to",
@@ -881,6 +899,7 @@ class TestRunCommand:
             cli_module.app,
             [
                 "run",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--storage",
@@ -903,6 +922,7 @@ class TestRunCommand:
             cli_module.app,
             [
                 "run",
+                "proceedings",
                 "--from",
                 "2026-05-22",
                 "--storage",

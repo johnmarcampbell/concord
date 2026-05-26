@@ -28,10 +28,10 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import NamedTuple
 
-from .api import Client
-from .models import Issue, Proceeding
-from .storage.base import Storage
-from .text import TextFetchError
+from ..api import Client
+from ..models import Issue, Proceeding
+from ..storage.base import Storage
+from ..text import TextFetchError
 
 _log = logging.getLogger("concord.pipeline")
 

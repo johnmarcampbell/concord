@@ -5,8 +5,8 @@ from pathlib import Path
 
 from concord.chunking import Chunker, ChunkerConfig
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.indexing import IndexResult, ProgressEvent, index
 from concord.models import Article, Issue, Proceeding
+from concord.pipeline.index_proceedings import IndexResult, ProgressEvent, index
 from concord.storage import SqliteStorage
 
 

@@ -1,41 +1,119 @@
+{% if query %}
+  <div class="mb-4 flex flex-wrap gap-4 text-sm text-stone-600">
+    <label class="flex items-center gap-1">
+      <input
+        type="checkbox" name="members" value="on"
+        form=""
+        {% if include_members %}checked{% endif %}
+        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}{% else %}on{% endif %}&proceedings={% if include_proceedings %}on{% endif %}"
+        hx-target="main"
+        hx-push-url="true"
+      >
+      <span>Members</span>
+    </label>
+    <label class="flex items-center gap-1">
+      <input
+        type="checkbox" name="proceedings" value="on"
+        form=""
+        {% if include_proceedings %}checked{% endif %}
+        hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&members={% if include_members %}on{% endif %}&proceedings={% if include_proceedings %}{% else %}on{% endif %}"
+        hx-target="main"
+        hx-push-url="true"
+      >
+      <span>Proceedings</span>
+    </label>
+  </div>
+{% endif %}
+
 {% if not query %}
   <p class="text-stone-500">Enter a query above to search.</p>
-{% elif total == 0 %}
-  <p class="text-stone-600">
-    No proceedings match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.
-  </p>
 {% else %}
-  <p class="text-sm text-stone-500 mb-4">
-    {{ total }} proceeding{% if total != 1 %}s{% endif %} matching
-    <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>
-    — page {{ page }}.
-  </p>
-  <ol class="space-y-6">
-    {% for entry in results %}
-      {% include "_result_card.html" %}
-    {% endfor %}
-  </ol>
+  {% if include_members %}
+    <section class="mb-8">
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-3">
+        Members ({{ member_hits|length }})
+      </h2>
+      {% if member_hits %}
+        <ul class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {% for m in member_hits %}
+            <li class="flex items-center gap-3 border border-stone-200 rounded p-3 bg-white">
+              {% if m.photo_url %}
+                <img
+                  src="{{ m.photo_url }}"
+                  alt=""
+                  class="w-12 h-12 rounded-full object-cover border border-stone-200"
+                  loading="lazy"
+                >
+              {% else %}
+                <div class="w-12 h-12 rounded-full bg-stone-100 border border-stone-200"></div>
+              {% endif %}
+              <div class="min-w-0">
+                <a
+                  href="/members/{{ m.bioguide_id }}"
+                  class="font-medium text-stone-900 hover:text-stone-700 truncate block"
+                >{{ m.display_name }}</a>
+                <div class="text-xs text-stone-500 truncate">
+                  {% if m.current_chamber %}
+                    {{ "Sen." if m.current_chamber == "senate" else "Rep." }}
+                  {% endif %}
+                  {% if m.current_state %}{{ m.current_state }}{% endif %}
+                  {% if m.current_party %} · {{ m.current_party }}{% endif %}
+                  {% if not m.is_current %} · former{% endif %}
+                </div>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-stone-500 text-sm">
+          No Members match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.
+        </p>
+      {% endif %}
+    </section>
+  {% endif %}
 
-  {% if has_prev or has_next %}
-    <nav class="mt-8 flex justify-between text-sm">
-      {% if has_prev %}
-        <a
-          class="text-stone-600 hover:text-stone-900 underline"
-          href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
-          hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
-          hx-target="main"
-          hx-push-url="true"
-        >&larr; Previous</a>
-      {% else %}<span></span>{% endif %}
-      {% if has_next %}
-        <a
-          class="text-stone-600 hover:text-stone-900 underline"
-          href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
-          hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
-          hx-target="main"
-          hx-push-url="true"
-        >Next &rarr;</a>
-      {% else %}<span></span>{% endif %}
-    </nav>
+  {% if include_proceedings %}
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-3">
+        Proceedings ({{ total }})
+      </h2>
+      {% if total == 0 %}
+        <p class="text-stone-600">
+          No proceedings match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.
+        </p>
+      {% else %}
+        <p class="text-sm text-stone-500 mb-4">
+          page {{ page }}.
+        </p>
+        <ol class="space-y-6">
+          {% for entry in results %}
+            {% include "_result_card.html" %}
+          {% endfor %}
+        </ol>
+
+        {% if has_prev or has_next %}
+          <nav class="mt-8 flex justify-between text-sm">
+            {% if has_prev %}
+              <a
+                class="text-stone-600 hover:text-stone-900 underline"
+                href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
+                hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page - 1 }}"
+                hx-target="main"
+                hx-push-url="true"
+              >&larr; Previous</a>
+            {% else %}<span></span>{% endif %}
+            {% if has_next %}
+              <a
+                class="text-stone-600 hover:text-stone-900 underline"
+                href="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
+                hx-get="/search?q={{ query|urlencode }}&from={{ from_date }}&to={{ to_date }}&section={{ section }}&page={{ page + 1 }}"
+                hx-target="main"
+                hx-push-url="true"
+              >Next &rarr;</a>
+            {% else %}<span></span>{% endif %}
+          </nav>
+        {% endif %}
+      {% endif %}
+    </section>
   {% endif %}
 {% endif %}

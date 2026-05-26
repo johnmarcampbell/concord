@@ -431,3 +431,43 @@ class TestRetry429:
             client.list_issues()
         # HTTP-date form not supported; falls back to exponential.
         assert sleeps == [1.0]
+
+
+# -- list_members ------------------------------------------------------------
+
+
+class TestListMembers:
+    def test_iterates_single_page(self, fixtures_dir: Path) -> None:
+        payload = json.loads((fixtures_dir / "api/members/current_house.json").read_text())
+        client = _make_client(lambda r: _json_response(payload))
+        with client:
+            members = list(client.list_members(congress=119))
+        assert len(members) == 1
+        assert members[0]["bioguideId"] == "O000172"
+
+    def test_paginates_until_no_next(self, fixtures_dir: Path) -> None:
+        page1 = json.loads((fixtures_dir / "api/members/current_house.json").read_text())
+        page1["pagination"] = {"next": "https://example.invalid/next", "count": 2}
+        page2 = json.loads((fixtures_dir / "api/members/current_senate.json").read_text())
+
+        responses = iter([page1, page2])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response(next(responses))
+
+        client = _make_client(handler)
+        with client:
+            members = list(client.list_members(congress=119))
+        assert [m["bioguideId"] for m in members] == ["O000172", "S000033"]
+
+    def test_passes_congress_into_path(self) -> None:
+        captured: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request.url.path)
+            return _json_response({"members": [], "pagination": {"count": 0}})
+
+        client = _make_client(handler)
+        with client:
+            list(client.list_members(congress=118))
+        assert captured == ["/v3/member/congress/118"]

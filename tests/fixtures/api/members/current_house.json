@@ -1,0 +1,62 @@
+{
+  "members": [
+    {
+      "bioguideId": "O000172",
+      "name": "Ocasio-Cortez, Alexandria",
+      "directOrderName": "Alexandria Ocasio-Cortez",
+      "invertedOrderName": "Ocasio-Cortez, Alexandria",
+      "firstName": "Alexandria",
+      "lastName": "Ocasio-Cortez",
+      "partyName": "Democratic",
+      "state": "New York",
+      "district": 14,
+      "depiction": {
+        "imageUrl": "https://www.congress.gov/img/member/o000172.jpg",
+        "attribution": "Image courtesy of the Member"
+      },
+      "terms": {
+        "item": [
+          {
+            "chamber": "House of Representatives",
+            "congress": 117,
+            "startYear": 2021,
+            "endYear": 2023,
+            "stateCode": "NY",
+            "stateName": "New York",
+            "district": 14,
+            "partyName": "Democratic"
+          },
+          {
+            "chamber": "House of Representatives",
+            "congress": 118,
+            "startYear": 2023,
+            "endYear": 2025,
+            "stateCode": "NY",
+            "stateName": "New York",
+            "district": 14,
+            "partyName": "Democratic"
+          },
+          {
+            "chamber": "House of Representatives",
+            "congress": 119,
+            "startYear": 2025,
+            "stateCode": "NY",
+            "stateName": "New York",
+            "district": 14,
+            "partyName": "Democratic"
+          }
+        ]
+      },
+      "updateDate": "2026-01-15T00:00:00Z",
+      "url": "https://api.congress.gov/v3/member/O000172"
+    }
+  ],
+  "pagination": {
+    "count": 1
+  },
+  "request": {
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+  }
+}

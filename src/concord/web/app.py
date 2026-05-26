@@ -48,6 +48,14 @@ SEARCH_RATE_LIMIT = "30/minute"
 #: Page size for search results.
 SEARCH_PAGE_SIZE = 20
 
+#: Page size for the ``/members`` browse-only index.
+MEMBERS_PAGE_SIZE = 50
+
+#: Cap on Member hits surfaced in a federated ``/search``. Members are an
+#: at-most-N peek alongside Proceedings; deeper exploration goes through
+#: ``/members``.
+MEMBER_RESULT_LIMIT = 10
+
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
@@ -137,6 +145,10 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
         date_to: str | None = Query(None, alias="to", description="YYYY-MM-DD"),
         section: str | None = Query(None, description="Senate Section, House Section, etc."),
         page: int = Query(1, ge=1, description="1-based page index."),
+        members_on: str = Query("on", alias="members", description="'on' to include Members."),
+        proceedings_on: str = Query(
+            "on", alias="proceedings", description="'on' to include Proceedings."
+        ),
         db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
         embedder: Embedder = Depends(get_embedder),  # noqa: B008 - FastAPI Depends pattern
     ) -> Response:
@@ -144,30 +156,42 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
         date_to_parsed = _parse_optional_date(date_to)
         offset = (page - 1) * SEARCH_PAGE_SIZE
 
-        results = search_mod.search(
-            db,
-            embedder,
-            query=q,
-            date_from=date_from_parsed,
-            date_to=date_to_parsed,
-            section=section,
-            limit=SEARCH_PAGE_SIZE,
-            offset=offset,
-        )
+        include_members = members_on == "on"
+        include_proceedings = proceedings_on == "on"
 
-        # Build snippets for display. Keyword path tried first; fall back
-        # to semantic truncation if FTS5 returned nothing for this chunk
-        # (i.e. it matched only via the vector index).
-        rendered_results = []
-        for r in results.results:
+        # -- Members section ---------------------------------------------
+        member_hits: list[search_mod.MemberHit] = []
+        if include_members and q.strip():
             try:
-                snip = keyword_snippet(db, r.chunk_id, q) if q.strip() else ""
+                member_hits = search_mod.search_members(db, query=q, limit=MEMBER_RESULT_LIMIT)
             except sqlite3.OperationalError:
-                # FTS5 query syntax errors land here; fall back to a semantic snippet.
-                snip = ""
-            if not snip:
-                snip = semantic_snippet(r.chunk_text)
-            rendered_results.append({"result": r, "snippet": snip})
+                # FTS5 query syntax errors land here; show no Members
+                # rather than 500 on a malformed query.
+                member_hits = []
+
+        # -- Proceedings section -----------------------------------------
+        rendered_results: list[dict[str, Any]] = []
+        total_proceedings = 0
+        if include_proceedings:
+            results = search_mod.search(
+                db,
+                embedder,
+                query=q,
+                date_from=date_from_parsed,
+                date_to=date_to_parsed,
+                section=section,
+                limit=SEARCH_PAGE_SIZE,
+                offset=offset,
+            )
+            total_proceedings = results.total
+            for r in results.results:
+                try:
+                    snip = keyword_snippet(db, r.chunk_id, q) if q.strip() else ""
+                except sqlite3.OperationalError:
+                    snip = ""
+                if not snip:
+                    snip = semantic_snippet(r.chunk_text)
+                rendered_results.append({"result": r, "snippet": snip})
 
         context = {
             "query": q,
@@ -175,12 +199,15 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
             "to_date": date_to or "",
             "section": section or "",
             "results": rendered_results,
-            "total": results.total,
+            "total": total_proceedings,
             "page": page,
             "page_size": SEARCH_PAGE_SIZE,
-            "has_next": (offset + SEARCH_PAGE_SIZE) < results.total,
+            "has_next": include_proceedings and (offset + SEARCH_PAGE_SIZE) < total_proceedings,
             "has_prev": page > 1,
             "sections": _SECTION_OPTIONS,
+            "member_hits": member_hits,
+            "include_members": include_members,
+            "include_proceedings": include_proceedings,
         }
 
         template = "_results.html" if _is_htmx(request) else "search.html"
@@ -202,6 +229,68 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:
             )
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request, "proceeding.html", {"p": row}
+        )
+
+    @app.get("/members", response_class=HTMLResponse)
+    def members_index(
+        request: Request,
+        chamber: str | None = Query(None, description="'house', 'senate', or omitted."),
+        party: str | None = Query(None, description="Filter on a party name."),
+        page: int = Query(1, ge=1, description="1-based page index."),
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        offset = (page - 1) * MEMBERS_PAGE_SIZE
+        # Normalize chamber checkbox params: the form sends either "house",
+        # "senate", or omits entirely. Reject anything else to "show all".
+        chamber_filter = chamber if chamber in {"house", "senate"} else None
+        rows, total = search_mod.list_current_members(
+            db,
+            chamber=chamber_filter,
+            party=party or None,
+            limit=MEMBERS_PAGE_SIZE,
+            offset=offset,
+        )
+        context = {
+            "members": rows,
+            "total": total,
+            "page": page,
+            "page_size": MEMBERS_PAGE_SIZE,
+            "has_next": offset + MEMBERS_PAGE_SIZE < total,
+            "has_prev": page > 1,
+            "chamber": chamber_filter or "",
+            "party": party or "",
+        }
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request, "members/list.html", context
+        )
+
+    @app.get("/members/{bioguide_id}", response_class=HTMLResponse)
+    def member_profile(
+        request: Request,
+        bioguide_id: str,
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        member = search_mod.get_member(db, bioguide_id)
+        if member is None:
+            return templates.TemplateResponse(  # type: ignore[no-any-return]
+                request,
+                "404.html",
+                {"granule_id": bioguide_id},
+                status_code=404,
+            )
+        terms = search_mod.terms_for_member(db, bioguide_id)
+        current_term = next(
+            (
+                t
+                for t in terms
+                if t["end_date"] is None or t["end_date"] >= date.today().isoformat()
+            ),
+            None,
+        )
+        return templates.TemplateResponse(  # type: ignore[no-any-return]
+            request,
+            "members/profile.html",
+            {"member": member, "terms": terms, "current_term": current_term},
         )
 
     @app.get("/healthz")
@@ -235,4 +324,10 @@ def _parse_optional_date(value: str | None) -> date | None:
         ) from exc
 
 
-__all__: list[Any] = ["SEARCH_PAGE_SIZE", "SEARCH_RATE_LIMIT", "create_app"]
+__all__: list[Any] = [
+    "MEMBERS_PAGE_SIZE",
+    "MEMBER_RESULT_LIMIT",
+    "SEARCH_PAGE_SIZE",
+    "SEARCH_RATE_LIMIT",
+    "create_app",
+]

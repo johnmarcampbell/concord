@@ -257,3 +257,165 @@ def get_proceeding(db: sqlite3.Connection, granule_id: str) -> dict[str, Any] | 
     if row is None:
         return None
     return dict(row)
+
+
+# -- Members (Phase 1) ------------------------------------------------------
+
+
+class MemberHit(BaseModel):
+    """One row of the federated ``/search`` Members section."""
+
+    bioguide_id: str
+    display_name: str
+    last_name: str
+    photo_url: str | None
+    is_current: bool
+    last_active_congress: int | None
+    current_chamber: str | None  # "house" / "senate" / None
+    current_state: str | None
+    current_party: str | None
+
+
+def search_members(
+    db: sqlite3.Connection,
+    *,
+    query: str,
+    limit: int = 10,
+) -> list[MemberHit]:
+    """FTS5 search over Member names, ordered for ambiguous-query disambiguation.
+
+    Returns at most ``limit`` hits. An empty / whitespace-only query short
+    circuits to ``[]`` without touching the database. Results are sorted
+    ``(is_current DESC, last_active_congress DESC)`` so a query like
+    ``"Sanders"`` surfaces the currently-serving Sanders ahead of any
+    historical namesakes (Phase 1 plan, "Disambiguation").
+    """
+    if not query.strip():
+        return []
+
+    safe = '"' + query.replace('"', '""') + '"'
+    rows = db.execute(
+        """
+        SELECT
+            m.bioguide_id        AS bioguide_id,
+            m.display_name       AS display_name,
+            m.last_name          AS last_name,
+            m.photo_url          AS photo_url,
+            MAX(t.congress)      AS last_active_congress,
+            MAX(CASE WHEN t.end_date IS NULL OR t.end_date >= date('now') THEN 1 ELSE 0 END)
+                                 AS is_current_flag
+        FROM members_fts f
+        JOIN members m   ON m.bioguide_id = f.bioguide_id
+        LEFT JOIN member_terms t ON t.bioguide_id = m.bioguide_id
+        WHERE f.members_fts MATCH ?
+        GROUP BY m.bioguide_id
+        ORDER BY is_current_flag DESC, last_active_congress DESC, m.last_name ASC
+        LIMIT ?
+        """,
+        (safe, limit),
+    ).fetchall()
+
+    hits: list[MemberHit] = []
+    for row in rows:
+        bioguide_id = row["bioguide_id"]
+        # Resolve the "current" term's metadata for the card line on the
+        # results page. Falls back to the most-recent term if none current.
+        term_row = db.execute(
+            """
+            SELECT chamber, state, party
+            FROM member_terms
+            WHERE bioguide_id = ?
+            ORDER BY
+                CASE WHEN end_date IS NULL OR end_date >= date('now') THEN 0 ELSE 1 END,
+                congress DESC
+            LIMIT 1
+            """,
+            (bioguide_id,),
+        ).fetchone()
+
+        hits.append(
+            MemberHit(
+                bioguide_id=bioguide_id,
+                display_name=row["display_name"],
+                last_name=row["last_name"],
+                photo_url=row["photo_url"],
+                is_current=bool(row["is_current_flag"]),
+                last_active_congress=row["last_active_congress"],
+                current_chamber=term_row["chamber"] if term_row else None,
+                current_state=term_row["state"] if term_row else None,
+                current_party=term_row["party"] if term_row else None,
+            )
+        )
+    return hits
+
+
+def get_member(db: sqlite3.Connection, bioguide_id: str) -> dict[str, Any] | None:
+    row = db.execute("SELECT * FROM members WHERE bioguide_id = ?", (bioguide_id,)).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def terms_for_member(db: sqlite3.Connection, bioguide_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        "SELECT * FROM member_terms WHERE bioguide_id = ? ORDER BY congress DESC, chamber ASC",
+        (bioguide_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_current_members(
+    db: sqlite3.Connection,
+    *,
+    chamber: str | None = None,  # "house" / "senate" / None
+    party: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return ``(rows, total)`` for currently-serving Members.
+
+    Each row carries the Member identity fields plus the current Term's
+    ``chamber``, ``state``, ``district``, ``party`` so the index page can
+    render a one-liner per Member without an N+1 follow-up query.
+    """
+    where = ["(t.end_date IS NULL OR t.end_date >= date('now'))"]
+    params: list[Any] = []
+    if chamber in {"house", "senate"}:
+        where.append("t.chamber = ?")
+        params.append(chamber)
+    if party:
+        where.append("t.party = ?")
+        params.append(party)
+    where_sql = " AND ".join(where)
+
+    (total,) = db.execute(
+        f"""
+        SELECT COUNT(DISTINCT m.bioguide_id)
+        FROM members m
+        JOIN member_terms t ON t.bioguide_id = m.bioguide_id
+        WHERE {where_sql}
+        """,
+        params,
+    ).fetchone()
+
+    rows = db.execute(
+        f"""
+        SELECT
+            m.bioguide_id  AS bioguide_id,
+            m.display_name AS display_name,
+            m.last_name    AS last_name,
+            m.photo_url    AS photo_url,
+            t.chamber      AS chamber,
+            t.state        AS state,
+            t.district     AS district,
+            t.party        AS party
+        FROM members m
+        JOIN member_terms t ON t.bioguide_id = m.bioguide_id
+        WHERE {where_sql}
+        GROUP BY m.bioguide_id
+        ORDER BY t.state ASC, m.last_name ASC
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    return [dict(r) for r in rows], int(total)
