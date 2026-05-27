@@ -1,11 +1,41 @@
 [project]
-name = "concord"
-version = "0.1.0"
-description = "Pipeline for collecting the daily Congressional Record via api.congress.gov."
+name = "concord-congress"
+version = "0.2.0"
+description = "Collect, index, and search U.S. Congress data — Congressional Record, Members, Bills, Votes — via api.congress.gov."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "John Campbell" }]
+keywords = [
+    "congress",
+    "congressional-record",
+    "legislation",
+    "senate",
+    "house",
+    "voting",
+    "bills",
+    "search",
+    "sqlite",
+    "fts5",
+    "vector-search",
+    "hybrid-search",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Sociology",
+    "Typing :: Typed",
+]
 dependencies = [
     "fastapi>=0.136.3",
     "httpx>=0.28.1",
@@ -18,6 +48,12 @@ dependencies = [
     "typer>=0.25.1",
     "uvicorn[standard]>=0.48.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/johnmarcampbell/concord"
+Source = "https://github.com/johnmarcampbell/concord"
+Issues = "https://github.com/johnmarcampbell/concord/issues"
+Releases = "https://github.com/johnmarcampbell/concord/releases"
 
 [project.scripts]
 concord = "concord.cli:main"

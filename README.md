@@ -2,26 +2,39 @@
 
 A pipeline for collecting U.S. Congress data — currently the daily [Congressional Record](https://www.congress.gov/congressional-record) (proceedings) and the directory of [Members](https://www.congress.gov/members) — via [api.congress.gov](https://api.congress.gov/). Stores everything locally as JSON Lines + SQLite, with a FastAPI search demo on top.
 
+Distributed on PyPI as **`concord-congress`**; imported in Python as **`concord`** (the bare `concord` name on PyPI was already taken).
+
+## Install
+
+```sh
+pip install concord-congress
+```
+
+Requires Python 3.12+. The install is batteries-included — every `concord` subcommand (`scrape`, `load`, `index`, `run`, `serve`) works out of the box.
+
 ## Quick start
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+```sh
+export CONGRESS_API_KEY=...  # free key from https://api.data.gov/signup/
+export OPENAI_API_KEY=...    # required for proceedings indexing (semantic search)
+
+# Proceedings — one day's articles, end-to-end:
+concord run proceedings --from 2026-05-22 --to 2026-05-22
+
+# Members — current Congress, end-to-end:
+concord run members --congresses 119
+
+# Serve the web demo:
+concord serve
+```
+
+To work on Concord itself (rather than just use it), clone the repo and `uv sync` instead:
 
 ```sh
 git clone https://github.com/johnmarcampbell/concord
 cd concord
 uv sync
-
-export CONGRESS_API_KEY=...  # free key from https://api.data.gov/signup/
-export OPENAI_API_KEY=...    # required for proceedings indexing (semantic search)
-
-# Proceedings — one day's articles, end-to-end:
 uv run concord run proceedings --from 2026-05-22 --to 2026-05-22
-
-# Members — current Congress, end-to-end:
-uv run concord run members --congresses 119
-
-# Serve the web demo:
-uv run concord serve
 ```
 
 Output for `run proceedings`:
@@ -186,6 +199,19 @@ uv run pytest
 
 The `pre-commit` hook runs `ruff format` and `ruff check --fix` on every commit; CI runs all four checks above plus `pytest`.
 
+## Versioning and API stability
+
+Concord is below 1.0 and is *not* committing to a stable Python API yet. What semver does track for `concord-congress` releases:
+
+- `concord <subcommand>` shape, flag names, exit codes, and the format of the success-summary lines printed to stdout
+- The on-disk JSONL and SQLite formats that the CLI produces (other tools may read these)
+
+What semver does *not* track (yet):
+
+- Python imports. `from concord.storage.sqlite import ...` and similar internal imports may move between minor versions as the codebase refactors. Build CLI workflows on top of `concord`, not Python integrations, until 1.0.
+
+See [ADR 0014](docs/adr/0014-publish-to-pypi-cli-first.md) for the reasoning.
+
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).

@@ -9,7 +9,10 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Docker image → GHCR.
+  # Skipped for prereleases — those are dry-runs to TestPyPI only (ADR 0014).
   build-and-push:
+    if: ${{ github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,3 +53,51 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Wheel + sdist → real PyPI. Trusted publishing via OIDC (ADR 0014); no
+  # PYPI_API_TOKEN secret. Requires `concord-congress` to be registered on
+  # pypi.org with this repo + workflow + environment as a trusted publisher.
+  publish-pypi:
+    if: ${{ github.event.release.prerelease == false }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Wheel + sdist → TestPyPI. Same flow, fires on prereleases only — those
+  # are dry-runs to validate the pipeline end-to-end before a real publish.
+  # Requires the same trusted-publisher setup on test.pypi.org.
+  publish-testpypi:
+    if: ${{ github.event.release.prerelease == true }}
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
