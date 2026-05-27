@@ -210,7 +210,7 @@ What semver does *not* track (yet):
 
 - Python imports. `from concord.storage.sqlite import ...` and similar internal imports may move between minor versions as the codebase refactors. Build CLI workflows on top of `concord`, not Python integrations, until 1.0.
 
-See [ADR 0014](docs/adr/0014-publish-to-pypi-cli-first.md) for the reasoning.
+See [ADR 0014](docs/adr/0014-publish-to-pypi-cli-first.md) for the reasoning. Maintainers: [docs/releases.md](docs/releases.md) is the recipe for cutting a release.
 
 ## License
 
