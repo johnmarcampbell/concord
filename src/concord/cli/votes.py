@@ -71,6 +71,7 @@ def _run_scrape_votes(
     storage_dir: Path,
     limit: int | None,
     show_progress: bool,
+    skip_unchanged: bool = False,
 ) -> int:
     fetched_at = datetime.now(UTC)
     progress = Progress(enabled=show_progress)
@@ -90,6 +91,8 @@ def _run_scrape_votes(
 
     total_votes = 0
     total_positions = 0
+    total_skipped = 0
+    total_positions_skipped = 0
 
     try:
         if "house" in chambers:
@@ -107,9 +110,12 @@ def _run_scrape_votes(
                     sessions=tuple(sessions),
                     limit=limit,
                     progress=_on_progress if show_progress else None,
+                    skip_unchanged=skip_unchanged,
                 )
             total_votes += stats.votes_written
             total_positions += stats.positions_written
+            total_skipped += stats.votes_skipped
+            total_positions_skipped += stats.positions_skipped
 
         if "senate" in chambers:
             with SenateClient() as senate_client:
@@ -121,14 +127,21 @@ def _run_scrape_votes(
                     sessions=tuple(sessions),
                     limit=limit,
                     progress=_on_progress if show_progress else None,
+                    skip_unchanged=skip_unchanged,
                 )
             total_votes += stats.votes_written
+            total_skipped += stats.votes_skipped
     finally:
         progress.commit()
 
+    skip_suffix = ""
+    if total_skipped or total_positions_skipped:
+        skip_suffix = (
+            f" ({total_skipped} vote skip(s), {total_positions_skipped} positions skip(s))"
+        )
     typer.echo(
         f"Wrote {total_votes} vote detail snapshot(s) and "
-        f"{total_positions} member-positions snapshot(s) to {storage_dir}."
+        f"{total_positions} member-positions snapshot(s) to {storage_dir}{skip_suffix}."
     )
     return total_votes
 
@@ -227,6 +240,17 @@ def scrape_votes_command(
             help="Print a stderr line per (congress, session) pair.",
         ),
     ] = True,
+    skip_unchanged: Annotated[
+        bool,
+        typer.Option(
+            "--skip-unchanged",
+            help=(
+                "Skip records whose upstream updateDate has not advanced "
+                "since the last snapshot. Senate votes: skip if any "
+                "snapshot already exists for the roll. See ADR 0015."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Snapshot roll-call votes into ``<storage-dir>/{house,senate}_votes*.jsonl``."""
     parsed_congresses = _parse_congresses(congresses)
@@ -239,6 +263,7 @@ def scrape_votes_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        skip_unchanged=skip_unchanged,
     )
 
 

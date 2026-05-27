@@ -56,14 +56,14 @@ class TestScrape:
         client = _client_serving({119: _load_fixture("current_house.json")})
 
         with client:
-            n = scrape(
+            stats = scrape(
                 client=client,
                 congresses=[119],
                 storage_path=out,
                 fetched_at=FIXED_FETCHED_AT,
             )
 
-        assert n == 1
+        assert stats.members_written == 1
         lines = out.read_text().splitlines()
         assert len(lines) == 1
         envelope = json.loads(lines[0])
@@ -81,14 +81,14 @@ class TestScrape:
         )
 
         with client:
-            n = scrape(
+            stats = scrape(
                 client=client,
                 congresses=[117, 119],
                 storage_path=out,
                 fetched_at=FIXED_FETCHED_AT,
             )
 
-        assert n == 2
+        assert stats.members_written == 2
         envelopes = [json.loads(line) for line in out.read_text().splitlines()]
         keys = [e["key"]["bioguide_id"] for e in envelopes]
         assert keys == ["J000301", "S000033"]
@@ -146,14 +146,14 @@ class TestScrape:
         client = _client_serving({117: fixture, 118: fixture, 119: fixture})
 
         with client:
-            n = scrape(
+            stats = scrape(
                 client=client,
                 congresses=[117, 118, 119],
                 storage_path=out,
                 fetched_at=FIXED_FETCHED_AT,
             )
 
-        assert n == 3
+        assert stats.members_written == 3
         envelopes = [json.loads(line) for line in out.read_text().splitlines()]
         # Same bioguide_id, distinct congress, distinct envelopes.
         assert [e["key"]["bioguide_id"] for e in envelopes] == ["S000033"] * 3
@@ -172,3 +172,130 @@ class TestScrape:
             )
 
         assert out.exists()
+
+
+# ---------------------------------------------------------------------------
+# --skip-unchanged (ADR 0015)
+# ---------------------------------------------------------------------------
+
+
+def _seed_member_snapshot(path: Path, *, bioguide: str, congress: int, fetched_at: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "fetched_at": fetched_at,
+                    "key": {"bioguide_id": bioguide, "congress": congress},
+                    "payload": {},
+                }
+            )
+        )
+        fh.write("\n")
+
+
+def _members_payload(*, bioguide: str, update_date: str | None) -> dict[str, Any]:
+    member = {
+        "bioguideId": bioguide,
+        "name": "Test, Person",
+        "directOrderName": "Person Test",
+        "invertedOrderName": "Test, Person",
+        "partyName": "Democratic",
+        "state": "NY",
+        "terms": {"item": [{"chamber": "House of Representatives", "startYear": 2019}]},
+    }
+    if update_date is not None:
+        member["updateDate"] = update_date
+    return {"members": [member], "pagination": {"count": 1}}
+
+
+class TestScrapeSkipUnchanged:
+    def test_flag_off_writes_all(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        _seed_member_snapshot(
+            out, bioguide="O000172", congress=119, fetched_at="2026-05-01T00:00:00Z"
+        )
+        client = _client_serving(
+            {119: _members_payload(bioguide="O000172", update_date="2026-01-15T00:00:00Z")}
+        )
+        with client:
+            stats = scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+        assert stats.members_written == 1
+        assert stats.members_skipped == 0
+
+    def test_empty_jsonl_no_skip(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        client = _client_serving(
+            {119: _members_payload(bioguide="O000172", update_date="2026-01-15T00:00:00Z")}
+        )
+        with client:
+            stats = scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+                skip_unchanged=True,
+            )
+        assert stats.members_written == 1
+        assert stats.members_skipped == 0
+
+    def test_signal_older_skips(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        _seed_member_snapshot(
+            out, bioguide="O000172", congress=119, fetched_at="2026-05-01T00:00:00Z"
+        )
+        client = _client_serving(
+            {119: _members_payload(bioguide="O000172", update_date="2026-01-15T00:00:00Z")}
+        )
+        with client:
+            stats = scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+                skip_unchanged=True,
+            )
+        assert stats.members_written == 0
+        assert stats.members_skipped == 1
+        assert len(out.read_text().splitlines()) == 1  # only seed line
+
+    def test_signal_newer_fetches(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        _seed_member_snapshot(
+            out, bioguide="O000172", congress=119, fetched_at="2026-01-01T00:00:00Z"
+        )
+        client = _client_serving(
+            {119: _members_payload(bioguide="O000172", update_date="2026-04-01T00:00:00Z")}
+        )
+        with client:
+            stats = scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+                skip_unchanged=True,
+            )
+        assert stats.members_written == 1
+        assert stats.members_skipped == 0
+
+    def test_missing_update_date_fetches(self, tmp_path: Path) -> None:
+        out = tmp_path / "members.jsonl"
+        _seed_member_snapshot(
+            out, bioguide="O000172", congress=119, fetched_at="2026-05-01T00:00:00Z"
+        )
+        client = _client_serving({119: _members_payload(bioguide="O000172", update_date=None)})
+        with client:
+            stats = scrape(
+                client=client,
+                congresses=[119],
+                storage_path=out,
+                fetched_at=FIXED_FETCHED_AT,
+                skip_unchanged=True,
+            )
+        assert stats.members_written == 1  # fail-safe
+        assert stats.members_skipped == 0

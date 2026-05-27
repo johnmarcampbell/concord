@@ -12,6 +12,7 @@ from concord.api import ENV_API_KEY, ApiError, Client
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.load_bills import load as load_bills
 from concord.scraper import bills as bills_scraper
+from concord.scraper._common import load_bill_signal_map
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, BILLS_JSONL_NAME
 
 from ._apps import index_app, load_app, run_app, scrape_app
@@ -137,6 +138,7 @@ def _run_scrape_bills(
     storage_dir: Path,
     limit: int | None,
     show_progress: bool,
+    skip_unchanged: bool = False,
 ) -> int:
     try:
         api_client = Client()
@@ -169,14 +171,16 @@ def _run_scrape_bills(
                 bill_types=bill_types,
                 limit=limit,
                 progress=_on_progress if show_progress else None,
+                skip_unchanged=skip_unchanged,
             )
     finally:
         progress.commit()
 
+    suffix = f" ({stats.bills_skipped} skipped)" if stats.bills_skipped else ""
     typer.echo(
         f"Wrote {stats.bills_written} bill snapshot(s) to "
         f"{storage_dir / BILLS_JSONL_NAME} "
-        f"across {len(congresses)} congress(es) x {len(bill_types)} bill type(s)."
+        f"across {len(congresses)} congress(es) x {len(bill_types)} bill type(s){suffix}."
     )
     return stats.bills_written
 
@@ -188,6 +192,7 @@ def _run_scrape_bills_enrich(
     storage_dir: Path,
     limit: int | None,
     show_progress: bool,
+    skip_unchanged: bool = False,
 ) -> int:
     try:
         api_client = Client()
@@ -205,6 +210,8 @@ def _run_scrape_bills_enrich(
         suffix = f"   ({section_failures} section error(s))" if section_failures else ""
         progress.update("  " + tracker.tick(event.bills_done) + suffix)
 
+    bill_signal_map = load_bill_signal_map(storage_dir / BILLS_JSONL_NAME) if skip_unchanged else {}
+
     try:
         with api_client:
             stats = bills_scraper.scrape_enrichment(
@@ -216,6 +223,8 @@ def _run_scrape_bills_enrich(
                 limit=limit,
                 bills_total=len(bill_keys),
                 progress=_on_progress if show_progress else None,
+                skip_unchanged=skip_unchanged,
+                bill_signal_lookup=bill_signal_map.get if skip_unchanged else None,
             )
     finally:
         progress.commit()
@@ -224,6 +233,7 @@ def _run_scrape_bills_enrich(
         f"Enriched {stats.bills_enriched} bill(s); "
         f"wrote {stats.snapshots_written} snapshot(s) to {storage_dir}"
         + (f" ({stats.section_failures} section failure(s))" if stats.section_failures else "")
+        + (f" ({stats.sections_skipped} section skip(s))" if stats.sections_skipped else "")
         + "."
     )
     return stats.snapshots_written
@@ -321,6 +331,16 @@ def scrape_bills_command(
             help="Print a stderr line per (congress, bill_type) pair.",
         ),
     ] = True,
+    skip_unchanged: Annotated[
+        bool,
+        typer.Option(
+            "--skip-unchanged",
+            help=(
+                "Skip records whose upstream updateDate has not advanced "
+                "since the last snapshot. See ADR 0015."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Snapshot Bill identity records into ``<storage-dir>/bills.jsonl``.
 
@@ -342,6 +362,7 @@ def scrape_bills_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        skip_unchanged=skip_unchanged,
     )
 
 
@@ -397,6 +418,16 @@ def scrape_bills_enrich_command(
             help="Print a stderr line per bill enriched.",
         ),
     ] = True,
+    skip_unchanged: Annotated[
+        bool,
+        typer.Option(
+            "--skip-unchanged",
+            help=(
+                "Skip per-section fetches whose upstream updateDate has not "
+                "advanced since the last snapshot. See ADR 0015."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Fetch tier-2 sub-endpoints for selected Bills.
 
@@ -429,6 +460,7 @@ def scrape_bills_enrich_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        skip_unchanged=skip_unchanged,
     )
 
 

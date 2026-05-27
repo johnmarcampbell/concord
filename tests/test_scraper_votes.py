@@ -391,3 +391,248 @@ class TestScrapeSenate:
         assert len(detail_lines) == 1
         # File ends in newline — no half-written partial line.
         assert (tmp_path / SENATE_VOTES_JSONL_NAME).read_text().endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# --skip-unchanged (ADR 0015)
+# ---------------------------------------------------------------------------
+
+
+def _seed_envelope(path: Path, *, key: dict[str, Any], fetched_at: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"fetched_at": fetched_at, "key": key, "payload": {}}))
+        fh.write("\n")
+
+
+def _house_list_payload(stubs: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"houseRollCallVotes": stubs, "pagination": {"count": len(stubs)}}
+
+
+class TestScrapeHouseSkipUnchanged:
+    def test_flag_off_baseline(self, tmp_path: Path) -> None:
+        client = _client(
+            _house_list_payload(
+                [
+                    {
+                        "congress": 119,
+                        "sessionNumber": 1,
+                        "rollCallNumber": 240,
+                        "updateDate": "2026-04-01",
+                    }
+                ]
+            ),
+            {240: _fixture("detail_house_119_1_240.json")},
+            {240: _fixture("members_house_119_1_240.json")},
+        )
+        with client:
+            stats = scrape_house(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sessions=(1,),
+            )
+        assert stats.votes_written == 1
+        assert stats.votes_skipped == 0
+        assert stats.positions_skipped == 0
+
+    def test_both_files_fresh_skips_both(self, tmp_path: Path) -> None:
+        detail_key = {
+            "chamber": "house",
+            "congress": 119,
+            "session": 1,
+            "roll_number": 240,
+        }
+        _seed_envelope(
+            tmp_path / HOUSE_VOTES_JSONL_NAME,
+            key=detail_key,
+            fetched_at="2026-05-01T00:00:00Z",
+        )
+        _seed_envelope(
+            tmp_path / HOUSE_VOTE_POSITIONS_JSONL_NAME,
+            key=detail_key,
+            fetched_at="2026-05-01T00:00:00Z",
+        )
+        client = _client(
+            _house_list_payload(
+                [
+                    {
+                        "congress": 119,
+                        "sessionNumber": 1,
+                        "rollCallNumber": 240,
+                        "updateDate": "2026-04-01",
+                    }
+                ]
+            ),
+            {240: _fixture("detail_house_119_1_240.json")},
+            {240: _fixture("members_house_119_1_240.json")},
+        )
+        with client:
+            stats = scrape_house(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sessions=(1,),
+                skip_unchanged=True,
+            )
+        assert stats.votes_written == 0
+        assert stats.positions_written == 0
+        assert stats.votes_skipped == 1
+        assert stats.positions_skipped == 1
+
+    def test_detail_fresh_positions_missing_fetches_positions_only(self, tmp_path: Path) -> None:
+        detail_key = {
+            "chamber": "house",
+            "congress": 119,
+            "session": 1,
+            "roll_number": 240,
+        }
+        _seed_envelope(
+            tmp_path / HOUSE_VOTES_JSONL_NAME,
+            key=detail_key,
+            fetched_at="2026-05-01T00:00:00Z",
+        )
+        # positions file does not exist.
+        client = _client(
+            _house_list_payload(
+                [
+                    {
+                        "congress": 119,
+                        "sessionNumber": 1,
+                        "rollCallNumber": 240,
+                        "updateDate": "2026-04-01",
+                    }
+                ]
+            ),
+            {240: _fixture("detail_house_119_1_240.json")},
+            {240: _fixture("members_house_119_1_240.json")},
+        )
+        with client:
+            stats = scrape_house(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sessions=(1,),
+                skip_unchanged=True,
+            )
+        # Detail skipped, positions written.
+        assert stats.votes_written == 0
+        assert stats.votes_skipped == 1
+        assert stats.positions_written == 1
+        assert stats.positions_skipped == 0
+
+    def test_stub_newer_fetches(self, tmp_path: Path) -> None:
+        detail_key = {
+            "chamber": "house",
+            "congress": 119,
+            "session": 1,
+            "roll_number": 240,
+        }
+        _seed_envelope(
+            tmp_path / HOUSE_VOTES_JSONL_NAME,
+            key=detail_key,
+            fetched_at="2026-01-01T00:00:00Z",
+        )
+        _seed_envelope(
+            tmp_path / HOUSE_VOTE_POSITIONS_JSONL_NAME,
+            key=detail_key,
+            fetched_at="2026-01-01T00:00:00Z",
+        )
+        client = _client(
+            _house_list_payload(
+                [
+                    {
+                        "congress": 119,
+                        "sessionNumber": 1,
+                        "rollCallNumber": 240,
+                        "updateDate": "2026-04-01",
+                    }
+                ]
+            ),
+            {240: _fixture("detail_house_119_1_240.json")},
+            {240: _fixture("members_house_119_1_240.json")},
+        )
+        with client:
+            stats = scrape_house(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sessions=(1,),
+                skip_unchanged=True,
+            )
+        assert stats.votes_written == 1
+        assert stats.positions_written == 1
+
+
+class TestScrapeSenateSkipUnchanged:
+    def test_presence_only_skip(self, tmp_path: Path) -> None:
+        # Pre-seed roll 7 — only roll 3 should fetch.
+        _seed_envelope(
+            tmp_path / SENATE_VOTES_JSONL_NAME,
+            key={
+                "chamber": "senate",
+                "congress": 119,
+                "session": 1,
+                "roll_number": 7,
+            },
+            fetched_at="2026-01-01T00:00:00Z",
+        )
+        roster_xml = (SENATE_FIXTURES / "senators_cfm.xml").read_bytes()
+        detail_xml = (SENATE_FIXTURES / "detail_119_1_00007_bill.xml").read_bytes()
+        another_xml = (SENATE_FIXTURES / "detail_119_1_00003_amendment.xml").read_bytes()
+        client = _senate_client(
+            roster_xml,
+            {(119, 1): _menu_xml([3, 7])},
+            {(119, 1, 3): another_xml, (119, 1, 7): detail_xml},
+        )
+
+        with client:
+            stats = scrape_senate(
+                client_xml=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sessions=(1,),
+                sleep=lambda _s: None,
+                skip_unchanged=True,
+            )
+
+        # Roll 7 skipped (presence); roll 3 fetched.
+        assert stats.votes_written == 1
+        assert stats.votes_skipped == 1
+
+    def test_flag_off_writes_all(self, tmp_path: Path) -> None:
+        _seed_envelope(
+            tmp_path / SENATE_VOTES_JSONL_NAME,
+            key={
+                "chamber": "senate",
+                "congress": 119,
+                "session": 1,
+                "roll_number": 7,
+            },
+            fetched_at="2026-01-01T00:00:00Z",
+        )
+        roster_xml = (SENATE_FIXTURES / "senators_cfm.xml").read_bytes()
+        detail_xml = (SENATE_FIXTURES / "detail_119_1_00007_bill.xml").read_bytes()
+        another_xml = (SENATE_FIXTURES / "detail_119_1_00003_amendment.xml").read_bytes()
+        client = _senate_client(
+            roster_xml,
+            {(119, 1): _menu_xml([3, 7])},
+            {(119, 1, 3): another_xml, (119, 1, 7): detail_xml},
+        )
+        with client:
+            stats = scrape_senate(
+                client_xml=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                sessions=(1,),
+                sleep=lambda _s: None,
+            )
+        # Without the flag, both rolls fetched even though 7 was seeded.
+        assert stats.votes_written == 2
+        assert stats.votes_skipped == 0
