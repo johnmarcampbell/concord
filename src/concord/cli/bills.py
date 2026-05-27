@@ -15,7 +15,7 @@ from concord.scraper import bills as bills_scraper
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, BILLS_JSONL_NAME
 
 from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, Progress, _parse_congresses, _parse_csv
+from ._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
 
 DEFAULT_BILLS_STORAGE_DIR = Path("./data")
 
@@ -145,13 +145,19 @@ def _run_scrape_bills(
         raise typer.Exit(code=2) from exc
 
     progress = Progress(enabled=show_progress)
+    tracker = RateTracker()
 
     def _on_progress(event: bills_scraper.ScrapeProgressEvent) -> None:
-        progress.update(
-            f"  congress {event.congress:>3}  {event.bill_type:<7}  "
-            f"+{event.bills_written:>5} written  "
-            f"({event.bills_seen} seen)"
-        )
+        if not progress.interactive and not event.is_pair_done:
+            return
+        tracker.update_total(event.category_total)
+        label = f"  congress {event.congress:>3}  {event.bill_type:<7}  "
+        if event.is_pair_done:
+            progress.update(label + tracker.finish(event.bills_written))
+            progress.commit()
+            tracker.reset()
+        else:
+            progress.update(label + tracker.tick(event.bills_written))
 
     try:
         with api_client:
@@ -190,15 +196,14 @@ def _run_scrape_bills_enrich(
         raise typer.Exit(code=2) from exc
 
     progress = Progress(enabled=show_progress)
+    tracker = RateTracker(total=len(bill_keys))
+    section_failures = 0
 
     def _on_progress(event: bills_scraper.EnrichProgressEvent) -> None:
-        c, t, n = event.bill_key
-        suffix = ""
-        if event.partial_failures:
-            suffix = f" (failed: {', '.join(event.partial_failures)})"
-        progress.update(
-            f"  {c}-{t}-{n}  +{event.sections_written}/{len(sections)} sections{suffix}"
-        )
+        nonlocal section_failures
+        section_failures += len(event.partial_failures)
+        suffix = f"   ({section_failures} section error(s))" if section_failures else ""
+        progress.update("  " + tracker.tick(event.bills_done) + suffix)
 
     try:
         with api_client:
@@ -209,6 +214,7 @@ def _run_scrape_bills_enrich(
                 fetched_at=datetime.now(UTC),
                 sections=sections,
                 limit=limit,
+                bills_total=len(bill_keys),
                 progress=_on_progress if show_progress else None,
             )
     finally:

@@ -129,9 +129,10 @@ class TestScrape:
                 progress=events.append,
             )
 
-        assert [e.congress for e in events] == [117, 119]
-        assert events[0].total_written == 1
-        assert events[1].total_written == 2
+        done_events = [e for e in events if e.is_congress_done]
+        assert [e.congress for e in done_events] == [117, 119]
+        assert done_events[0].total_written == 1
+        assert done_events[1].total_written == 2
 
     def test_same_member_in_multiple_congresses_writes_distinct_envelopes(
         self, tmp_path: Path
