@@ -3,19 +3,20 @@
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from pydantic import ValidationError
 
-from ..api import ENV_API_KEY, Client
+from ..api import ENV_API_KEY
 from ..chunking import Chunker
 from ..embedding import Embedder
 from ..models import Proceeding
 from ..pipeline.index_proceedings import IndexResult, index
 from ..pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
+from ..pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
 from ..scraper.proceedings import scrape as _run_pull
 from ..storage import JsonlStorage, MongoStorage, SqliteStorage
 from ..storage.base import Storage
@@ -38,6 +39,48 @@ DEFAULT_JSONL = Path("./data/proceedings.jsonl")
 # ---------------------------------------------------------------------------
 # Stage workers
 # ---------------------------------------------------------------------------
+
+
+def _run_scrape_proceedings(
+    *,
+    start: date,
+    end: date,
+    storage: Storage,
+    storage_label: str,
+    limit: int | None,
+    show_progress: bool,
+) -> None:
+    """Wrap :func:`_run_pull` with a :class:`Progress` display.
+
+    Matches the ``_run_scrape_*`` pattern used by every other entity module:
+    the CLI layer owns the ``Progress`` instance and passes a callback down
+    to the scraper, keeping ``scraper.proceedings`` free of any CLI imports.
+    """
+    progress = Progress(enabled=show_progress)
+
+    def _on_progress(event: ScrapeProgressEvent) -> None:
+        progress.update(
+            f"  {event.issue.issue_date}  "
+            f"vol {event.issue.volume} iss {event.issue.issue_number:>4}  "
+            f"+{event.issue_written:>4} written, "
+            f"{event.issue_skipped:>4} skipped, "
+            f"{event.issue_failed:>3} failed  "
+            f"(total: {event.total_written} / "
+            f"{event.total_skipped} / "
+            f"{event.total_failed})"
+        )
+
+    try:
+        _run_pull(
+            start=start,
+            end=end,
+            storage=storage,
+            storage_label=storage_label,
+            limit=limit,
+            progress=_on_progress if show_progress else None,
+        )
+    finally:
+        progress.commit()
 
 
 def _run_load(
@@ -247,7 +290,7 @@ def scrape_proceedings_command(
         storage = JsonlStorage(storage_path)
         storage_label = str(storage_path)
 
-    _run_pull(
+    _run_scrape_proceedings(
         start=start,
         end=end,
         storage=storage,
@@ -383,7 +426,7 @@ def run_proceedings_command(
     end = _parse_date(to or _today())
 
     typer.echo("→ Stage 0: scrape", err=True)
-    _run_pull(
+    _run_scrape_proceedings(
         start=start,
         end=end,
         storage=JsonlStorage(storage_path),

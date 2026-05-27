@@ -9,6 +9,7 @@ modules from ADR 0007 have a consistent shape.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 
 import httpx
@@ -32,7 +33,7 @@ def scrape(
     storage: Storage,
     storage_label: str,
     limit: int | None,
-    show_progress: bool,
+    progress: Callable[[ProgressEvent], None] | None = None,
 ) -> PullResult:
     """Pull every in-range article into ``storage`` and print a summary.
 
@@ -40,9 +41,12 @@ def scrape(
     ``api.congress.gov`` :class:`Client` and a real ``httpx.Client`` for
     the article-text fetch. Errors that prevent any work (missing API key,
     failed client construction) exit with code 2 via :class:`typer.Exit`.
-    """
-    from concord.cli import Progress  # noqa: PLC0415 — circular dep: cli imports this module
 
+    ``progress`` is an optional callback invoked after each issue is
+    processed, matching the convention used by all other entity scrapers.
+    The CLI layer is responsible for constructing and committing the
+    :class:`concord.cli._common.Progress` display object.
+    """
     try:
         api_client = Client()
     except ApiError as exc:
@@ -50,19 +54,6 @@ def scrape(
         raise typer.Exit(code=2) from exc
 
     http_client = httpx.Client(timeout=TEXT_FETCH_TIMEOUT)
-    progress = Progress(enabled=show_progress)
-
-    def _on_progress(event: ProgressEvent) -> None:
-        progress.update(
-            f"  {event.issue.issue_date}  "
-            f"vol {event.issue.volume} iss {event.issue.issue_number:>4}  "
-            f"+{event.issue_written:>4} written, "
-            f"{event.issue_skipped:>4} skipped, "
-            f"{event.issue_failed:>3} failed  "
-            f"(total: {event.total_written} / "
-            f"{event.total_skipped} / "
-            f"{event.total_failed})"
-        )
 
     try:
         with api_client:
@@ -73,11 +64,10 @@ def scrape(
                 fetch=lambda url: fetch_text(url, http_client),
                 storage=storage,
                 limit=limit,
-                progress=_on_progress if show_progress else None,
+                progress=progress,
             )
     finally:
         http_client.close()
-        progress.commit()
 
     summary = (
         f"Wrote {result.written} new proceedings to {storage_label} "
