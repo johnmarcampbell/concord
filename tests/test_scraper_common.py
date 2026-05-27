@@ -1,7 +1,5 @@
 """Unit tests for :mod:`concord.scraper._common` (ADR 0015 helpers)."""
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path

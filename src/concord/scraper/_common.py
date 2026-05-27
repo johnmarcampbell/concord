@@ -17,8 +17,6 @@ The three exports are:
   off each line's ``payload``; used to gate enrichment fetches.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from datetime import UTC, datetime
