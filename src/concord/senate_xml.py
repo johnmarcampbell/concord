@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from types import TracebackType
 from zoneinfo import ZoneInfo
@@ -384,7 +384,7 @@ def _resolve_subject(
     return bill_id, None
 
 
-def _iter_positions(root: ET.Element):
+def _iter_positions(root: ET.Element) -> Iterator[ParsedVotePosition]:
     for member in root.iterfind("members/member"):
         member_full = (member.findtext("member_full") or "").strip()
         vote_cast = (member.findtext("vote_cast") or "").strip()
