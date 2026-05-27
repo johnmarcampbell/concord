@@ -15,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - 0012 — `concord serve` bootstraps an empty SQLite schema on startup.
   - 0014 — Published on PyPI as `congress-concord`; CLI shape is the stable contract, Python imports are best-effort.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — style rules the linter enforces (line 100, absolute imports only, type-hint everything in `src/`, `# noqa` requires an inline reason, etc.). Read it before silencing a lint warning.
+- [docs/releases.md](docs/releases.md) — recurring release workflow for `congress-concord` on PyPI. Read it before cutting a release; the TestPyPI dry-run has a non-obvious dependency-resolution footgun that the doc documents.
 
 If a proposed change conflicts with an ADR, the right move is to discuss whether to write a new ADR (or amend the existing one) — not to silently diverge. ADRs are appended, not edited away.
 
