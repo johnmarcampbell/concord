@@ -55,7 +55,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # Wheel + sdist → real PyPI. Trusted publishing via OIDC (ADR 0014); no
-  # PYPI_API_TOKEN secret. Requires `concord-congress` to be registered on
+  # PYPI_API_TOKEN secret. Requires `congress-concord` to be registered on
   # pypi.org with this repo + workflow + environment as a trusted publisher.
   publish-pypi:
     if: ${{ github.event.release.prerelease == false }}

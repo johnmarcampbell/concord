@@ -2,12 +2,12 @@
 
 A pipeline for collecting U.S. Congress data — currently the daily [Congressional Record](https://www.congress.gov/congressional-record) (proceedings) and the directory of [Members](https://www.congress.gov/members) — via [api.congress.gov](https://api.congress.gov/). Stores everything locally as JSON Lines + SQLite, with a FastAPI search demo on top.
 
-Distributed on PyPI as **`concord-congress`**; imported in Python as **`concord`** (the bare `concord` name on PyPI was already taken).
+Distributed on PyPI as **`congress-concord`**; imported in Python as **`concord`** (the bare `concord` name on PyPI was already taken).
 
 ## Install
 
 ```sh
-pip install concord-congress
+pip install congress-concord
 ```
 
 Requires Python 3.12+. The install is batteries-included — every `concord` subcommand (`scrape`, `load`, `index`, `run`, `serve`) works out of the box.
@@ -201,7 +201,7 @@ The `pre-commit` hook runs `ruff format` and `ruff check --fix` on every commit;
 
 ## Versioning and API stability
 
-Concord is below 1.0 and is *not* committing to a stable Python API yet. What semver does track for `concord-congress` releases:
+Concord is below 1.0 and is *not* committing to a stable Python API yet. What semver does track for `congress-concord` releases:
 
 - `concord <subcommand>` shape, flag names, exit codes, and the format of the success-summary lines printed to stdout
 - The on-disk JSONL and SQLite formats that the CLI produces (other tools may read these)

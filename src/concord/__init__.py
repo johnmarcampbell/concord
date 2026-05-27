@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("concord-congress")
+    __version__ = version("congress-concord")
 except PackageNotFoundError:  # pragma: no cover — only happens in odd dev setups
     # The package isn't installed (e.g. running from a source checkout without
     # `uv sync` having materialised the install metadata). Use a sentinel that

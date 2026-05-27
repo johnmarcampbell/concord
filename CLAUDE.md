@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - 0007 — Stage 0 + Stage 1 are parallel per entity type; Stage 2/3 are shared.
   - 0010 / 0011 — Votes phased by chamber (3a House via api.congress.gov, 3b Senate via senate.gov LIS XML); Party Unity Score is the CQ-style methodology, chamber-scoped.
   - 0012 — `concord serve` bootstraps an empty SQLite schema on startup.
-  - 0014 — Published on PyPI as `concord-congress`; CLI shape is the stable contract, Python imports are best-effort.
+  - 0014 — Published on PyPI as `congress-concord`; CLI shape is the stable contract, Python imports are best-effort.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — style rules the linter enforces (line 100, absolute imports only, type-hint everything in `src/`, `# noqa` requires an inline reason, etc.). Read it before silencing a lint warning.
 
 If a proposed change conflicts with an ADR, the right move is to discuss whether to write a new ADR (or amend the existing one) — not to silently diverge. ADRs are appended, not edited away.

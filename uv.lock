@@ -190,7 +190,7 @@ wheels = [
 ]
 
 [[package]]
-name = "concord-congress"
+name = "congress-concord"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [

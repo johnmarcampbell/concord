@@ -1,4 +1,4 @@
-# 0014 — Publish to PyPI as `concord-congress`, CLI-first
+# 0014 — Publish to PyPI as `congress-concord`, CLI-first
 
 **Status**: Accepted, 2026-05-27.
 
@@ -15,9 +15,11 @@ The four decisions this ADR covers:
 
 ## Decision
 
-### Distribution name: `concord-congress`; import name: `concord`
+### Distribution name: `congress-concord`; import name: `concord`
 
-`[project].name = "concord-congress"` on PyPI; `from concord import ...` in Python. Following the same dist-name-≠-import-name pattern as `scikit-learn`/`sklearn`. No code churn from the rename — only `pyproject.toml` changes.
+`[project].name = "congress-concord"` on PyPI; `from concord import ...` in Python. Following the same dist-name-≠-import-name pattern as `scikit-learn`/`sklearn`. No code churn from the rename — only `pyproject.toml` changes.
+
+The first-choice name was `concord-congress` (the natural reading: "Concord, for Congress"). PyPI's "Add a new pending publisher" form rejected it with `Invalid project name`. The most likely explanation is PyPI's anti-typosquatting check that blocks new names which structurally look like extensions of an existing project: `<existing>-<suffix>` is treated as confusable with `<existing>`. Since `concord` (Concord Systems' CLI tools) exists on PyPI, `concord-*` is closed off. `congress-concord` doesn't start with `concord-`, so it doesn't trip the rule.
 
 ### CLI is the stable contract
 
@@ -36,13 +38,13 @@ Two publish jobs split by prerelease status:
 
 The existing Docker job also gets the `prerelease == false` gate — prerelease tags are dry-runs and shouldn't leak Docker images to GHCR's `latest`.
 
-This requires one-time manual setup in the PyPI and TestPyPI web UIs: register `concord-congress` on each, configure the GitHub repo + workflow file + environment name as a trusted publisher. Not automatable; documented in the PyPI-readiness PR's description.
+This requires one-time manual setup in the PyPI and TestPyPI web UIs: register `congress-concord` on each, configure the GitHub repo + workflow file + environment name as a trusted publisher. Not automatable; documented in the PyPI-readiness PR's description.
 
 ### Version source: manual bump in `pyproject.toml`, exposed via `importlib.metadata`
 
 `[project].version` is the single source of truth. To cut a release, you edit the version, commit, push, then publish a GitHub Release matching the new tag. The release event fires the workflow.
 
-`concord.__version__` is exposed at the package root via `importlib.metadata.version("concord-congress")` rather than a hard-coded string. That way the version is never duplicated, and editable installs (where `importlib.metadata` may raise) fall back to `"0.0.0+unknown"`.
+`concord.__version__` is exposed at the package root via `importlib.metadata.version("congress-concord")` rather than a hard-coded string. That way the version is never duplicated, and editable installs (where `importlib.metadata` may raise) fall back to `"0.0.0+unknown"`.
 
 ### First published version: `0.2.0`
 
@@ -52,7 +54,7 @@ The codebase has grown substantially since `0.1.0` was set (Members, Bills, Vote
 
 **Trade-offs accepted:**
 
-- **Two names for one thing.** Users see `pip install concord-congress` but `import concord` in their code. Surprises some people the first time. Mitigated by leading the README with both names side-by-side. The alternative — renaming the import path — would have rippled through every file in the codebase, every ADR, every doc; not warranted.
+- **Two names for one thing.** Users see `pip install congress-concord` but `import concord` in their code. Surprises some people the first time. Mitigated by leading the README with both names side-by-side. The alternative — renaming the import path — would have rippled through every file in the codebase, every ADR, every doc; not warranted.
 - **No protection for downstream Python importers.** Anyone who writes `from concord.storage.sqlite import SqliteStorage` does so at their own risk. As the project refactors, they may have to keep up. Honest given the project's age and one-author shape; revisitable if a real library-API user shows up.
 - **Trusted publishing requires manual one-time setup on PyPI's side.** Can't be fully automated. Has to be done once per project per index (PyPI + TestPyPI = two setups).
 - **PyPI versions are permanent.** Anything we publish, even a typo, lives forever (yanking is possible but messy and visible). Mitigated by the TestPyPI dry-run before the real first publish.
@@ -60,7 +62,7 @@ The codebase has grown substantially since `0.1.0` was set (Members, Bills, Vote
 
 **Things this buys:**
 
-- **A real install story.** `pip install concord-congress` and the CLI works. No `git clone` + `uv sync` required for users who just want to run a scrape.
+- **A real install story.** `pip install congress-concord` and the CLI works. No `git clone` + `uv sync` required for users who just want to run a scrape.
 - **Forever-no-token-rotation.** Trusted publishing means we never have to manage a PyPI API token, never have to rotate one, never have to worry about one leaking. Modern default.
 - **A free dry-run channel.** TestPyPI is the same software as PyPI; publishing to it validates the entire pipeline (wheel building, classifier rendering, README rendering, install + import smoke test) before we touch the real index.
 - **Refactor freedom.** Internal modules can be reorganized without breaking semver as long as the CLI shape doesn't change. Cleanup work doesn't cost a major version bump.
