@@ -93,11 +93,11 @@ DEFAULT_VOTE_CONGRESSES = (117, 118, 119)
 DEFAULT_VOTE_SESSIONS = (1, 2)
 
 #: Chambers scraped by ``concord scrape votes`` when ``--chambers`` is
-#: not passed. Phase 3a is House-only; Phase 3b will extend to senate.
-DEFAULT_VOTE_CHAMBERS = ("house",)
+#: not passed. Phase 3b runs both House (api.congress.gov) and Senate
+#: (senate.gov LIS XML) by default.
+DEFAULT_VOTE_CHAMBERS = ("house", "senate")
 
-#: All chamber codes the votes CLI knows about. ``senate`` is a no-op
-#: in 3a (logs a "lands in 3b" message and returns).
+#: All chamber codes the votes CLI knows about.
 VALID_VOTE_CHAMBERS = ("house", "senate")
 
 #: Default storage dir for the votes JSONLs.
@@ -1403,18 +1403,9 @@ def _run_scrape_votes(
 ) -> int:
     from .api import ApiError
     from .scraper import votes as votes_scraper
+    from .senate_xml import SenateClient
 
-    if "senate" in chambers:
-        typer.echo("Senate ingest lands in Phase 3b — skipping.")
-    if "house" not in chambers:
-        return 0
-
-    try:
-        api_client = Client()
-    except ApiError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=2) from exc
-
+    fetched_at = datetime.now(UTC)
     progress = Progress(enabled=show_progress)
 
     def _on_progress(event: votes_scraper.ScrapeProgressEvent) -> None:
@@ -1424,25 +1415,49 @@ def _run_scrape_votes(
             f"({event.votes_seen} seen)"
         )
 
+    total_votes = 0
+    total_positions = 0
+
     try:
-        with api_client:
-            stats = votes_scraper.scrape_house(
-                client=api_client,
-                congresses=congresses,
-                storage_dir=storage_dir,
-                fetched_at=datetime.now(UTC),
-                sessions=tuple(sessions),
-                limit=limit,
-                progress=_on_progress if show_progress else None,
-            )
+        if "house" in chambers:
+            try:
+                api_client = Client()
+            except ApiError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(code=2) from exc
+            with api_client:
+                stats = votes_scraper.scrape_house(
+                    client=api_client,
+                    congresses=congresses,
+                    storage_dir=storage_dir,
+                    fetched_at=fetched_at,
+                    sessions=tuple(sessions),
+                    limit=limit,
+                    progress=_on_progress if show_progress else None,
+                )
+            total_votes += stats.votes_written
+            total_positions += stats.positions_written
+
+        if "senate" in chambers:
+            with SenateClient() as senate_client:
+                stats = votes_scraper.scrape_senate(
+                    client_xml=senate_client,
+                    congresses=congresses,
+                    storage_dir=storage_dir,
+                    fetched_at=fetched_at,
+                    sessions=tuple(sessions),
+                    limit=limit,
+                    progress=_on_progress if show_progress else None,
+                )
+            total_votes += stats.votes_written
     finally:
         progress.commit()
 
     typer.echo(
-        f"Wrote {stats.votes_written} vote detail snapshot(s) and "
-        f"{stats.positions_written} member-positions snapshot(s) to {storage_dir}."
+        f"Wrote {total_votes} vote detail snapshot(s) and "
+        f"{total_positions} member-positions snapshot(s) to {storage_dir}."
     )
-    return stats.votes_written
+    return total_votes
 
 
 def _run_load_votes(
@@ -1452,12 +1467,16 @@ def _run_load_votes(
     limit: int | None,
 ) -> int:
     from .pipeline.load_votes import load as load_votes
-    from .scraper.votes import HOUSE_VOTES_JSONL_NAME
+    from .scraper.votes import HOUSE_VOTES_JSONL_NAME, SENATE_VOTES_JSONL_NAME
 
-    jsonl_path = storage_dir / HOUSE_VOTES_JSONL_NAME
-    if not jsonl_path.exists():
+    candidates = (
+        storage_dir / HOUSE_VOTES_JSONL_NAME,
+        storage_dir / SENATE_VOTES_JSONL_NAME,
+    )
+    if not any(p.exists() for p in candidates):
+        listed = ", ".join(str(p) for p in candidates)
         typer.echo(
-            f"No input file at {jsonl_path} — run `concord scrape votes` first. Nothing to load."
+            f"No input files found ({listed}) — run `concord scrape votes` first. Nothing to load."
         )
         return 0
 
@@ -1511,21 +1530,21 @@ def scrape_votes_command(
         str,
         typer.Option(
             "--chambers",
-            help="Comma-separated chambers. Phase 3a only handles 'house'.",
+            help="Comma-separated chambers (house, senate).",
         ),
     ] = ",".join(DEFAULT_VOTE_CHAMBERS),
     storage_dir: Annotated[
         Path,
         typer.Option(
             "--storage-dir",
-            help="Directory holding house_votes.jsonl + house_vote_positions.jsonl.",
+            help="Directory holding house_votes.jsonl + senate_votes.jsonl + sidecar files.",
         ),
     ] = DEFAULT_VOTES_STORAGE_DIR,
     limit: Annotated[
         int | None,
         typer.Option(
             "--limit",
-            help="Maximum number of detail snapshots to write (members fetches mirror).",
+            help="Maximum number of detail snapshots to write per chamber.",
         ),
     ] = None,
     show_progress: Annotated[
@@ -1536,7 +1555,7 @@ def scrape_votes_command(
         ),
     ] = True,
 ) -> None:
-    """Snapshot House roll-call votes into ``<storage-dir>/house_votes*.jsonl``."""
+    """Snapshot roll-call votes into ``<storage-dir>/{house,senate}_votes*.jsonl``."""
     parsed_congresses = _parse_congresses(congresses)
     parsed_sessions = _parse_sessions(sessions)
     parsed_chambers = _parse_chambers(chambers)
@@ -1637,16 +1656,16 @@ def run_votes_command(
     ] = True,
 ) -> None:
     """Run all three stages for Votes: scrape → load → index."""
-    if not os.environ.get(ENV_API_KEY):
-        typer.echo(
-            f"error: {ENV_API_KEY} is not set; required for `concord scrape votes`",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
     parsed_congresses = _parse_congresses(congresses)
     parsed_sessions = _parse_sessions(sessions)
     parsed_chambers = _parse_chambers(chambers)
+
+    if "house" in parsed_chambers and not os.environ.get(ENV_API_KEY):
+        typer.echo(
+            f"error: {ENV_API_KEY} is not set; required for House votes",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     typer.echo("→ Stage 0: scrape", err=True)
     _run_scrape_votes(

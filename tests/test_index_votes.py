@@ -189,6 +189,84 @@ class TestMemberPartyUnity:
         finally:
             storage.close()
 
+    def test_scores_each_chamber_independently(self, tmp_path: Path) -> None:
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            _seed_vote(storage, "house-119-1-1", chamber="house")
+            _seed_vote(storage, "senate-119-1-1", chamber="senate")
+            # House: R majority Yea, D majority Nay.
+            _seed_positions(
+                storage,
+                "house-119-1-1",
+                [
+                    ("H_R001", "Yea", "R"),
+                    ("H_R002", "Yea", "R"),
+                    ("H_D001", "Nay", "D"),
+                    ("H_D002", "Nay", "D"),
+                ],
+            )
+            # Senate: R majority Yea, D majority Nay.
+            _seed_positions(
+                storage,
+                "senate-119-1-1",
+                [
+                    ("S_R001", "Yea", "R"),
+                    ("S_R002", "Yea", "R"),
+                    ("S_D001", "Nay", "D"),
+                    ("S_D002", "Nay", "D"),
+                ],
+            )
+        finally:
+            storage.close()
+
+        index(db_path=tmp_path / "db.sqlite")
+
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            chambers = {
+                row["bioguide_id"]: row["chamber"]
+                for row in storage.connection.execute(
+                    "SELECT bioguide_id, chamber FROM member_party_unity"
+                )
+            }
+            assert chambers["H_R001"] == "house"
+            assert chambers["S_R001"] == "senate"
+        finally:
+            storage.close()
+
+    def test_chamber_switcher_gets_two_rows(self, tmp_path: Path) -> None:
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            _seed_vote(storage, "house-119-1-1", chamber="house")
+            _seed_vote(storage, "senate-119-1-1", chamber="senate")
+            for vid, chamber_letter in (
+                ("house-119-1-1", "H"),
+                ("senate-119-1-1", "S"),
+            ):
+                _seed_positions(
+                    storage,
+                    vid,
+                    [
+                        ("SWITCHER", "Yea", "D"),
+                        (f"{chamber_letter}_R001", "Yea", "R"),
+                        (f"{chamber_letter}_R002", "Yea", "R"),
+                        (f"{chamber_letter}_D001", "Nay", "D"),
+                        (f"{chamber_letter}_D002", "Nay", "D"),
+                    ],
+                )
+        finally:
+            storage.close()
+
+        index(db_path=tmp_path / "db.sqlite")
+
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            rows = storage.get_party_unity_for_member("SWITCHER")
+            assert {r["chamber"] for r in rows} == {"house", "senate"}
+            assert len(rows) == 2
+        finally:
+            storage.close()
+
     def test_idempotent(self, tmp_path: Path) -> None:
         storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
         try:

@@ -137,12 +137,20 @@ class TestVotePositions:
             storage.close()
 
 
-def _insert_party_unity_row(storage: SqliteStorage, party: str) -> None:
+def _insert_party_unity_row(
+    storage: SqliteStorage,
+    party: str,
+    *,
+    chamber: str = "house",
+    bioguide_id: str = "X000001",
+    congress: int = 119,
+) -> None:
     storage.connection.execute(
         "INSERT INTO member_party_unity "
-        "(bioguide_id, congress, party, party_unity_votes_cast, party_line_votes) "
-        "VALUES (?, ?, ?, ?, ?)",
-        ("X000001", 119, party, 10, 9),
+        "(bioguide_id, congress, chamber, party, "
+        "party_unity_votes_cast, party_line_votes) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (bioguide_id, congress, chamber, party, 10, 9),
     )
     storage.connection.commit()
 
@@ -153,5 +161,38 @@ class TestMemberPartyUnityCheckConstraint:
         try:
             with pytest.raises(sqlite3.IntegrityError):
                 _insert_party_unity_row(storage, "I")
+        finally:
+            storage.close()
+
+    def test_rejects_invalid_chamber(self, tmp_path: Path) -> None:
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                _insert_party_unity_row(storage, "D", chamber="commons")
+        finally:
+            storage.close()
+
+    def test_same_bioguide_and_congress_across_chambers_allowed(self, tmp_path: Path) -> None:
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            _insert_party_unity_row(storage, "D", chamber="house")
+            _insert_party_unity_row(storage, "D", chamber="senate")
+            rows = storage.get_party_unity_for_member("X000001")
+            assert [r["chamber"] for r in rows] == ["house", "senate"]
+        finally:
+            storage.close()
+
+    def test_get_party_unity_orders_by_congress_then_chamber(self, tmp_path: Path) -> None:
+        storage = SqliteStorage(tmp_path / "db.sqlite", load_vec=False)
+        try:
+            _insert_party_unity_row(storage, "D", chamber="senate", congress=118)
+            _insert_party_unity_row(storage, "D", chamber="house", congress=119)
+            _insert_party_unity_row(storage, "D", chamber="senate", congress=119)
+            rows = storage.get_party_unity_for_member("X000001")
+            assert [(r["congress"], r["chamber"]) for r in rows] == [
+                (119, "house"),
+                (119, "senate"),
+                (118, "senate"),
+            ]
         finally:
             storage.close()

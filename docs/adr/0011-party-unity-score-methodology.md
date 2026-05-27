@@ -1,6 +1,6 @@
 # 0011 — Party Unity Score as the party-line methodology
 
-**Status**: Accepted, 2026-05-26.
+**Status**: Accepted 2026-05-25; refined 2026-05-26 (Phase 3b).
 
 ## Context
 
@@ -65,3 +65,13 @@ The naive number is dominated by unanimous and procedural votes — naming-a-pos
 ## Rejected: side-by-side display of multiple methodologies
 
 Showing both the naive and the party-unity number invites the reader to pick the one that flatters their argument. It also doubles the methodology surface to explain. Rejected in favor of a single number with one methodology page that defends it.
+
+## Phase 3b refinement: chamber-scoped scoring (2026-05-26)
+
+Phase 3a defined party-unity scoring for House votes. Phase 3b adds Senate votes, surfacing a refinement: the `member_party_unity` table's primary key changes from `(bioguide_id, congress)` to `(bioguide_id, congress, chamber)`.
+
+**Rationale**: a party-unity vote's majority definition depends on the chamber's member list and voting patterns. A Senate party-unity vote is computed over Senate positions only; pooling Senate positions with House positions from the same Congress would mix two different denominators and dilute the score's meaning.
+
+**Consequence**: Members now get one row per Congress per chamber they served in. The ~99% case — one chamber per Congress — is unaffected visually. Rare chamber-switchers (a House member appointed mid-Congress to fill a Senate vacancy) receive two `member_party_unity` rows per Congress, rendered on the Member profile as two labeled stats: "Senate: voted with Democratic majority on X of Y votes" and "House: voted with Democratic majority on Z of W votes".
+
+**UI update**: the `/about/methodology#party-unity` section adds: "Each chamber's score is computed independently from positions cast in that chamber. Members who served in both chambers in a single Congress see two scores per Congress, one per chamber."
