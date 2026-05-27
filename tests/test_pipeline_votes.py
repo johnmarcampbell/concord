@@ -305,7 +305,10 @@ class TestSenateLoad:
             row = storage.get_vote("senate-119-1-8")
             assert row["bill_id"] is None
             assert row["amendment_id"] is None
-            assert "Nomination" in row["vote_question"]
+            # Loader persists the human-readable vote_title when there
+            # is no bill / amendment FK to anchor the subject on.
+            assert "Marco Rubio" in row["vote_question"]
+            assert "Secretary of State" in row["vote_question"]
         finally:
             storage.close()
 

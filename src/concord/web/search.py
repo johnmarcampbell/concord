@@ -884,9 +884,16 @@ def party_unity_for_member(
     db: sqlite3.Connection,
     bioguide_id: str,
 ) -> list[dict[str, Any]]:
-    """Return one row per Congress's party-unity score for the Member, newest first."""
+    """Return party-unity score rows for the Member, newest Congress first.
+
+    Within one Congress rows are ordered by chamber so chamber-switchers
+    (House + Senate in the same Congress) render in a stable order; the
+    member-profile template groups by current_congress and labels each
+    row with its chamber.
+    """
     rows = db.execute(
-        "SELECT * FROM member_party_unity WHERE bioguide_id = ? ORDER BY congress DESC",
+        "SELECT * FROM member_party_unity WHERE bioguide_id = ? "
+        "ORDER BY congress DESC, chamber ASC",
         (bioguide_id,),
     ).fetchall()
     return [dict(r) for r in rows]

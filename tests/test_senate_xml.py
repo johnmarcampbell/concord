@@ -131,7 +131,14 @@ class TestParseVoteDetail:
 
         assert detail.bill_id is None
         assert detail.amendment_id is None
-        assert detail.vote_question == "On the Nomination PN11-13"
+        # vote_title is preferred for subjectless votes (nominee identity
+        # would otherwise be lost — the short vote_question_text is
+        # "On the Nomination PN11-13", which is opaque to readers).
+        assert "Marco Rubio" in detail.vote_question
+        assert "Secretary of State" in detail.vote_question
+        assert (
+            detail.vote_title == "Confirmation: Marco Rubio, of Florida, to be Secretary of State"
+        )
 
     def test_cloture_vote(self) -> None:
         xml_bytes = (FIXTURES / "detail_119_1_00001_cloture.xml").read_bytes()

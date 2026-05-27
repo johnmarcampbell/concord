@@ -321,7 +321,13 @@ def parse_vote_detail(xml_bytes: bytes) -> ParsedVoteDetail:
     is_en_bloc = root.find("en_bloc") is not None and not vote_type
     bill_id, amendment_id = _resolve_subject(root, congress, is_en_bloc)
 
-    if is_en_bloc and vote_title:
+    # When the vote's subject doesn't land on a Bill or Amendment row,
+    # ``vote_title`` carries the only human-readable identity in the
+    # XML (nominee name, treaty title, en-bloc batch label). Prefer it
+    # over the short ``vote_question_text`` so the profile page renders
+    # something meaningful instead of "Procedural — no bill or
+    # amendment subject."
+    if bill_id is None and amendment_id is None and vote_title:
         vote_question = vote_title
 
     positions = list(_iter_positions(root))

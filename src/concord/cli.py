@@ -1467,12 +1467,16 @@ def _run_load_votes(
     limit: int | None,
 ) -> int:
     from .pipeline.load_votes import load as load_votes
-    from .scraper.votes import HOUSE_VOTES_JSONL_NAME
+    from .scraper.votes import HOUSE_VOTES_JSONL_NAME, SENATE_VOTES_JSONL_NAME
 
-    jsonl_path = storage_dir / HOUSE_VOTES_JSONL_NAME
-    if not jsonl_path.exists():
+    candidates = (
+        storage_dir / HOUSE_VOTES_JSONL_NAME,
+        storage_dir / SENATE_VOTES_JSONL_NAME,
+    )
+    if not any(p.exists() for p in candidates):
+        listed = ", ".join(str(p) for p in candidates)
         typer.echo(
-            f"No input file at {jsonl_path} — run `concord scrape votes` first. Nothing to load."
+            f"No input files found ({listed}) — run `concord scrape votes` first. Nothing to load."
         )
         return 0
 

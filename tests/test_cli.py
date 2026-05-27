@@ -1667,4 +1667,61 @@ class TestLoadVotesCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "No input file" in _strip(result.output)
+        assert "No input files" in _strip(result.output)
+
+    def test_senate_only_loads_when_house_jsonl_absent(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        """Senate-only scrape → load chain must not be gated on house_votes.jsonl."""
+        from concord.scraper.votes import (  # noqa: PLC0415 — lazy: only this test needs the constants
+            SENATE_ROSTER_JSONL_NAME,
+            SENATE_VOTES_JSONL_NAME,
+        )
+
+        senate_fixtures = Path(__file__).parent / "fixtures" / "senate"
+        detail = (senate_fixtures / "detail_119_1_00007_bill.xml").read_text()
+        roster = (senate_fixtures / "senators_cfm.xml").read_text()
+        ts = "2026-05-26T14:00:00+00:00"
+        (tmp_path / SENATE_VOTES_JSONL_NAME).write_text(
+            json.dumps(
+                {
+                    "fetched_at": ts,
+                    "key": {
+                        "chamber": "senate",
+                        "congress": 119,
+                        "session": 1,
+                        "roll_number": 7,
+                    },
+                    "payload": detail,
+                }
+            )
+            + "\n"
+        )
+        (tmp_path / SENATE_ROSTER_JSONL_NAME).write_text(
+            json.dumps(
+                {
+                    "fetched_at": ts,
+                    "key": {"source": "senators_cfm"},
+                    "payload": roster,
+                }
+            )
+            + "\n"
+        )
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "load",
+                "votes",
+                "--storage-dir",
+                str(tmp_path),
+                "--db",
+                str(tmp_path / "out.db"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # The senate vote should have actually loaded, not been skipped.
+        assert "No input files" not in _strip(result.output)
+        assert "Loaded 1 vote" in _strip(result.output)
