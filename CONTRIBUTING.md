@@ -13,6 +13,7 @@ The pre-commit hook runs `ruff format` and `ruff check --fix` on every `git comm
 
 - **Line length: 100.** Enforced by `ruff format` (black-compatible).
 - **Top-level imports.** No lazy imports inside functions unless there is a *real* circular-dependency or optional-dependency reason. If there is, add `# noqa: PLC0415 — <one-phrase reason>`.
+- **No `from __future__ import annotations`** unless a module *genuinely* needs it (a real forward reference that can't be resolved, or a circular import that has no other fix). The project is Python 3.12+ — modern union syntax (`int | None`) and built-in generics work at runtime without the import. The import also turns every annotation into a string, which is a footgun for the Pydantic and FastAPI code that introspects annotations at runtime. Don't reach for it as a reflex.
 - **Absolute imports only.** Use `from concord.foo import bar`, not `from .foo import bar`. Ruff will autofix this for you.
 - **Type-hint everything in `src/`.** `mypy --strict` runs in CI on `src/concord/` (tests are looser).
 - **No magic numbers in `src/`.** Pull them into a module-level `_FOO = N` constant. HTTP status codes are in `concord.api.HTTP_*`. Tests are exempt.
