@@ -28,6 +28,12 @@ The vocabulary in this section covers the Congressional Record sub-domain — th
 - **Cosponsor** — a Member who formally added their name to an existing Bill after introduction. M:N with Bill via `bill_cosponsors`; carries `sponsorship_date` and a nullable `sponsorship_withdrawn_date`.
 - **Bill action** — one event in a Bill's legislative history (e.g. "Referred to the Committee on Foreign Relations", "Passed House"). Many per Bill; stored verbatim and dimmed at display for routine procedural noise.
 - **Policy area** — a single CRS-assigned top-level subject for a Bill (e.g. "Health", "Armed Forces and National Security"). Distinct from the multi-valued **legislative subjects** that live in `bill_subjects`.
+- **Vote** — one recorded roll-call decision in a chamber. Identified by the tuple `(chamber, congress, session, roll_number)`; Concord's internal `vote_id` flattens that to `"{chamber}-{congress}-{session}-{roll}"` (e.g. `"house-119-1-240"`). May be on a Bill, on an Amendment to a Bill, or procedural (Speaker election, motion to adjourn, journal approval).
+- **Roll-call number** — the chamber's per-session sequential identifier for a recorded vote. Resets to 1 at the start of each `(congress, session)` slot. Combined with chamber/congress/session it forms the Vote's natural key.
+- **Session** — the half-Congress that a Vote (or other dated event) falls in. A Congress has two sessions, numbered `1` and `2`; in practice session 1 covers an odd calendar year and session 2 covers the following even year.
+- **Vote question** — the free-text description of what was being decided on a roll call (e.g. "On Passage of the Bill", "On Agreeing to the Amendment", "Election of the Speaker"). Always populated; the source of truth for procedural votes that have no Bill or Amendment subject.
+- **Vote position** — one Member's recorded choice on one Vote. For standard votes the value is `"Yea"` / `"Nay"` / `"Present"` / `"Not Voting"`; for election votes (e.g. Speaker) it's a candidate's surname. Stored in `vote_positions` keyed by `(vote_id, bioguide_id)`, with `vote_party` denormalized from the API payload.
+- **Party Unity Score** — per-Member, per-Congress: the share of *party-unity votes* (votes where a majority of one party opposed a majority of the other) on which the Member voted with their party's majority. Modeled on the CQ Almanac's methodology. See [ADR 0011](docs/adr/0011-party-unity-score-methodology.md) and `/about/methodology#party-unity` for the precise definition.
 
 ## Pipeline stages
 

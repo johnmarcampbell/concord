@@ -1,0 +1,15 @@
+{
+  "houseRollCallVoteMemberVotes": {
+    "congress": 119,
+    "sessionNumber": 1,
+    "chamber": "House",
+    "rollCallNumber": 241,
+    "voteQuestion": "On Agreeing to the Amendment",
+    "results": [
+      {"bioguideID": "S001176", "firstName": "Garret", "lastName": "Graves", "voteCast": "Nay", "voteParty": "R", "voteState": "LA"},
+      {"bioguideID": "B001302", "firstName": "Andy", "lastName": "Biggs", "voteCast": "Yea", "voteParty": "R", "voteState": "AZ"},
+      {"bioguideID": "P000197", "firstName": "Nancy", "lastName": "Pelosi", "voteCast": "Yea", "voteParty": "D", "voteState": "CA"},
+      {"bioguideID": "O000172", "firstName": "Alexandria", "lastName": "Ocasio-Cortez", "voteCast": "Yea", "voteParty": "D", "voteState": "NY"}
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "houseRollCallVoteMemberVotes": {
+    "congress": 119,
+    "sessionNumber": 1,
+    "chamber": "House",
+    "rollCallNumber": 2,
+    "voteQuestion": "Election of the Speaker",
+    "results": [
+      {"bioguideID": "S001176", "firstName": "Garret", "lastName": "Graves", "voteCast": "Johnson", "voteParty": "R", "voteState": "LA"},
+      {"bioguideID": "P000197", "firstName": "Nancy", "lastName": "Pelosi", "voteCast": "Jeffries", "voteParty": "D", "voteState": "CA"}
+    ]
+  }
+}

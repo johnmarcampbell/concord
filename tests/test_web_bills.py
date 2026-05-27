@@ -205,8 +205,10 @@ class TestBillProfile:
         assert "Subjects not yet fetched" in body
         assert "Titles not yet fetched" in body
         assert "Summaries not yet fetched" in body
-        # Phase 3/4/5 placeholders.
-        assert "Vote history (Phase 3)" in body
+        # Vote history is live (Phase 3a) but empty when no votes loaded.
+        assert "Vote history" in body
+        assert "No votes recorded for this bill yet" in body
+        # Phase 4/5 placeholders still present.
         assert "Committee path (Phase 4)" in body
         assert "Search within this bill (Phase 5)" in body
 

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Methodology — Concord{% endblock %}
+{% block content %}
+<article class="prose prose-stone max-w-none space-y-6">
+  <header>
+    <h1 class="text-2xl font-serif font-semibold">Methodology</h1>
+    <p class="text-sm text-stone-500">
+      How Concord computes the derived statistics shown on Member and Vote pages.
+    </p>
+  </header>
+
+  <section id="party-unity" class="space-y-3">
+    <h2 class="text-xl font-serif font-semibold">Party Unity Score</h2>
+    <p class="text-stone-800">
+      Concord's per-Member Party Unity Score is modeled on the
+      <em>Congressional Quarterly</em> Almanac's Party Unity Score methodology,
+      published annually since 1953. It measures how often a Member votes with
+      their party's majority — but only on the votes where the two major parties
+      actually divided.
+    </p>
+
+    <h3 class="font-semibold text-stone-900">Party-unity vote</h3>
+    <p class="text-stone-800">
+      A roll-call vote where a majority of Republican Yea/Nay positions opposed
+      a majority of Democratic Yea/Nay positions on that vote. Positions of
+      "Present" and "Not Voting" are excluded from each party's majority
+      calculation. Independents do not count toward either majority.
+      Unanimous and near-unanimous votes — where both parties land on the
+      same side — are not party-unity votes.
+    </p>
+
+    <h3 class="font-semibold text-stone-900">Denominator</h3>
+    <p class="text-stone-800">
+      Count of party-unity votes the Member cast a Yea or Nay on, within one
+      Congress. Votes where the Member was Present or Not Voting are excluded.
+    </p>
+
+    <h3 class="font-semibold text-stone-900">Numerator</h3>
+    <p class="text-stone-800">
+      Of those denominator votes, the count where the Member's position agreed
+      with their party's majority position on that vote. The Member's party is
+      taken as their <em>modal</em> party across their party-unity positions in
+      that Congress (a Member who switches party mid-Congress is scored against
+      whichever party they spent more votes in).
+    </p>
+
+    <h3 class="font-semibold text-stone-900">Independents</h3>
+    <p class="text-stone-800">
+      Members whose modal party is Independent receive no Party Unity Score —
+      no party majority exists for them to agree or disagree with. Their
+      profile shows "no party-unity score (Independent)" instead of a number.
+    </p>
+
+    <h3 class="font-semibold text-stone-900">Low-N suppression</h3>
+    <p class="text-stone-800">
+      Members with fewer than 10 party-unity votes in a Congress are shown as
+      "not enough votes yet" rather than a percentage. The 10-vote threshold
+      is conventional and avoids the "100% with party on 3 votes" early-Congress
+      noise.
+    </p>
+
+    <h3 class="font-semibold text-stone-900">Chamber scope</h3>
+    <p class="text-stone-800">
+      Phase 3a publishes Party Unity Scores for House Members only. Senate
+      Members will be scored once Phase 3b ingests senate.gov roll-call data;
+      their profiles currently show a placeholder.
+    </p>
+
+    <p class="text-stone-600 text-sm">
+      The full technical definition lives in
+      <a class="underline hover:text-stone-900"
+         href="https://github.com/johnmarcampbell/concord/blob/master/docs/adr/0011-party-unity-score-methodology.md">ADR&nbsp;0011</a>.
+    </p>
+  </section>
+</article>
+{% endblock %}

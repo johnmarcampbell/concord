@@ -13,9 +13,15 @@ from concord.embedding import EMBEDDING_DIM, Embedder
 from concord.models import Member, Term
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_members import index as index_members
+from concord.pipeline.index_votes import index as index_votes
 from concord.pipeline.load_bills import load as load_bills
 from concord.pipeline.load_members import load as load_members
+from concord.pipeline.load_votes import load as load_votes
 from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
+from concord.scraper.votes import (
+    HOUSE_VOTE_POSITIONS_JSONL_NAME,
+    HOUSE_VOTES_JSONL_NAME,
+)
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app
 
@@ -304,3 +310,64 @@ def test_bills_tier2_end_to_end(tmp_path: Path) -> None:
     body = resp.text
     assert "Cosponsored bills" in body
     assert "No cosponsored bills indexed" in body
+
+
+def test_votes_end_to_end(tmp_path: Path) -> None:
+    """Phase 3a smoke: write synthetic votes JSONL, load + index, poke routes."""
+    fixtures = Path(__file__).parent / "fixtures" / "api" / "votes"
+    storage_dir = tmp_path / "data"
+    storage_dir.mkdir()
+    fetched_at = datetime(2026, 5, 26, 14, 0, 0, tzinfo=UTC).isoformat()
+
+    def _env(payload: dict, roll: int) -> str:
+        return (
+            json.dumps(
+                {
+                    "fetched_at": fetched_at,
+                    "key": {
+                        "chamber": "house",
+                        "congress": 119,
+                        "session": 1,
+                        "roll_number": roll,
+                    },
+                    "payload": payload,
+                }
+            )
+            + "\n"
+        )
+
+    detail = json.loads((fixtures / "detail_house_119_1_240.json").read_text())["houseRollCallVote"]
+    members = json.loads((fixtures / "members_house_119_1_240.json").read_text())[
+        "houseRollCallVoteMemberVotes"
+    ]
+    (storage_dir / HOUSE_VOTES_JSONL_NAME).write_text(_env(detail, 240), encoding="utf-8")
+    (storage_dir / HOUSE_VOTE_POSITIONS_JSONL_NAME).write_text(_env(members, 240), encoding="utf-8")
+
+    db = tmp_path / "test.db"
+    SqliteStorage(db).close()
+    load_stats = load_votes(storage_dir=storage_dir, db_path=db)
+    assert load_stats.votes_written == 1
+    index_votes(db_path=db)
+
+    class _StubResp:
+        def __init__(self, vectors: list[list[float]]) -> None:
+            self.data = [type("D", (), {"embedding": v})() for v in vectors]
+
+    class _StubEmb:
+        def create(self, *, model: str, input: list[str]) -> _StubResp:
+            return _StubResp([[0.5] * EMBEDDING_DIM for _ in input])
+
+    class _Stub:
+        embeddings = _StubEmb()
+
+    app = create_app(db, embedder=Embedder(_Stub()))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    for path in ("/votes", "/votes/house/119/1/240", "/about/methodology"):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+
+    # Senate placeholder returns 200 not 404.
+    resp = client.get("/votes/senate/119/1/1")
+    assert resp.status_code == 200
+    assert "Phase 3b" in resp.text

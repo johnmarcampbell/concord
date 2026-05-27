@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Votes — Concord{% endblock %}
+{% block content %}
+<section class="space-y-4">
+  <header>
+    <h1 class="text-2xl font-serif font-semibold">Roll-call votes</h1>
+    <p class="text-sm text-stone-500">
+      House votes from Congresses 117–119. Senate votes land in Phase 3b.
+    </p>
+  </header>
+
+  <form method="get" action="/votes" class="flex flex-wrap gap-2 text-sm bg-white border border-stone-200 rounded p-3">
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500">Chamber</span>
+      <select name="chamber" class="rounded border border-stone-300 px-2 py-1">
+        <option value="" {% if not chamber %}selected{% endif %}>All</option>
+        <option value="house" {% if chamber == 'house' %}selected{% endif %}>House</option>
+        <option value="senate" {% if chamber == 'senate' %}selected{% endif %}>Senate (3b)</option>
+      </select>
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500">Congress</span>
+      <input type="number" name="congress" value="{{ congress or '' }}"
+        class="rounded border border-stone-300 px-2 py-1 w-20">
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500">Result</span>
+      <input type="text" name="result" value="{{ result }}"
+        class="rounded border border-stone-300 px-2 py-1 w-28" placeholder="Passed">
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500">Kind</span>
+      <select name="vote_kind" class="rounded border border-stone-300 px-2 py-1">
+        <option value="" {% if not vote_kind %}selected{% endif %}>All</option>
+        <option value="standard" {% if vote_kind == 'standard' %}selected{% endif %}>Standard</option>
+        <option value="election" {% if vote_kind == 'election' %}selected{% endif %}>Election</option>
+      </select>
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-stone-500">Bill</span>
+      <input type="text" name="bill" value="{{ bill }}"
+        class="rounded border border-stone-300 px-2 py-1 w-32" placeholder="hr-3424">
+    </label>
+    <button type="submit" class="rounded bg-stone-900 px-3 py-1 text-white text-sm hover:bg-stone-700">
+      Filter
+    </button>
+  </form>
+
+  {% if votes %}
+    <p class="text-xs text-stone-500">
+      {{ total }} vote{{ "" if total == 1 else "s" }} matched.
+      Showing page {{ page }} of {{ ((total + page_size - 1) // page_size) | int }}.
+    </p>
+    <ul class="space-y-2">
+      {% for v in votes %}
+        {% include "_vote_row.html" %}
+      {% endfor %}
+    </ul>
+    <nav class="flex gap-3 text-sm pt-2">
+      {% if has_prev %}
+        <a href="?{% if chamber %}chamber={{ chamber }}&{% endif %}{% if congress %}congress={{ congress }}&{% endif %}page={{ page - 1 }}"
+          class="text-stone-600 hover:text-stone-900 underline">← Previous</a>
+      {% endif %}
+      {% if has_next %}
+        <a href="?{% if chamber %}chamber={{ chamber }}&{% endif %}{% if congress %}congress={{ congress }}&{% endif %}page={{ page + 1 }}"
+          class="text-stone-600 hover:text-stone-900 underline">Next →</a>
+      {% endif %}
+    </nav>
+  {% else %}
+    <p class="text-stone-500">No votes match the current filters.</p>
+  {% endif %}
+</section>
+{% endblock %}

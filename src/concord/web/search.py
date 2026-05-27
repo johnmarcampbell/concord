@@ -691,6 +691,230 @@ def summaries_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, A
     return [dict(r) for r in rows]
 
 
+# -- Votes (Phase 3a) -------------------------------------------------------
+
+
+class VoteHit(BaseModel):
+    """One row of the ``/votes`` index page."""
+
+    vote_id: str
+    chamber: str
+    congress: int
+    session: int
+    roll_number: int
+    vote_kind: str
+    start_date: str
+    vote_question: str
+    vote_type: str
+    threshold: str | None
+    result: str
+    yea_count: int | None
+    nay_count: int | None
+    present_count: int | None
+    not_voting_count: int | None
+    bill_id: str | None
+    amendment_id: str | None
+    is_party_unity: bool
+
+
+def _vote_hit_from_row(row: sqlite3.Row) -> VoteHit:
+    return VoteHit(
+        vote_id=row["vote_id"],
+        chamber=row["chamber"],
+        congress=int(row["congress"]),
+        session=int(row["session"]),
+        roll_number=int(row["roll_number"]),
+        vote_kind=row["vote_kind"],
+        start_date=row["start_date"],
+        vote_question=row["vote_question"],
+        vote_type=row["vote_type"],
+        threshold=row["threshold"],
+        result=row["result"],
+        yea_count=row["yea_count"],
+        nay_count=row["nay_count"],
+        present_count=row["present_count"],
+        not_voting_count=row["not_voting_count"],
+        bill_id=row["bill_id"],
+        amendment_id=row["amendment_id"],
+        is_party_unity=bool(row["is_party_unity"]),
+    )
+
+
+def list_votes(
+    db: sqlite3.Connection,
+    *,
+    chamber: str | None = None,
+    congress: int | None = None,
+    result: str | None = None,
+    vote_kind: str | None = None,
+    bill: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[VoteHit], int]:
+    """Return ``(rows, total)`` for the browse-only ``/votes`` index.
+
+    Default sort is ``start_date DESC``. Filters AND together; an
+    absent filter is a wildcard. ``bill`` is a substring match on
+    ``bill_id``.
+    """
+    where: list[str] = []
+    params: list[Any] = []
+    if chamber in {"house", "senate"}:
+        where.append("chamber = ?")
+        params.append(chamber)
+    if congress is not None:
+        where.append("congress = ?")
+        params.append(congress)
+    if result:
+        where.append("result = ?")
+        params.append(result)
+    if vote_kind in {"standard", "election"}:
+        where.append("vote_kind = ?")
+        params.append(vote_kind)
+    if bill:
+        where.append("bill_id LIKE ?")
+        params.append(f"%{bill}%")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+    (total,) = db.execute(
+        f"SELECT COUNT(*) FROM votes{where_sql}",
+        params,
+    ).fetchone()
+
+    rows = db.execute(
+        f"""
+        SELECT * FROM votes
+        {where_sql}
+        ORDER BY start_date DESC, roll_number DESC
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    return [_vote_hit_from_row(r) for r in rows], int(total)
+
+
+def get_vote(
+    db: sqlite3.Connection,
+    *,
+    chamber: str,
+    congress: int,
+    session: int,
+    roll_number: int,
+) -> dict[str, Any] | None:
+    """Fetch one Vote row by its four-tuple natural key."""
+    row = db.execute(
+        "SELECT * FROM votes WHERE chamber = ? AND congress = ? AND session = ? "
+        "AND roll_number = ?",
+        (chamber.lower(), congress, session, roll_number),
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def vote_positions_for_vote(
+    db: sqlite3.Connection,
+    vote_id: str,
+) -> list[dict[str, Any]]:
+    """Return every position row for one vote, joined with the Member's display name."""
+    rows = db.execute(
+        """
+        SELECT
+            p.bioguide_id     AS bioguide_id,
+            p.position        AS position,
+            p.vote_party      AS vote_party,
+            p.vote_state      AS vote_state,
+            m.display_name    AS display_name,
+            m.last_name       AS last_name
+        FROM vote_positions p
+        LEFT JOIN members m ON m.bioguide_id = p.bioguide_id
+        WHERE p.vote_id = ?
+        ORDER BY p.vote_party ASC, p.vote_state ASC, m.last_name ASC, p.bioguide_id ASC
+        """,
+        (vote_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def vote_history_for_bill(db: sqlite3.Connection, bill_id: str) -> list[VoteHit]:
+    """Return every Vote whose subject ties back to ``bill_id``, newest first."""
+    rows = db.execute(
+        "SELECT * FROM votes WHERE bill_id = ? ORDER BY start_date DESC",
+        (bill_id,),
+    ).fetchall()
+    return [_vote_hit_from_row(r) for r in rows]
+
+
+def recent_votes_for_member(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+    *,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Return the Member's most-recent Vote positions, newest first."""
+    rows = db.execute(
+        """
+        SELECT
+            v.vote_id           AS vote_id,
+            v.chamber           AS chamber,
+            v.congress          AS congress,
+            v.session           AS session,
+            v.roll_number       AS roll_number,
+            v.vote_kind         AS vote_kind,
+            v.start_date        AS start_date,
+            v.vote_question     AS vote_question,
+            v.result            AS result,
+            v.bill_id           AS bill_id,
+            v.amendment_id      AS amendment_id,
+            v.is_party_unity    AS is_party_unity,
+            p.position          AS member_position,
+            p.vote_party        AS member_party
+        FROM votes v
+        JOIN vote_positions p ON p.vote_id = v.vote_id
+        WHERE p.bioguide_id = ?
+        ORDER BY v.start_date DESC
+        LIMIT ?
+        """,
+        (bioguide_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def party_unity_for_member(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+) -> list[dict[str, Any]]:
+    """Return one row per Congress's party-unity score for the Member, newest first."""
+    rows = db.execute(
+        "SELECT * FROM member_party_unity WHERE bioguide_id = ? ORDER BY congress DESC",
+        (bioguide_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def member_modal_vote_party(
+    db: sqlite3.Connection,
+    bioguide_id: str,
+) -> str | None:
+    """Return the Member's modal ``vote_party`` across all their positions, or None.
+
+    Used to surface the "(Independent)" treatment when the Member has
+    positions but no party_unity_for_member row.
+    """
+    row = db.execute(
+        """
+        SELECT vote_party, COUNT(*) AS n
+        FROM vote_positions
+        WHERE bioguide_id = ? AND vote_party IS NOT NULL
+        GROUP BY vote_party
+        ORDER BY n DESC
+        LIMIT 1
+        """,
+        (bioguide_id,),
+    ).fetchone()
+    return row["vote_party"] if row else None
+
+
 def list_current_members(
     db: sqlite3.Connection,
     *,

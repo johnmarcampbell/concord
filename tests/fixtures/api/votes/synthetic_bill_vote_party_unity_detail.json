@@ -1,0 +1,22 @@
+{
+  "houseRollCallVote": {
+    "congress": 119,
+    "sessionNumber": 1,
+    "chamber": "House",
+    "rollCallNumber": 240,
+    "startDate": "2026-04-01T18:32:00Z",
+    "updateDate": "2026-04-01T18:35:00Z",
+    "voteType": "Yea-and-Nay",
+    "voteQuestion": "On Passage of the Bill",
+    "result": "Passed",
+    "legislationType": "HR",
+    "legislationNumber": 3424,
+    "votePartyTotal": [
+      {"party": "Republican", "voteParty": "R", "yeaTotal": 210, "nayTotal": 3, "presentTotal": 0, "notVotingTotal": 5},
+      {"party": "Democratic", "voteParty": "D", "yeaTotal": 12, "nayTotal": 200, "presentTotal": 1, "notVotingTotal": 3},
+      {"party": "Independent", "voteParty": "I", "yeaTotal": 0, "nayTotal": 0, "presentTotal": 0, "notVotingTotal": 0}
+    ],
+    "url": "https://api.congress.gov/v3/house-vote/119/1/240?format=json"
+  },
+  "request": {"congress": "119", "sessionNumber": "1", "rollCallNumber": "240"}
+}

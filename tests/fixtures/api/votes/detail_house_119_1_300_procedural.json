@@ -1,0 +1,19 @@
+{
+  "houseRollCallVote": {
+    "congress": 119,
+    "sessionNumber": 1,
+    "chamber": "House",
+    "rollCallNumber": 300,
+    "startDate": "2026-04-05T10:00:00Z",
+    "updateDate": "2026-04-05T10:05:00Z",
+    "voteType": "2/3 Yea-And-Nay",
+    "voteQuestion": "On Approving the Journal",
+    "result": "Agreed to",
+    "votePartyTotal": [
+      {"party": "Republican", "voteParty": "R", "yeaTotal": 215, "nayTotal": 0, "presentTotal": 1, "notVotingTotal": 2},
+      {"party": "Democratic", "voteParty": "D", "yeaTotal": 205, "nayTotal": 1, "presentTotal": 0, "notVotingTotal": 10}
+    ],
+    "url": "https://api.congress.gov/v3/house-vote/119/1/300?format=json"
+  },
+  "request": {"congress": "119", "sessionNumber": "1", "rollCallNumber": "300"}
+}

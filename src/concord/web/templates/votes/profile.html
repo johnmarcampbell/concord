@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}
+  {% if vote %}{{ chamber|capitalize }} roll {{ roll_number }}{% else %}Senate vote (Phase 3b){% endif %} — Concord
+{% endblock %}
+{% block content %}
+{% if is_senate_placeholder %}
+  <article class="space-y-3">
+    <header>
+      <div class="font-mono text-sm text-stone-500 mb-1">
+        Senate · {{ congress }}th Congress · session {{ session }} · roll {{ roll_number }}
+      </div>
+      <h1 class="text-2xl font-serif font-semibold">Senate votes load in Phase 3b</h1>
+    </header>
+    <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
+      Senate roll-call votes are not yet ingested. They land via senate.gov LIS XML
+      in a forthcoming Phase 3b. See
+      <a class="underline hover:text-stone-700" href="/about/methodology">methodology</a>
+      for context.
+    </div>
+  </article>
+{% else %}
+  <article class="grid grid-cols-1 md:grid-cols-4 gap-6">
+    <aside class="md:col-span-1 text-sm text-stone-600 space-y-3">
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Chamber</div>
+        <div>{{ vote.chamber|capitalize }}</div>
+      </div>
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Congress</div>
+        <div>{{ vote.congress }}th · session {{ vote.session }}</div>
+      </div>
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Date</div>
+        <div>{{ vote.start_date[:10] }}</div>
+      </div>
+      <div>
+        <div class="uppercase text-xs tracking-wide text-stone-400">Vote type</div>
+        <div>{{ vote.vote_type }}</div>
+      </div>
+      {% if vote.threshold %}
+        <div>
+          <div class="uppercase text-xs tracking-wide text-stone-400">Required</div>
+          <div>
+            {% if vote.threshold == 'simple_majority' %}simple majority
+            {% elif vote.threshold == 'two_thirds' %}2/3
+            {% elif vote.threshold == 'three_fifths' %}3/5
+            {% else %}{{ vote.threshold }}{% endif %}
+          </div>
+        </div>
+      {% endif %}
+      <div class="text-xs text-stone-400">Updated {{ vote.fetched_at|humanize_age }}</div>
+    </aside>
+
+    <div class="md:col-span-3 space-y-8">
+      <header>
+        <div class="font-mono text-sm text-stone-500 mb-1">
+          {{ "House" if vote.chamber == "house" else "Senate" }} roll {{ vote.roll_number }} · {{ vote.congress }}th
+        </div>
+        <h1 class="text-2xl font-serif font-semibold leading-snug">{{ vote.vote_question }}</h1>
+      </header>
+
+      <section class="space-y-2">
+        <h2 class="text-sm uppercase tracking-wide text-stone-500">Result</h2>
+        <div class="flex items-baseline gap-3">
+          <span class="text-lg font-semibold
+            {% if vote.result in ('Passed', 'Agreed to') %}text-emerald-700
+            {% elif vote.result == 'Failed' %}text-rose-700
+            {% else %}text-stone-700{% endif %}">{{ vote.result }}</span>
+          {% if vote.is_party_unity %}
+            <span class="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">party-unity vote</span>
+          {% endif %}
+        </div>
+        {% if vote.yea_count is not none %}
+          <div class="text-sm text-stone-700">
+            <span class="font-medium text-emerald-700">Yea {{ vote.yea_count }}</span>
+            · <span class="font-medium text-rose-700">Nay {{ vote.nay_count }}</span>
+            · Present {{ vote.present_count or 0 }}
+            · Not Voting {{ vote.not_voting_count or 0 }}
+          </div>
+        {% endif %}
+      </section>
+
+      <section>
+        <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Subject</h2>
+        {% if vote.bill_id and vote.amendment_id %}
+          <div class="text-stone-700">
+            Amendment
+            <span class="font-mono">{{ vote.amendment_id.split('-')[1]|upper }} {{ vote.amendment_id.split('-')[2] }}</span>
+            to
+            {% if underlying_bill %}
+              <a class="underline hover:text-stone-900"
+                 href="/bills/{{ underlying_bill.congress }}/{{ underlying_bill.bill_type }}/{{ underlying_bill.bill_number }}">
+                {{ underlying_bill.bill_type|upper }} {{ underlying_bill.bill_number }}
+              </a>
+              — {{ underlying_bill.title|truncate(120) }}
+            {% else %}
+              <span class="font-mono">{{ vote.bill_id }}</span>
+              <span class="text-xs text-stone-400">(bill not indexed)</span>
+            {% endif %}
+          </div>
+        {% elif vote.bill_id %}
+          {% if underlying_bill %}
+            <div class="text-stone-700">
+              <a class="underline hover:text-stone-900"
+                 href="/bills/{{ underlying_bill.congress }}/{{ underlying_bill.bill_type }}/{{ underlying_bill.bill_number }}">
+                {{ underlying_bill.bill_type|upper }} {{ underlying_bill.bill_number }}
+              </a>
+              — {{ underlying_bill.title|truncate(120) }}
+              {% if underlying_bill.policy_area %}<span class="text-xs text-stone-500"> · {{ underlying_bill.policy_area }}</span>{% endif %}
+            </div>
+          {% else %}
+            <div class="text-stone-700">
+              <span class="font-mono">{{ vote.bill_id }}</span>
+              <span class="text-xs text-stone-400">(bill not indexed)</span>
+            </div>
+          {% endif %}
+        {% else %}
+          <p class="text-sm text-stone-500">Procedural — no bill or amendment subject.</p>
+        {% endif %}
+      </section>
+
+      <section>
+        <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">
+          Positions ({{ positions|length }})
+        </h2>
+        {% if positions %}
+          <table class="w-full text-sm">
+            <thead class="text-left text-xs uppercase tracking-wide text-stone-500">
+              <tr>
+                <th class="py-1 pr-3">Member</th>
+                <th class="py-1 pr-3">Party</th>
+                <th class="py-1 pr-3">State</th>
+                <th class="py-1 pr-3">Position</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in positions %}
+                <tr class="border-t border-stone-100">
+                  <td class="py-1 pr-3">
+                    {% if p.display_name %}
+                      <a href="/members/{{ p.bioguide_id }}" class="hover:text-stone-600">{{ p.display_name }}</a>
+                    {% else %}
+                      <a href="/members/{{ p.bioguide_id }}" class="font-mono text-stone-700 hover:text-stone-900">{{ p.bioguide_id }}</a>
+                    {% endif %}
+                  </td>
+                  <td class="py-1 pr-3 text-stone-600">{{ p.vote_party or "—" }}</td>
+                  <td class="py-1 pr-3 text-stone-600">{{ p.vote_state or "—" }}</td>
+                  <td class="py-1 pr-3
+                    {% if p.position == 'Yea' %}text-emerald-700
+                    {% elif p.position == 'Nay' %}text-rose-700
+                    {% else %}text-stone-600{% endif %}">{{ p.position }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="text-stone-500 text-sm">No positions recorded.</p>
+        {% endif %}
+      </section>
+    </div>
+  </article>
+{% endif %}
+{% endblock %}
