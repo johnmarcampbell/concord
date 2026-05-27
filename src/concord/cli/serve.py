@@ -31,10 +31,10 @@ def serve_command(
     Reads ``OPENAI_API_KEY`` from the environment. Production deployments
     bind to ``127.0.0.1`` and live behind Hostinger's TLS-terminating
     reverse proxy.
+
+    A missing DB file is created with an empty schema on startup (ADR 0012);
+    `serve` is the only top-level command that bootstraps rather than fails.
     """
-    if not db_path.exists():
-        typer.echo(f"error: database not found: {db_path}", err=True)
-        raise typer.Exit(code=2)
     _require_openai_key()
 
     # Lazy imports so `concord --help` doesn't pay the FastAPI/uvicorn cost.
