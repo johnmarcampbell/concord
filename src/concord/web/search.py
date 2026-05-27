@@ -506,6 +506,49 @@ def list_bills(
     return [_bill_hit_from_row(r) for r in rows], int(total)
 
 
+def get_curated_bills(
+    db: sqlite3.Connection,
+    keys: list[tuple[int, str, int]],
+) -> dict[tuple[int, str, int], BillHit]:
+    """Resolve a curated list of ``(congress, bill_type, bill_number)`` keys.
+
+    Returns a mapping keyed by the input tuple so callers can preserve
+    their editorial order. Missing rows are simply absent from the map —
+    a curated entry that hasn't been scraped yet is skipped by the
+    caller rather than rendered as a broken card.
+    """
+    if not keys:
+        return {}
+    placeholders = ",".join(["(?, ?, ?)"] * len(keys))
+    params: list[Any] = []
+    for congress, bill_type, bill_number in keys:
+        params.extend((congress, bill_type.lower(), bill_number))
+    rows = db.execute(
+        f"""
+        SELECT
+            b.bill_id              AS bill_id,
+            b.congress             AS congress,
+            b.bill_type            AS bill_type,
+            b.bill_number          AS bill_number,
+            b.title                AS title,
+            b.origin_chamber       AS origin_chamber,
+            b.policy_area          AS policy_area,
+            b.latest_action_date   AS latest_action_date,
+            b.sponsor_bioguide_id  AS sponsor_bioguide_id,
+            m.display_name         AS sponsor_display_name
+        FROM bills b
+        LEFT JOIN members m ON m.bioguide_id = b.sponsor_bioguide_id
+        WHERE (b.congress, b.bill_type, b.bill_number) IN ({placeholders})
+        """,
+        params,
+    ).fetchall()
+    out: dict[tuple[int, str, int], BillHit] = {}
+    for r in rows:
+        hit = _bill_hit_from_row(r)
+        out[(hit.congress, hit.bill_type, hit.bill_number)] = hit
+    return out
+
+
 def get_bill(
     db: sqlite3.Connection,
     *,

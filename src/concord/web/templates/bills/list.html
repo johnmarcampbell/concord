@@ -7,6 +7,35 @@
     <span class="text-sm text-stone-500">{{ total }} matching</span>
   </div>
 
+  {% if top_bills %}
+    <section class="mb-8">
+      <h2 class="text-xs uppercase tracking-wide text-stone-500 mb-3">Top bills</h2>
+      <ul class="grid gap-3 sm:grid-cols-2">
+        {% for item in top_bills %}
+          {% set b = item.bill %}
+          <li class="border border-stone-200 rounded p-3 bg-amber-50/40">
+            <div class="flex items-baseline gap-2 mb-1">
+              <span class="text-xs uppercase tracking-wide px-2 py-0.5 rounded
+                {% if b.origin_chamber == 'House' %}bg-blue-50 text-blue-800{% else %}bg-amber-50 text-amber-800{% endif %}">
+                {{ b.origin_chamber }}
+              </span>
+              <a
+                href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+                class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+              >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
+              <span class="text-xs text-stone-400">· {{ b.congress }}th Congress</span>
+            </div>
+            <a
+              href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+              class="block font-serif text-stone-900 hover:text-stone-700"
+            >{{ item.label }}</a>
+            <p class="text-sm text-stone-600 mt-1">{{ item.blurb }}</p>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   <form method="get" action="/bills" class="mb-6 flex flex-wrap gap-4 text-sm text-stone-600">
     <fieldset class="flex flex-wrap gap-3">
       <legend class="text-stone-500 uppercase tracking-wide text-xs mr-2">Chamber</legend>
