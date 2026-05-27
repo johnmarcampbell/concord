@@ -173,10 +173,11 @@ class TestScrapeBasic:
                 bill_types=["hr"],
                 progress=events.append,
             )
-        assert len(events) == 1
-        assert events[0].congress == 119
-        assert events[0].bill_type == "hr"
-        assert events[0].bills_written == 2
+        done_events = [e for e in events if e.is_pair_done]
+        assert len(done_events) == 1
+        assert done_events[0].congress == 119
+        assert done_events[0].bill_type == "hr"
+        assert done_events[0].bills_written == 2
 
     def test_creates_storage_dir(self, tmp_path: Path) -> None:
         nested = tmp_path / "nested" / "data"

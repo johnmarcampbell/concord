@@ -15,7 +15,7 @@ from concord.scraper.votes import HOUSE_VOTES_JSONL_NAME, SENATE_VOTES_JSONL_NAM
 from concord.senate_xml import SenateClient
 
 from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, Progress, _parse_congresses, _parse_csv
+from ._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
 
 DEFAULT_VOTES_STORAGE_DIR = Path("./data")
 
@@ -74,13 +74,19 @@ def _run_scrape_votes(
 ) -> int:
     fetched_at = datetime.now(UTC)
     progress = Progress(enabled=show_progress)
+    tracker = RateTracker()
 
     def _on_progress(event: votes_scraper.ScrapeProgressEvent) -> None:
-        progress.update(
-            f"  {event.chamber} {event.congress}/{event.session}  "
-            f"+{event.votes_written:>4} written  "
-            f"({event.votes_seen} seen)"
-        )
+        if not progress.interactive and not event.is_pair_done:
+            return
+        tracker.update_total(event.category_total)
+        label = f"  {event.chamber} {event.congress}/{event.session}  "
+        if event.is_pair_done:
+            progress.update(label + tracker.finish(event.votes_written))
+            progress.commit()
+            tracker.reset()
+        else:
+            progress.update(label + tracker.tick(event.votes_written))
 
     total_votes = 0
     total_positions = 0

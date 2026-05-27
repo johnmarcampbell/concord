@@ -26,6 +26,8 @@ class ScrapeProgressEvent(NamedTuple):
     congress: int
     written_in_congress: int
     total_written: int
+    is_congress_done: bool = False
+    category_total: int | None = None
 
 
 def scrape(
@@ -48,7 +50,13 @@ def scrape(
     with storage_path.open("a", encoding="utf-8") as fh:
         for congress in congresses:
             written_in_congress = 0
-            for payload in client.list_members(congress):
+            congress_total: int | None = None
+
+            def _capture_total(t: int) -> None:
+                nonlocal congress_total
+                congress_total = t
+
+            for payload in client.list_members(congress, on_total=_capture_total):
                 bioguide_id = payload.get("bioguideId")
                 if not bioguide_id:
                     # Defensive: a Member without a bioguide_id can't be
@@ -69,12 +77,23 @@ def scrape(
                 fh.write("\n")
                 written_in_congress += 1
                 total += 1
+                if progress is not None:
+                    progress(
+                        ScrapeProgressEvent(
+                            congress=congress,
+                            written_in_congress=written_in_congress,
+                            total_written=total,
+                            category_total=congress_total,
+                        )
+                    )
             if progress is not None:
                 progress(
                     ScrapeProgressEvent(
                         congress=congress,
                         written_in_congress=written_in_congress,
                         total_written=total,
+                        is_congress_done=True,
+                        category_total=congress_total,
                     )
                 )
     return total

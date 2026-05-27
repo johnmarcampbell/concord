@@ -13,7 +13,7 @@ from concord.pipeline.load_members import load as load_members
 from concord.scraper import members as members_scraper
 
 from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, Progress, _parse_congresses
+from ._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses
 
 DEFAULT_MEMBERS_JSONL = Path("./data/members.jsonl")
 
@@ -40,13 +40,19 @@ def _run_scrape_members(
         raise typer.Exit(code=2) from exc
 
     progress = Progress(enabled=show_progress)
+    tracker = RateTracker()
 
     def _on_progress(event: members_scraper.ScrapeProgressEvent) -> None:
-        progress.update(
-            f"  congress {event.congress:>3}  "
-            f"+{event.written_in_congress:>4} written  "
-            f"(total: {event.total_written})"
-        )
+        if not progress.interactive and not event.is_congress_done:
+            return
+        tracker.update_total(event.category_total)
+        label = f"  congress {event.congress:>3}  "
+        if event.is_congress_done:
+            progress.update(label + tracker.finish(event.written_in_congress))
+            progress.commit()
+            tracker.reset()
+        else:
+            progress.update(label + tracker.tick(event.written_in_congress))
 
     try:
         with api_client:

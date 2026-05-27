@@ -59,6 +59,17 @@ def enrichment_jsonl_name(section: str) -> str:
     return f"bill_{section}.jsonl"
 
 
+def _parse_bill_number(stub: dict[str, Any]) -> int | None:
+    """Return the bill number from a list-endpoint stub, or ``None`` if absent/invalid."""
+    raw = stub.get("number")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 class ScrapeProgressEvent(NamedTuple):
     """Emitted by :func:`scrape_basic` once per ``(congress, bill_type)``."""
 
@@ -66,6 +77,8 @@ class ScrapeProgressEvent(NamedTuple):
     bill_type: str
     bills_seen: int
     bills_written: int
+    is_pair_done: bool = False
+    category_total: int | None = None
 
 
 class ScrapeStats(NamedTuple):
@@ -104,10 +117,14 @@ def scrape_basic(
     iso = fetched_at.isoformat()
 
     types = tuple(bill_types) if bill_types is not None else DEFAULT_BILL_TYPES
+    # Pre-compute a write cap that avoids a boolean compound check inside the
+    # inner loop (keeps scrape_basic within the mccabe complexity budget).
+    _limit: float = float("inf") if limit is None else limit
 
     written = 0
     seen = 0
     done = False
+    pair_total: list[int | None] = [None]  # mutable cell; reset per pair
     with out_path.open("a", encoding="utf-8") as fh:
         for congress in congresses:
             if done:
@@ -118,17 +135,14 @@ def scrape_basic(
                 bt = bill_type.lower()
                 pair_seen = 0
                 pair_written = 0
-                for stub in client.list_bills(congress, bt):
+                pair_total[0] = None
+                for stub in client.list_bills(
+                    congress, bt, on_total=lambda t: pair_total.__setitem__(0, t)
+                ):
                     pair_seen += 1
                     seen += 1
-                    number_raw = stub.get("number")
-                    if number_raw is None:
-                        # Defensive: a stub without a number can't be
-                        # promoted to a detail call; skip it.
-                        continue
-                    try:
-                        bill_number = int(number_raw)
-                    except (TypeError, ValueError):
+                    bill_number = _parse_bill_number(stub)
+                    if bill_number is None:
                         continue
                     detail = client.get_bill_detail(congress, bt, bill_number)
                     envelope = {
@@ -144,7 +158,17 @@ def scrape_basic(
                     fh.write("\n")
                     pair_written += 1
                     written += 1
-                    if limit is not None and written >= limit:
+                    if progress is not None:
+                        progress(
+                            ScrapeProgressEvent(
+                                congress=congress,
+                                bill_type=bt,
+                                bills_seen=pair_seen,
+                                bills_written=pair_written,
+                                category_total=pair_total[0],
+                            )
+                        )
+                    if written >= _limit:
                         done = True
                         break
                 if progress is not None:
@@ -154,6 +178,8 @@ def scrape_basic(
                             bill_type=bt,
                             bills_seen=pair_seen,
                             bills_written=pair_written,
+                            is_pair_done=True,
+                            category_total=pair_total[0],
                         )
                     )
 
@@ -172,6 +198,8 @@ class EnrichProgressEvent(NamedTuple):
     bill_key: tuple[int, str, int]
     sections_written: int
     partial_failures: tuple[str, ...]
+    bills_done: int = 0
+    bills_total: int | None = None
 
 
 class EnrichStats(NamedTuple):
@@ -199,6 +227,7 @@ def scrape_enrichment(
     fetched_at: datetime,
     sections: Iterable[str] | None = None,
     limit: int | None = None,
+    bills_total: int | None = None,
     progress: Callable[[EnrichProgressEvent], None] | None = None,
 ) -> EnrichStats:
     """Append one ADR 0006 envelope per (bill, section) to ``data/bill_<section>.jsonl``.
@@ -277,6 +306,8 @@ def scrape_enrichment(
                         bill_key=(congress, bt, bill_number),
                         sections_written=sections_written,
                         partial_failures=tuple(partial),
+                        bills_done=bills_enriched,
+                        bills_total=bills_total,
                     )
                 )
             if limit is not None and bills_enriched >= limit:

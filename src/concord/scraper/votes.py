@@ -51,6 +51,8 @@ class ScrapeProgressEvent(NamedTuple):
     session: int
     votes_seen: int
     votes_written: int
+    is_pair_done: bool = False
+    category_total: int | None = None
 
 
 class ScrapeStats(NamedTuple):
@@ -66,6 +68,7 @@ class _PairResult(NamedTuple):
     written: int
     positions_written: int
     done: bool
+    pair_total: int | None = None
 
 
 def scrape_house(
@@ -133,6 +136,8 @@ def scrape_house(
                             session=session,
                             votes_seen=pair.seen,
                             votes_written=pair.written,
+                            is_pair_done=True,
+                            category_total=pair.pair_total,
                         )
                     )
 
@@ -152,13 +157,20 @@ def _scrape_pair(
     members_fh: IO[str],
     iso: str,
     remaining: int | None,
+    per_vote_progress: Callable[[ScrapeProgressEvent], None] | None = None,
 ) -> _PairResult:
     """Walk one ``(congress, session)`` slot; write detail + members envelopes."""
     seen = 0
     written = 0
     positions_written = 0
     done = False
-    for stub in client.list_house_votes(congress, session):
+    pair_total: int | None = None
+
+    def _capture_total(t: int) -> None:
+        nonlocal pair_total
+        pair_total = t
+
+    for stub in client.list_house_votes(congress, session, on_total=_capture_total):
         seen += 1
         roll_number = _parse_roll_number(stub)
         if roll_number is None:
@@ -174,10 +186,27 @@ def _scrape_pair(
         if _fetch_and_write_members(client, congress, session, roll_number, members_fh, iso, key):
             positions_written += 1
         written += 1
+        if per_vote_progress is not None:
+            per_vote_progress(
+                ScrapeProgressEvent(
+                    chamber="house",
+                    congress=congress,
+                    session=session,
+                    votes_seen=seen,
+                    votes_written=written,
+                    category_total=pair_total,
+                )
+            )
         if remaining is not None and written >= remaining:
             done = True
             break
-    return _PairResult(seen=seen, written=written, positions_written=positions_written, done=done)
+    return _PairResult(
+        seen=seen,
+        written=written,
+        positions_written=positions_written,
+        done=done,
+        pair_total=pair_total,
+    )
 
 
 def _parse_roll_number(stub: dict[str, Any]) -> int | None:
@@ -285,6 +314,7 @@ def scrape_senate(
                 remaining = None if limit is None else max(0, limit - total_written)
                 roll_numbers = client_xml.list_roll_call_numbers(congress, session)
                 seen = len(roll_numbers)
+                senate_pair_total = len(roll_numbers)
                 total_seen += seen
                 pair_written = 0
                 for roll_number in roll_numbers:
@@ -303,6 +333,17 @@ def scrape_senate(
                     )
                     pair_written += 1
                     total_written += 1
+                    if progress is not None:
+                        progress(
+                            ScrapeProgressEvent(
+                                chamber="senate",
+                                congress=congress,
+                                session=session,
+                                votes_seen=seen,
+                                votes_written=pair_written,
+                                category_total=senate_pair_total,
+                            )
+                        )
                     if remaining is not None and pair_written >= remaining:
                         done = True
                         break
@@ -316,6 +357,8 @@ def scrape_senate(
                             session=session,
                             votes_seen=seen,
                             votes_written=pair_written,
+                            is_pair_done=True,
+                            category_total=senate_pair_total,
                         )
                     )
 

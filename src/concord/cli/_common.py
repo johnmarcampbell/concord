@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -72,6 +73,98 @@ class Progress:
 
     def __exit__(self, *_a: object) -> None:
         self.commit()
+
+    @property
+    def interactive(self) -> bool:
+        """True when progress is enabled and the stream is a TTY."""
+        return self._inplace
+
+
+class RateTracker:
+    """Tracks throughput rate and computes ETA for CLI progress lines.
+
+    Typical usage inside a ``_on_progress`` closure::
+
+        tracker = RateTracker(total=known_total)   # total may be None
+
+        def _on_progress(event):
+            if event.is_done:
+                progress.update(label + tracker.finish(event.count))
+                progress.commit()
+                tracker.reset()
+            else:
+                tracker.update_total(event.category_total)  # safe to call every time; idempotent
+                progress.update(label + tracker.tick(event.count))
+    """
+
+    def __init__(self, total: int | None = None) -> None:
+        self._total = total
+        self._start: float | None = None
+
+    def update_total(self, total: int | None) -> None:
+        """Set or refine the total when first learned (e.g. from first API page)."""
+        if total is not None:
+            self._total = total
+
+    def tick(self, done: int) -> str:
+        """Record *done* items complete; return a formatted progress string.
+
+        Format: ``"  412 / 5,021    18/min   ETA 4h 17m"``
+        Before the first second elapses the rate/ETA portion is omitted.
+        """
+        now = time.monotonic()
+        if self._start is None:
+            self._start = now
+        elapsed = now - self._start
+
+        count = f"{done:,} / {self._total:,}" if self._total is not None else f"{done:,}"
+
+        parts: list[str] = [count]
+
+        if elapsed >= 1.0 and done > 0:
+            rate = done / elapsed
+            parts.append(_fmt_rate(rate))
+            if self._total is not None and done < self._total:
+                eta_secs = (self._total - done) / rate
+                parts.append(f"ETA {_fmt_duration(eta_secs)}")
+
+        return "   ".join(parts)
+
+    def finish(self, done: int) -> str:
+        """Return a completion string: ``"5,021 written   [47m 12s]"``."""
+        now = time.monotonic()
+        elapsed = (now - self._start) if self._start is not None else 0.0
+        return f"{done:,} written   [{_fmt_duration(elapsed)}]"
+
+    def reset(self) -> None:
+        """Reset timing and total for reuse on the next category."""
+        self._start = None
+        self._total = None
+
+
+_SECS_PER_MIN: int = 60
+_SECS_PER_HOUR: int = 3_600
+
+
+def _fmt_rate(rate: float) -> str:
+    """Format items/sec as a human-readable rate string."""
+    if rate >= 1.0:
+        return f"{rate:.0f}/s"
+    if rate * _SECS_PER_MIN >= 1.0:
+        return f"{rate * _SECS_PER_MIN:.0f}/min"
+    return f"{rate * _SECS_PER_HOUR:.0f}/hr"
+
+
+def _fmt_duration(secs: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    s = int(secs)
+    if s < _SECS_PER_MIN:
+        return f"{s}s"
+    if s < _SECS_PER_HOUR:
+        m, sec = divmod(s, _SECS_PER_MIN)
+        return f"{m}m {sec:02d}s"
+    h, rem = divmod(s, _SECS_PER_HOUR)
+    return f"{h}h {rem // _SECS_PER_MIN:02d}m"
 
 
 # ---------------------------------------------------------------------------

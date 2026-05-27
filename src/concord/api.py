@@ -199,7 +199,12 @@ class Client:
             offset += ARTICLES_PAGE_SIZE
         return out
 
-    def list_members(self, congress: int) -> Iterator[dict[str, Any]]:
+    def list_members(
+        self,
+        congress: int,
+        *,
+        on_total: Callable[[int], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """Yield every Member of one Congress as a raw API payload dict.
 
         Walks ``GET /v3/member/congress/{congress}`` until ``pagination.next``
@@ -211,6 +216,10 @@ class Client:
         path = f"/member/congress/{congress}"
         while True:
             payload = self._get(path, params={"limit": MEMBERS_PAGE_SIZE, "offset": offset})
+            if on_total is not None and offset == 0:
+                total = payload.get("pagination", {}).get("count")
+                if isinstance(total, int):
+                    on_total(total)
             page_count = 0
             for raw in payload.get("members", []):
                 yield raw
@@ -222,7 +231,13 @@ class Client:
                 return
             offset += MEMBERS_PAGE_SIZE
 
-    def list_bills(self, congress: int, bill_type: str) -> Iterator[dict[str, Any]]:
+    def list_bills(
+        self,
+        congress: int,
+        bill_type: str,
+        *,
+        on_total: Callable[[int], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """Yield every Bill stub for one Congress + bill type.
 
         Walks ``GET /v3/bill/{congress}/{bill_type}`` until
@@ -236,6 +251,10 @@ class Client:
         path = f"/bill/{congress}/{bt}"
         while True:
             payload = self._get(path, params={"limit": BILLS_PAGE_SIZE, "offset": offset})
+            if on_total is not None and offset == 0:
+                total = payload.get("pagination", {}).get("count")
+                if isinstance(total, int):
+                    on_total(total)
             page_count = 0
             for raw in payload.get("bills", []):
                 yield raw
@@ -369,6 +388,8 @@ class Client:
         self,
         congress: int,
         session: int,
+        *,
+        on_total: Callable[[int], None] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield every House roll-call vote stub for one ``(congress, session)``.
 
@@ -383,6 +404,10 @@ class Client:
         path = f"/house-vote/{congress}/{session}"
         while True:
             payload = self._get(path, params={"limit": VOTES_PAGE_SIZE, "offset": offset})
+            if on_total is not None and offset == 0:
+                total = payload.get("pagination", {}).get("count")
+                if isinstance(total, int):
+                    on_total(total)
             page_count = 0
             for raw in payload.get("houseRollCallVotes", []):
                 yield raw

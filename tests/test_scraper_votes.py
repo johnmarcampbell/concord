@@ -361,9 +361,10 @@ class TestScrapeSenate:
                 progress=events.append,
                 sleep=lambda _s: None,
             )
-        assert len(events) == 1
-        assert events[0].chamber == "senate"
-        assert events[0].votes_written == 1
+        done_events = [e for e in events if e.is_pair_done]
+        assert len(done_events) == 1
+        assert done_events[0].chamber == "senate"
+        assert done_events[0].votes_written == 1
 
     def test_html_404_trap_raises_without_corrupting_file(self, tmp_path: Path) -> None:
         roster_xml = (SENATE_FIXTURES / "senators_cfm.xml").read_bytes()
