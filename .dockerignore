@@ -1,0 +1,47 @@
+# Belt-and-suspenders for the build context. The Dockerfile uses
+# explicit COPY directives rather than `COPY . .`, so this list mostly
+# exists to keep the build context small and to defend against a future
+# COPY refactor accidentally pulling in junk.
+
+# Version control
+.git/
+.gitignore
+.github/
+
+# Python build / cache artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local virtualenvs
+.venv/
+venv/
+
+# Project data — never bake a developer's locally-scraped JSONL / DB
+# into a published image.
+data/
+
+# Editor / OS junk
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Agent / worktree state
+.claude/
+
+# Repo docs that don't belong in the runtime image
+tests/
+docs/
+CONTRIBUTING.md
+CONTEXT.md
