@@ -14,6 +14,6 @@ The :class:`Storage` Protocol is the contract every backend implements.
 from .base import Storage
 from .jsonl import JsonlStorage
 from .mongo import MongoStorage
-from .sqlite import SqliteStorage
+from .sqlite import SqliteStorage, ensure_schema
 
-__all__ = ["JsonlStorage", "MongoStorage", "SqliteStorage", "Storage"]
+__all__ = ["JsonlStorage", "MongoStorage", "SqliteStorage", "Storage", "ensure_schema"]

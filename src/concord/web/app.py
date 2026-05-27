@@ -37,6 +37,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from concord.embedding import Embedder
+from concord.storage.sqlite import ensure_schema
 
 from . import search as search_mod
 from .snippets import keyword_snippet, semantic_snippet
@@ -111,6 +112,10 @@ def create_app(
         Tests pass a stub to avoid network and OpenAI key requirements.
     """
     db_path = Path(db_path)
+    # First-boot bootstrap: if the DB file is missing, create it and apply
+    # the schema so the rest of create_app() (and incoming requests) can
+    # assume the tables exist. See ADR 0012.
+    ensure_schema(db_path)
 
     if embedder is None:
         import openai  # noqa: PLC0415 — guarded so tests can import this module without openai

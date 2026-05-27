@@ -576,6 +576,16 @@ _CHUNK_INSERT_SQL = (
 _VEC_INSERT_SQL = "INSERT OR REPLACE INTO chunks_vec(rowid, embedding) VALUES (?, ?)"
 
 
+def ensure_schema(db_path: Path | str) -> None:
+    """Create the SQLite file (and parent dir) and apply the full schema.
+
+    Idempotent: every DDL statement is ``CREATE … IF NOT EXISTS``, so this
+    is safe to call against an existing DB. Used by the web layer to
+    bootstrap an empty store on first boot — see ADR 0012.
+    """
+    SqliteStorage(db_path).close()
+
+
 class SqliteStorage:
     """SQLite-backed :class:`Storage` implementation."""
 
