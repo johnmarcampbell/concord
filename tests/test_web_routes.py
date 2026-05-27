@@ -119,6 +119,28 @@ class TestBasicRoutes:
         assert "font-serif" in r.text
 
 
+class TestBootstrapMissingDb:
+    """ADR 0012: create_app() against a missing DB path bootstraps a fresh,
+    empty schema rather than failing. Backs the Docker first-run UX."""
+
+    def test_missing_db_yields_working_empty_app(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "does-not-yet-exist.db"
+        assert not db_path.exists()
+
+        app = create_app(db_path, embedder=Embedder(_StubClient()))
+        assert db_path.exists()
+
+        client = TestClient(app, raise_server_exceptions=False)
+
+        r = client.get("/healthz")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "Concord" in r.text
+
+
 # -- search endpoint ----------------------------------------------------------
 
 

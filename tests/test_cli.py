@@ -706,18 +706,31 @@ class TestServeCommand:
         for flag in ["--db", "--host", "--port", "--reload"]:
             assert flag in plain
 
-    def test_missing_db_exits_cleanly(
+    def test_missing_db_bootstraps_empty_schema(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """Serve against a missing DB creates it on the fly (ADR 0012)."""
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
-        result = runner.invoke(cli_module.app, ["serve", "--db", str(tmp_path / "missing.db")])
-        assert result.exit_code == 2
-        plain = _strip(result.output) + _strip(result.stderr or "")
-        assert "not found" in plain
-        assert "Traceback" not in plain
+        db = tmp_path / "missing.db"
+
+        # Stub uvicorn so we don't actually bind a port; stub openai so the
+        # embedder constructor doesn't need a real key.
+        monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
+
+        class _Fake:
+            class embeddings:  # noqa: N801 — mirrors openai SDK attribute name
+                @staticmethod
+                def create(*, model: str, input: list[str]) -> Any:
+                    raise AssertionError("should not be called during serve startup")
+
+        monkeypatch.setattr(openai, "OpenAI", lambda *a, **kw: _Fake())
+
+        result = runner.invoke(cli_module.app, ["serve", "--db", str(db)])
+        assert result.exit_code == 0, result.output
+        assert db.exists()
 
     def test_missing_openai_api_key_exits_cleanly(
         self,
