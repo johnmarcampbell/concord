@@ -38,10 +38,10 @@ from slowapi.util import get_remote_address
 
 from concord.embedding import Embedder
 from concord.storage.sqlite import ensure_schema
+from concord.web.top_bills import CURATED_TOP_BILLS
 
 from . import search as search_mod
 from .snippets import keyword_snippet, semantic_snippet
-from .top_bills import CURATED_TOP_BILLS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     pass
