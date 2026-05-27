@@ -21,6 +21,7 @@ import uvicorn
 from typer.testing import CliRunner
 
 import concord.cli as cli_module
+import concord.cli.proceedings as cli_proceedings_module
 import concord.scraper.proceedings as scraper_proceedings_module
 from concord.api import ENV_API_KEY, ApiError, Client
 from concord.models import Article, Issue, Proceeding
@@ -855,9 +856,9 @@ class TestRunCommand:
                 skipped_embedded=0,
             )
 
-        monkeypatch.setattr(cli_module, "_run_pull", fake_pull)
-        monkeypatch.setattr(cli_module, "_run_load", fake_load)
-        monkeypatch.setattr(cli_module, "_run_index", fake_index)
+        monkeypatch.setattr(cli_proceedings_module, "_run_pull", fake_pull)
+        monkeypatch.setattr(cli_proceedings_module, "_run_load", fake_load)
+        monkeypatch.setattr(cli_proceedings_module, "_run_index", fake_index)
 
         result = runner.invoke(
             cli_module.app,
@@ -887,7 +888,7 @@ class TestRunCommand:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        monkeypatch.delenv(cli_module.ENV_API_KEY, raising=False)
+        monkeypatch.delenv(ENV_API_KEY, raising=False)
         monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
         result = runner.invoke(
             cli_module.app,
@@ -902,7 +903,7 @@ class TestRunCommand:
         )
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
-        assert cli_module.ENV_API_KEY in plain
+        assert ENV_API_KEY in plain
 
     def test_run_fails_fast_on_missing_openai_key(
         self,
