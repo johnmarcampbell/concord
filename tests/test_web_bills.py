@@ -189,6 +189,24 @@ class TestBillsIndex:
         assert "Lower Energy Costs Act" in body
         assert "Safeguard American Voter Eligibility Act" not in body
 
+    def test_top_bills_section_on_landing(self, client: TestClient) -> None:
+        # The seed includes 119-hr-1, which is in CURATED_TOP_BILLS as the
+        # "One Big Beautiful Bill Act" — the curated label/blurb come from
+        # the constant, not the DB row's title.
+        resp = client.get("/bills")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Top bills" in body
+        assert "One Big Beautiful Bill Act" in body
+        # Curated entries whose underlying bill isn't seeded are skipped
+        # rather than rendered as broken cards.
+        assert "CHIPS and Science Act" not in body
+
+    def test_top_bills_hidden_when_filtered(self, client: TestClient) -> None:
+        resp = client.get("/bills?chamber=Senate")
+        assert resp.status_code == 200
+        assert "Top bills" not in resp.text
+
 
 class TestBillProfile:
     def test_renders_known_bill(self, client: TestClient) -> None:

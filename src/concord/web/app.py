@@ -38,6 +38,7 @@ from slowapi.util import get_remote_address
 
 from concord.embedding import Embedder
 from concord.storage.sqlite import ensure_schema
+from concord.web.top_bills import CURATED_TOP_BILLS
 
 from . import search as search_mod
 from .snippets import keyword_snippet, semantic_snippet
@@ -407,6 +408,31 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
             limit=BILLS_PAGE_SIZE,
             offset=offset,
         )
+        # "Top bills" highlight section: landing-page only — hide once
+        # the user has narrowed by filter or paged past the first page.
+        is_landing = (
+            page == 1
+            and chamber_filter is None
+            and not policy_area
+            and congress is None
+            and not sponsor
+        )
+        top_bills: list[dict[str, Any]] = []
+        if is_landing:
+            keys = [(c.congress, c.bill_type, c.bill_number) for c in CURATED_TOP_BILLS]
+            resolved = search_mod.get_curated_bills(db, keys)
+            for entry in CURATED_TOP_BILLS:
+                key = (entry.congress, entry.bill_type, entry.bill_number)
+                hit = resolved.get(key)
+                if hit is None:
+                    continue
+                top_bills.append(
+                    {
+                        "bill": hit,
+                        "label": entry.label,
+                        "blurb": entry.blurb,
+                    }
+                )
         context = {
             "bills": hits,
             "total": total,
@@ -418,6 +444,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
             "policy_area": policy_area or "",
             "congress": congress,
             "sponsor": sponsor or "",
+            "top_bills": top_bills,
         }
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request, "bills/list.html", context
