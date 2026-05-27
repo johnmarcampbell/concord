@@ -191,6 +191,41 @@ class TestFetchTextRateLimit:
             text = fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
         assert text == "finally"
 
+    def test_403_retries_until_success(self) -> None:
+        # congress.gov uses 403 as a rate-limit signal; must back off and retry.
+        responses = iter(
+            [
+                httpx.Response(403),
+                httpx.Response(403),
+                _ok("<pre>after 403 backoff</pre>"),
+            ]
+        )
+        slept: list[float] = []
+        with _client(lambda r: next(responses)) as client:
+            text = fetch_text(SAMPLE_URL, client, sleep=slept.append)
+        assert text == "after 403 backoff"
+        assert len(slept) == 2
+
+    def test_403_honors_retry_after_header(self) -> None:
+        responses = iter(
+            [
+                httpx.Response(403, headers={"retry-after": "5"}),
+                _ok("<pre>ok</pre>"),
+            ]
+        )
+        slept: list[float] = []
+        with _client(lambda r: next(responses)) as client:
+            fetch_text(SAMPLE_URL, client, sleep=slept.append)
+        assert slept == [5.0]
+
+    def test_403_does_not_count_against_5xx_budget(self) -> None:
+        # Many 403s followed by success must not exhaust the 5xx retry budget.
+        sequence = [httpx.Response(403)] * 20 + [_ok("<pre>finally</pre>")]
+        responses = iter(sequence)
+        with _client(lambda r: next(responses)) as client:
+            text = fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
+        assert text == "finally"
+
 
 # -- redirect handling --------------------------------------------------------
 
