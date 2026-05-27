@@ -343,10 +343,48 @@ def test_votes_end_to_end(tmp_path: Path) -> None:
     (storage_dir / HOUSE_VOTES_JSONL_NAME).write_text(_env(detail, 240), encoding="utf-8")
     (storage_dir / HOUSE_VOTE_POSITIONS_JSONL_NAME).write_text(_env(members, 240), encoding="utf-8")
 
+    # Phase 3b: also seed a Senate vote + roster snapshot so the loader
+    # exercises the Senate branch and the web layer renders live data.
+    senate_fixtures = Path(__file__).parent / "fixtures" / "senate"
+    senate_detail = (senate_fixtures / "detail_119_1_00007_bill.xml").read_text()
+    senate_roster = (senate_fixtures / "senators_cfm.xml").read_text()
+
+    def _senate_env(payload: str, roll: int) -> str:
+        return (
+            json.dumps(
+                {
+                    "fetched_at": fetched_at,
+                    "key": {
+                        "chamber": "senate",
+                        "congress": 119,
+                        "session": 1,
+                        "roll_number": roll,
+                    },
+                    "payload": payload,
+                }
+            )
+            + "\n"
+        )
+
+    def _roster_env(payload: str) -> str:
+        return (
+            json.dumps(
+                {
+                    "fetched_at": fetched_at,
+                    "key": {"source": "senators_cfm"},
+                    "payload": payload,
+                }
+            )
+            + "\n"
+        )
+
+    (storage_dir / "senate_votes.jsonl").write_text(_senate_env(senate_detail, 7), encoding="utf-8")
+    (storage_dir / "senate_roster.jsonl").write_text(_roster_env(senate_roster), encoding="utf-8")
+
     db = tmp_path / "test.db"
     SqliteStorage(db).close()
     load_stats = load_votes(storage_dir=storage_dir, db_path=db)
-    assert load_stats.votes_written == 1
+    assert load_stats.votes_written == 2  # one House + one Senate
     index_votes(db_path=db)
 
     class _StubResp:
@@ -363,11 +401,15 @@ def test_votes_end_to_end(tmp_path: Path) -> None:
     app = create_app(db, embedder=Embedder(_Stub()))
     client = TestClient(app, raise_server_exceptions=False)
 
-    for path in ("/votes", "/votes/house/119/1/240", "/about/methodology"):
+    for path in (
+        "/votes",
+        "/votes/house/119/1/240",
+        "/votes/senate/119/1/7",
+        "/about/methodology",
+    ):
         resp = client.get(path)
         assert resp.status_code == 200, path
 
-    # Senate placeholder returns 200 not 404.
-    resp = client.get("/votes/senate/119/1/1")
-    assert resp.status_code == 200
-    assert "Phase 3b" in resp.text
+    # Phase-3b placeholder strings are gone from the Senate Vote profile.
+    resp = client.get("/votes/senate/119/1/7")
+    assert "Phase 3b" not in resp.text

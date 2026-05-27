@@ -185,6 +185,60 @@ def _seed(storage: SqliteStorage) -> None:
         [_pos(HOUSE_BIOGUIDE, "Johnson", "R", "LA")],
     )
 
+    # Seed Senate party-unity votes so the Senate Member profile renders
+    # live data instead of a placeholder.
+    storage.upsert_member(
+        Member(
+            bioguide_id="S000044",
+            first_name="Senate",
+            last_name="Demo",
+            display_name="Senate Demo",
+        ),
+        [
+            Term(
+                bioguide_id="S000044",
+                congress=119,
+                chamber="senate",
+                state="OR",
+                party="Democratic",
+                start_date="2025-01-03",
+            ),
+        ],
+        fetched_at="2026-05-25T00:00:00+00:00",
+    )
+    for roll in range(1, 14):
+        storage.upsert_vote(
+            Vote(
+                vote_id=f"senate-119-1-{roll}",
+                chamber="senate",
+                congress=119,
+                session=1,
+                roll_number=roll,
+                vote_kind="standard",
+                start_date=f"2026-05-{roll:02d}T18:00:00Z",
+                vote_question="On Passage of the Bill",
+                vote_type="On Passage of the Bill",
+                threshold="simple_majority",
+                result="Passed",
+                yea_count=60,
+                nay_count=40,
+                present_count=0,
+                not_voting_count=0,
+                bill_id="119-hr-3424",
+                amendment_id=None,
+                is_party_unity=False,
+                update_date="2026-05-30",
+            ),
+            fetched_at="t",
+        )
+        storage.upsert_vote_positions(
+            f"senate-119-1-{roll}",
+            [
+                _pos("S000044", "Nay", "D", "OR"),
+                _pos("SXX0001", "Yea", "R", "TX"),
+            ],
+        )
+
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
@@ -212,7 +266,9 @@ class TestVotesIndex:
     def test_chamber_filter(self, client: TestClient) -> None:
         resp = client.get("/votes?chamber=senate")
         assert resp.status_code == 200
-        assert "No votes match" in resp.text
+        # Senate votes are seeded — list should now render rather than
+        # an empty-state message.
+        assert "S 1" in resp.text or "Senate" in resp.text
 
     def test_vote_kind_filter(self, client: TestClient) -> None:
         resp = client.get("/votes?vote_kind=election")
@@ -242,10 +298,14 @@ class TestVoteProfile:
         # Election votes leave counts NULL; the totals line is suppressed.
         assert "Yea " not in body or "Johnson" in body
 
-    def test_senate_placeholder(self, client: TestClient) -> None:
+    def test_senate_vote_renders(self, client: TestClient) -> None:
         resp = client.get("/votes/senate/119/1/1")
         assert resp.status_code == 200
-        assert "Phase 3b" in resp.text
+        body = resp.text
+        assert "Phase 3b" not in body
+        # Header and position roster both appear.
+        assert "Senate" in body
+        assert "S000044" in body
 
     def test_unknown_roll_404(self, client: TestClient) -> None:
         resp = client.get("/votes/house/119/1/999999")
@@ -284,12 +344,27 @@ class TestMemberProfileVotes:
         # Methodology link.
         assert "/about/methodology#party-unity" in body
 
-    def test_senate_member_phase_3b_placeholder(self, client: TestClient) -> None:
+    def test_senate_member_renders_live(self, client: TestClient) -> None:
+        # The Senate Member seeded with party-unity positions ("S000044")
+        # should render live Recent votes + a Party Unity Score section.
+        resp = client.get("/members/S000044")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Phase 3b" not in body
+        assert "Recent votes" in body
+        assert "Party Unity Score" in body
+        assert "of party-unity votes" in body
+        assert "Senate:" in body
+
+    def test_senate_independent_member_shows_no_score(self, client: TestClient) -> None:
+        # The Sanders-style I Senator has no party-unity positions seeded
+        # — the section still renders without the old Phase 3b placeholder.
         resp = client.get(f"/members/{SENATE_BIOGUIDE}")
         assert resp.status_code == 200
         body = resp.text
-        assert "Senate positions load in Phase 3b" in body
-        assert "Senate scoring lands in Phase 3b" in body
+        assert "Phase 3b" not in body
+        assert "Recent votes" in body
+        assert "Party Unity Score" in body
 
 
 class TestMethodologyPage:
@@ -301,3 +376,6 @@ class TestMethodologyPage:
         assert "Party Unity Score" in body
         assert "Denominator" in body
         assert "Numerator" in body
+        # Chamber-scoping wording from the Phase 3b refinement.
+        assert "Chamber scope" in body
+        assert "independently" in body

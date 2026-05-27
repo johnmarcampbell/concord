@@ -1487,8 +1487,56 @@ class TestVotesHelp:
         assert result.exit_code == 0
 
 
+def _senate_votes_handler():
+    """Mock handler for senate.gov LIS XML feeds.
+
+    Serves three responses: senators_cfm.xml (roster), a synthetic
+    vote_menu listing two roll numbers, and the spike-captured detail
+    XMLs for those rolls.
+    """
+    fixtures = Path(__file__).parent / "fixtures" / "senate"
+    roster = (fixtures / "senators_cfm.xml").read_bytes()
+    detail_7 = (fixtures / "detail_119_1_00007_bill.xml").read_bytes()
+    detail_3 = (fixtures / "detail_119_1_00003_amendment.xml").read_bytes()
+    menu = (
+        b"<?xml version='1.0'?><vote_summary><votes>"
+        b"<vote><vote_number>00003</vote_number></vote>"
+        b"<vote><vote_number>00007</vote_number></vote>"
+        b"</votes></vote_summary>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("senators_cfm.xml"):
+            body = roster
+        elif "vote_menu_" in url:
+            body = menu
+        elif url.endswith("vote_119_1_00007.xml"):
+            body = detail_7
+        elif url.endswith("vote_119_1_00003.xml"):
+            body = detail_3
+        else:
+            return httpx.Response(404)
+        return httpx.Response(200, content=body, headers={"content-type": "application/xml"})
+
+    return handler
+
+
+def _patch_senate_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    from concord.senate_xml import SenateClient  # noqa: PLC0415 — lazy import: per-test mock setup
+
+    original = SenateClient.__init__
+
+    def patched(self, **kwargs):
+        kwargs.setdefault("transport", httpx.MockTransport(_senate_votes_handler()))
+        kwargs.setdefault("sleep", lambda _s: None)
+        original(self, **kwargs)
+
+    monkeypatch.setattr(SenateClient, "__init__", patched)
+
+
 class TestScrapeVotesCommand:
-    def test_scrape_with_limit_writes_both_files(
+    def test_scrape_house_only(
         self,
         runner: CliRunner,
         with_api_key: None,
@@ -1505,6 +1553,49 @@ class TestScrapeVotesCommand:
             original_init(self, **kwargs)
 
         monkeypatch.setattr(Client, "__init__", patched_init)
+
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "votes",
+                "--congresses",
+                "119",
+                "--sessions",
+                "1",
+                "--chambers",
+                "house",
+                "--limit",
+                "2",
+                "--storage-dir",
+                str(tmp_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        details = (tmp_path / "house_votes.jsonl").read_text().splitlines()
+        members = (tmp_path / "house_vote_positions.jsonl").read_text().splitlines()
+        assert len(details) == 2
+        assert len(members) == 2
+        assert not (tmp_path / "senate_votes.jsonl").exists()
+
+    def test_default_runs_both_chambers(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        handler = _votes_handler()
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+        _patch_senate_client(monkeypatch)
 
         result = runner.invoke(
             cli_module.app,
@@ -1523,27 +1614,20 @@ class TestScrapeVotesCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        details = (tmp_path / "house_votes.jsonl").read_text().splitlines()
-        members = (tmp_path / "house_vote_positions.jsonl").read_text().splitlines()
-        assert len(details) == 2
-        assert len(members) == 2
+        assert (tmp_path / "house_votes.jsonl").exists()
+        assert (tmp_path / "house_vote_positions.jsonl").exists()
+        assert (tmp_path / "senate_votes.jsonl").exists()
+        assert (tmp_path / "senate_roster.jsonl").exists()
 
-    def test_senate_chamber_logs_skip_and_runs_house(
+    def test_senate_only(
         self,
         runner: CliRunner,
-        with_api_key: None,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        handler = _votes_handler()
-        original_init = Client.__init__
-
-        def patched_init(self, **kwargs):
-            kwargs.setdefault("transport", httpx.MockTransport(handler))
-            kwargs.setdefault("sleep", lambda _s: None)
-            original_init(self, **kwargs)
-
-        monkeypatch.setattr(Client, "__init__", patched_init)
+        # No API key needed — Senate-only.
+        monkeypatch.delenv("CONGRESS_API_KEY", raising=False)
+        _patch_senate_client(monkeypatch)
 
         result = runner.invoke(
             cli_module.app,
@@ -1555,7 +1639,7 @@ class TestScrapeVotesCommand:
                 "--sessions",
                 "1",
                 "--chambers",
-                "senate,house",
+                "senate",
                 "--limit",
                 "1",
                 "--storage-dir",
@@ -1564,30 +1648,8 @@ class TestScrapeVotesCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "Phase 3b" in _strip(result.output)
-        # House half still runs.
-        assert (tmp_path / "house_votes.jsonl").exists()
-
-    def test_senate_only_is_pure_noop(
-        self,
-        runner: CliRunner,
-        with_api_key: None,
-        tmp_path: Path,
-    ) -> None:
-        result = runner.invoke(
-            cli_module.app,
-            [
-                "scrape",
-                "votes",
-                "--chambers",
-                "senate",
-                "--storage-dir",
-                str(tmp_path),
-                "--no-progress",
-            ],
-        )
-        assert result.exit_code == 0
-        assert "Phase 3b" in _strip(result.output)
+        assert (tmp_path / "senate_votes.jsonl").exists()
+        assert (tmp_path / "senate_roster.jsonl").exists()
         assert not (tmp_path / "house_votes.jsonl").exists()
 
 

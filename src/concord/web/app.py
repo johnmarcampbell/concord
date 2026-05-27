@@ -357,19 +357,11 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         cosponsored = search_mod.cosponsored_bills_for_member(db, bioguide_id, limit=25)
         cosponsored_total = search_mod.count_cosponsored_bills_for_member(db, bioguide_id)
 
-        # Decide House vs Senate by the Member's most-recent term chamber.
-        most_recent_chamber: str | None = None
-        if terms:
-            most_recent_chamber = terms[0]["chamber"]
-        is_house = most_recent_chamber == "house"
-
-        recent_votes = (
-            search_mod.recent_votes_for_member(db, bioguide_id, limit=MEMBER_RECENT_VOTES_LIMIT)
-            if is_house
-            else []
+        recent_votes = search_mod.recent_votes_for_member(
+            db, bioguide_id, limit=MEMBER_RECENT_VOTES_LIMIT
         )
-        party_unity_rows = search_mod.party_unity_for_member(db, bioguide_id) if is_house else []
-        modal_vote_party = search_mod.member_modal_vote_party(db, bioguide_id) if is_house else None
+        party_unity_rows = search_mod.party_unity_for_member(db, bioguide_id)
+        modal_vote_party = search_mod.member_modal_vote_party(db, bioguide_id)
 
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
@@ -382,7 +374,6 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "sponsored_bills_total": sponsored_total,
                 "cosponsored_bills": cosponsored,
                 "cosponsored_bills_total": cosponsored_total,
-                "is_house_member": is_house,
                 "recent_votes": recent_votes,
                 "party_unity_rows": party_unity_rows,
                 "modal_vote_party": modal_vote_party,
@@ -525,22 +516,6 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
             raise HTTPException(status_code=404, detail=f"unknown chamber: {chamber}")
         if session not in {1, 2}:
             raise HTTPException(status_code=404, detail=f"invalid session: {session}")
-        if chamber_lc == "senate":
-            # Phase 3b placeholder. Always rendered, never 404.
-            return templates.TemplateResponse(  # type: ignore[no-any-return]
-                request,
-                "votes/profile.html",
-                {
-                    "vote": None,
-                    "positions": [],
-                    "underlying_bill": None,
-                    "is_senate_placeholder": True,
-                    "chamber": chamber_lc,
-                    "congress": congress,
-                    "session": session,
-                    "roll_number": roll_number,
-                },
-            )
         vote = search_mod.get_vote(
             db,
             chamber=chamber_lc,
@@ -571,7 +546,6 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "vote": vote,
                 "positions": positions,
                 "underlying_bill": underlying_bill,
-                "is_senate_placeholder": False,
                 "chamber": chamber_lc,
                 "congress": congress,
                 "session": session,

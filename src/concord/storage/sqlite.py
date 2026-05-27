@@ -339,11 +339,13 @@ CREATE INDEX IF NOT EXISTS idx_vote_positions_member
 CREATE TABLE IF NOT EXISTS member_party_unity (
     bioguide_id              TEXT NOT NULL,
     congress                 INTEGER NOT NULL,
+    chamber                  TEXT NOT NULL
+        CHECK (chamber IN ('house', 'senate')),
     party                    TEXT NOT NULL
         CHECK (party IN ('R', 'D')),
     party_unity_votes_cast   INTEGER NOT NULL,
     party_line_votes         INTEGER NOT NULL,
-    PRIMARY KEY (bioguide_id, congress)
+    PRIMARY KEY (bioguide_id, congress, chamber)
 );
 """
 
@@ -537,9 +539,18 @@ _VOTE_POSITION_UPSERT_SQL = (
 _MEMBER_PARTY_UNITY_COLUMNS: tuple[str, ...] = (
     "bioguide_id",
     "congress",
+    "chamber",
     "party",
     "party_unity_votes_cast",
     "party_line_votes",
+)
+
+_MEMBER_PARTY_UNITY_UPSERT_SQL = (
+    "INSERT INTO member_party_unity ("
+    + ", ".join(_MEMBER_PARTY_UNITY_COLUMNS)
+    + ") VALUES ("
+    + ", ".join("?" for _ in _MEMBER_PARTY_UNITY_COLUMNS)
+    + ")"
 )
 
 _COSPONSOR_INSERT_SQL = _insert_sql("bill_cosponsors", _COSPONSOR_COLUMNS)
@@ -1081,7 +1092,8 @@ class SqliteStorage:
 
     def get_party_unity_for_member(self, bioguide_id: str) -> list[sqlite3.Row]:
         cursor = self._conn.execute(
-            "SELECT * FROM member_party_unity WHERE bioguide_id = ? ORDER BY congress DESC",
+            "SELECT * FROM member_party_unity WHERE bioguide_id = ? "
+            "ORDER BY congress DESC, chamber ASC",
             (bioguide_id,),
         )
         return cursor.fetchall()

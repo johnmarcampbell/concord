@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import IO, Any, NamedTuple
 
 from concord.api import Client
+from concord.senate_xml import DETAIL_REQUEST_SLEEP_SECONDS, SenateClient
 
 _log = logging.getLogger("concord.scraper.votes")
 
@@ -33,6 +35,12 @@ HOUSE_VOTES_JSONL_NAME = "house_votes.jsonl"
 
 #: Canonical filename for the per-member position snapshots.
 HOUSE_VOTE_POSITIONS_JSONL_NAME = "house_vote_positions.jsonl"
+
+#: Senate detail-XML snapshots (one envelope per roll). Phase 3b.
+SENATE_VOTES_JSONL_NAME = "senate_votes.jsonl"
+
+#: Senate roster snapshots from senators_cfm.xml. Phase 3b.
+SENATE_ROSTER_JSONL_NAME = "senate_roster.jsonl"
 
 
 class ScrapeProgressEvent(NamedTuple):
@@ -187,7 +195,7 @@ def _append_envelope(
     *,
     iso: str,
     key: dict[str, Any],
-    payload: dict[str, Any],
+    payload: Any,
 ) -> None:
     fh.write(json.dumps({"fetched_at": iso, "key": key, "payload": payload}, ensure_ascii=False))
     fh.write("\n")
@@ -222,10 +230,109 @@ def _fetch_and_write_members(
     return True
 
 
+def scrape_senate(
+    *,
+    client_xml: SenateClient,
+    congresses: Iterable[int],
+    storage_dir: Path,
+    fetched_at: datetime,
+    sessions: Iterable[int] = (1, 2),
+    limit: int | None = None,
+    progress: Callable[[ScrapeProgressEvent], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> ScrapeStats:
+    """Append snapshot envelopes for every Senate roll-call vote.
+
+    For each ``(congress, session)`` slot the menu XML is fetched and
+    parsed in-process to discover roll numbers (not persisted). For
+    each roll the detail XML is fetched and appended verbatim to
+    ``data/senate_votes.jsonl``. A single ``senators_cfm.xml`` fetch
+    happens once per call and is appended to ``data/senate_roster.jsonl``.
+
+    The detail XML envelope's ``payload`` is the raw XML decoded as
+    UTF-8 (not parsed JSON) — keeping the load-step parsing in
+    :mod:`concord.senate_xml` and the snapshot file robust to upstream
+    schema changes. ``limit`` caps detail fetches; the roster fetch
+    always runs.
+    """
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    detail_path = storage_dir / SENATE_VOTES_JSONL_NAME
+    roster_path = storage_dir / SENATE_ROSTER_JSONL_NAME
+    iso = fetched_at.isoformat()
+    sessions_tuple = tuple(sessions)
+
+    # Roster envelope — always fetched, even if --limit truncates votes.
+    roster_xml = client_xml.get_current_senators_xml().decode("utf-8")
+    with roster_path.open("a", encoding="utf-8") as roster_fh:
+        _append_envelope(
+            roster_fh,
+            iso=iso,
+            key={"source": "senators_cfm"},
+            payload=roster_xml,
+        )
+
+    total_written = 0
+    total_seen = 0
+    done = False
+
+    with detail_path.open("a", encoding="utf-8") as detail_fh:
+        for congress in congresses:
+            if done:
+                break
+            for session in sessions_tuple:
+                if done:
+                    break
+                remaining = None if limit is None else max(0, limit - total_written)
+                roll_numbers = client_xml.list_roll_call_numbers(congress, session)
+                seen = len(roll_numbers)
+                total_seen += seen
+                pair_written = 0
+                for roll_number in roll_numbers:
+                    detail_bytes = client_xml.get_roll_call_xml(congress, session, roll_number)
+                    detail_xml = detail_bytes.decode("utf-8")
+                    _append_envelope(
+                        detail_fh,
+                        iso=iso,
+                        key={
+                            "chamber": "senate",
+                            "congress": congress,
+                            "session": session,
+                            "roll_number": roll_number,
+                        },
+                        payload=detail_xml,
+                    )
+                    pair_written += 1
+                    total_written += 1
+                    if remaining is not None and pair_written >= remaining:
+                        done = True
+                        break
+                    if DETAIL_REQUEST_SLEEP_SECONDS > 0:
+                        sleep(DETAIL_REQUEST_SLEEP_SECONDS)
+                if progress is not None:
+                    progress(
+                        ScrapeProgressEvent(
+                            chamber="senate",
+                            congress=congress,
+                            session=session,
+                            votes_seen=seen,
+                            votes_written=pair_written,
+                        )
+                    )
+
+    return ScrapeStats(
+        votes_written=total_written,
+        positions_written=0,
+        votes_seen=total_seen,
+    )
+
+
 __all__ = [
     "HOUSE_VOTES_JSONL_NAME",
     "HOUSE_VOTE_POSITIONS_JSONL_NAME",
+    "SENATE_ROSTER_JSONL_NAME",
+    "SENATE_VOTES_JSONL_NAME",
     "ScrapeProgressEvent",
     "ScrapeStats",
     "scrape_house",
+    "scrape_senate",
 ]

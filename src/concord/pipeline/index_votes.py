@@ -6,11 +6,12 @@ tables:
 1. ``votes.is_party_unity`` — a per-vote boolean. True iff a majority
    of Republican Yea/Nay positions opposed a majority of Democratic
    Yea/Nay positions on that vote. Election votes are never flagged.
-2. ``member_party_unity`` — one row per ``(bioguide_id, congress)``
-   for Republican and Democratic Members. Carries the denominator
-   (count of party-unity votes the Member cast Yea/Nay on) and the
-   numerator (of those, the count where the Member agreed with their
-   party's majority).
+2. ``member_party_unity`` — one row per ``(bioguide_id, congress,
+   chamber)`` for Republican and Democratic Members. Carries the
+   denominator (count of party-unity votes the Member cast Yea/Nay on)
+   and the numerator (of those, the count where the Member agreed with
+   their party's majority). Per ADR 0011's Phase 3b refinement the
+   score is computed independently per chamber.
 
 Both passes are truncate-then-repopulate: re-running converges to the
 latest snapshot of the underlying tables. See [ADR 0011] for the
@@ -52,6 +53,7 @@ _POSITIONS_SQL = """
     SELECT
         vp.bioguide_id  AS bioguide_id,
         v.congress      AS congress,
+        v.chamber       AS chamber,
         vp.vote_id      AS vote_id,
         vp.vote_party   AS vote_party,
         vp.position     AS position
@@ -164,13 +166,13 @@ def _populate_member_party_unity(
     if limit is not None:
         sql = sql + f" LIMIT {int(limit)}"
 
-    per_member: dict[tuple[str, int], dict[str, int]] = {}
-    per_member_party: dict[tuple[str, int], dict[str, int]] = {}
+    per_member: dict[tuple[str, int, str], dict[str, int]] = {}
+    per_member_party: dict[tuple[str, int, str], dict[str, int]] = {}
     for row in conn.execute(sql):
         party = row["vote_party"]
         if party not in {"R", "D", "I"}:
             continue
-        mkey = (row["bioguide_id"], int(row["congress"]))
+        mkey = (row["bioguide_id"], int(row["congress"]), str(row["chamber"]))
         per_member_party.setdefault(mkey, {"R": 0, "D": 0, "I": 0})[party] += 1
         if party not in _PARTIES_MAJOR:
             continue
@@ -186,12 +188,13 @@ def _populate_member_party_unity(
         modal_party = max(party_counts, key=lambda p: party_counts[p])
         if modal_party not in _PARTIES_MAJOR or counts["denom"] == 0:
             continue
-        bioguide, congress = mkey
+        bioguide, congress, chamber = mkey
         conn.execute(
             "INSERT INTO member_party_unity "
-            "(bioguide_id, congress, party, party_unity_votes_cast, party_line_votes) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (bioguide, congress, modal_party, counts["denom"], counts["numer"]),
+            "(bioguide_id, congress, chamber, party, "
+            "party_unity_votes_cast, party_line_votes) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (bioguide, congress, chamber, modal_party, counts["denom"], counts["numer"]),
         )
         written += 1
     return written

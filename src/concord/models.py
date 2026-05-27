@@ -882,6 +882,68 @@ class VotePositionsSnapshot(BaseModel):
     payload: dict[str, Any]
 
 
+class ParsedVotePosition(BaseModel):
+    """One Senate-detail-XML ``<member>`` row, ready for the loader.
+
+    Carries ``member_full`` (the bridge string) and ``lis_member_id``
+    instead of ``bioguide_id`` — the Senate XML keys positions by LIS
+    member ID, and the load step resolves to a Bioguide ID via the
+    senators_cfm roster + Phase 1 ``members`` table.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    member_full: str
+    last_name: str | None = None
+    first_name: str | None = None
+    party: str | None = None
+    state: str | None = None
+    vote_cast: str
+    lis_member_id: str | None = None
+
+
+class ParsedVoteDetail(BaseModel):
+    """One Senate-detail-XML payload, parsed into typed loader input.
+
+    Mirrors :class:`Vote`'s shape but carries an unresolved
+    ``positions`` list (each entry keyed by ``member_full``, not
+    ``bioguide_id``). The loader iterates ``positions`` and resolves
+    each entry to a Bioguide ID before persisting.
+
+    Distinct from :class:`Vote` because the bridge resolution happens
+    at load time, not parse time — the parser doesn't have access to
+    the SQLite ``members`` table or the senators_cfm roster.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    vote_id: str
+    chamber: Chamber
+    congress: int
+    session: SessionNumber
+    roll_number: int
+    vote_kind: VoteKind = "standard"
+    start_date: str
+    update_date: str
+    vote_question: str
+    vote_type: str
+    vote_title: str = ""
+    threshold: VoteThreshold | None = None
+    result: str
+    yea_count: int | None = None
+    nay_count: int | None = None
+    present_count: int | None = None
+    not_voting_count: int | None = None
+    bill_id: str | None = None
+    amendment_id: str | None = None
+    positions: list[ParsedVotePosition] = []
+
+    @field_validator("chamber", mode="before")
+    @classmethod
+    def _coerce_chamber(cls, value: Any) -> Any:
+        return _normalize_chamber(value)
+
+
 def _extract_vote_party_totals(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Pull the ``votePartyTotal`` array, tolerating both list-shaped and
     `{"item": [...]}` shaped responses (the spike found both)."""
