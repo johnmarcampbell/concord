@@ -3,27 +3,27 @@
 import json
 import logging
 import os
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from pydantic import ValidationError
 
-from ..api import ENV_API_KEY
-from ..chunking import Chunker
-from ..embedding import Embedder
-from ..models import Proceeding
-from ..pipeline.index_proceedings import IndexResult, index
-from ..pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
-from ..pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
-from ..scraper.proceedings import scrape as _run_pull
-from ..storage import JsonlStorage, MongoStorage, SqliteStorage
-from ..storage.base import Storage
+from concord.api import ENV_API_KEY
+from concord.chunking import Chunker
+from concord.embedding import Embedder
+from concord.models import Proceeding
+from concord.pipeline.index_proceedings import IndexResult, index
+from concord.pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
+from concord.pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
+from concord.scraper.proceedings import scrape as _run_pull
+from concord.storage import JsonlStorage, MongoStorage, SqliteStorage
+from concord.storage.base import Storage
+
 from ._apps import index_app, load_app, run_app, scrape_app
 from ._common import (
     DEFAULT_DB,
-    ENV_OPENAI_API_KEY,
     LOAD_PROGRESS_EVERY,
     Progress,
     _parse_date,

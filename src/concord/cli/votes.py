@@ -7,7 +7,13 @@ from typing import Annotated
 
 import typer
 
-from ..api import ENV_API_KEY, Client
+from concord.api import ENV_API_KEY, ApiError, Client
+from concord.pipeline.index_votes import index as index_votes
+from concord.pipeline.load_votes import load as load_votes
+from concord.scraper import votes as votes_scraper
+from concord.scraper.votes import HOUSE_VOTES_JSONL_NAME, SENATE_VOTES_JSONL_NAME
+from concord.senate_xml import SenateClient
+
 from ._apps import index_app, load_app, run_app, scrape_app
 from ._common import DEFAULT_DB, Progress, _parse_congresses, _parse_csv
 
@@ -66,10 +72,6 @@ def _run_scrape_votes(
     limit: int | None,
     show_progress: bool,
 ) -> int:
-    from ..api import ApiError
-    from ..scraper import votes as votes_scraper
-    from ..senate_xml import SenateClient
-
     fetched_at = datetime.now(UTC)
     progress = Progress(enabled=show_progress)
 
@@ -131,9 +133,6 @@ def _run_load_votes(
     db_path: Path,
     limit: int | None,
 ) -> int:
-    from ..pipeline.load_votes import load as load_votes
-    from ..scraper.votes import HOUSE_VOTES_JSONL_NAME, SENATE_VOTES_JSONL_NAME
-
     candidates = (
         storage_dir / HOUSE_VOTES_JSONL_NAME,
         storage_dir / SENATE_VOTES_JSONL_NAME,
@@ -164,8 +163,6 @@ def _run_index_votes(
     if not db_path.exists():
         typer.echo(f"error: database not found: {db_path}", err=True)
         raise typer.Exit(code=2)
-
-    from ..pipeline.index_votes import index as index_votes
 
     stats = index_votes(db_path=db_path, limit=limit)
     typer.echo(

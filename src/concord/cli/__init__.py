@@ -29,11 +29,21 @@ scriptable.
 
 import typer
 
-from ._apps import index_app, load_app, run_app, scrape_app
+from concord.storage import MongoStorage  # re-export; patched by tests
 
-# Re-exports consumed by tests and external callers.
-from ._common import DEFAULT_DB, ENV_OPENAI_API_KEY, Progress  # noqa: F401
-from ..storage import MongoStorage  # noqa: F401 — patched by tests
+# Side-effectful: each module decorates its commands onto the stage apps.
+from . import bills, members, proceedings, votes  # noqa: F401
+from ._apps import index_app, load_app, run_app, scrape_app
+from ._common import DEFAULT_DB, ENV_OPENAI_API_KEY, Progress
+from .members import DEFAULT_MEMBERS_JSONL
+from .proceedings import (
+    DEFAULT_JSONL,
+    index_proceedings_command,
+    load_proceedings_command,
+    run_proceedings_command,
+    scrape_proceedings_command,
+)
+from .serve import serve_command
 
 # ---------------------------------------------------------------------------
 # Root app
@@ -63,29 +73,8 @@ def _root() -> None:
     """
 
 
-# ---------------------------------------------------------------------------
-# Register entity subcommands (side-effectful imports)
-# ---------------------------------------------------------------------------
-
-# Each module decorates its commands onto the stage apps imported from _apps.
-from . import bills, members, proceedings, votes  # noqa: E402, F401
-
 # serve lives directly on the root app, not under a stage sub-app.
-from .serve import serve_command  # noqa: E402
-
 app.command("serve")(serve_command)
-
-# Re-export command functions that appear in the legacy __all__ so any
-# existing code doing `from concord.cli import scrape_proceedings_command`
-# keeps working.
-from .proceedings import (  # noqa: E402, F401
-    DEFAULT_JSONL,
-    index_proceedings_command,
-    load_proceedings_command,
-    run_proceedings_command,
-    scrape_proceedings_command,
-)
-from .members import DEFAULT_MEMBERS_JSONL  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Entry point

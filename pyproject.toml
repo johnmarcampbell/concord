@@ -86,9 +86,9 @@ ignore = [
     "S608",     # dynamic SQL built from `?` placeholders only
     "PLR0913",  # test factory fixtures take many kwargs
 ]
-# cli.py defers heavy subcommand imports (openai, uvicorn, pipeline modules)
-# so `concord --help` stays fast.
-"src/concord/cli.py" = ["PLC0415"]
+# cli/ defers heavy imports (openai, uvicorn, FastAPI) so `concord --help` stays fast.
+"src/concord/cli/proceedings.py" = ["PLC0415"]
+"src/concord/cli/serve.py" = ["PLC0415"]
 # SQL built from module-level column tuples + `?` placeholders; no user input.
 "src/concord/storage/sqlite.py" = ["S608"]
 "src/concord/web/search.py" = ["S608"]

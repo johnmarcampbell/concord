@@ -7,7 +7,11 @@ from typing import Annotated
 
 import typer
 
-from ..api import ENV_API_KEY, Client
+from concord.api import ENV_API_KEY, ApiError, Client
+from concord.pipeline.index_members import index as index_members
+from concord.pipeline.load_members import load as load_members
+from concord.scraper import members as members_scraper
+
 from ._apps import index_app, load_app, run_app, scrape_app
 from ._common import DEFAULT_DB, Progress, _parse_congresses
 
@@ -29,9 +33,6 @@ def _run_scrape_members(
     storage_path: Path,
     show_progress: bool,
 ) -> int:
-    from ..api import ApiError
-    from ..scraper import members as members_scraper
-
     try:
         api_client = Client()
     except ApiError as exc:
@@ -82,8 +83,6 @@ def _run_load_members(
         )
         return 0, 0
 
-    from ..pipeline.load_members import load as load_members
-
     result = load_members(jsonl_path=storage_path, db_path=db_path)
     typer.echo(
         f"Loaded {result.members_written} member(s) and "
@@ -99,8 +98,6 @@ def _run_index_members(
     if not db_path.exists():
         typer.echo(f"error: database not found: {db_path}", err=True)
         raise typer.Exit(code=2)
-
-    from ..pipeline.index_members import index as index_members
 
     result = index_members(db_path=db_path)
     typer.echo(f"Indexed {result.indexed_members} member(s) into members_fts.")

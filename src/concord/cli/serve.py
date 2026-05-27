@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from ._common import DEFAULT_DB, _require_openai_key
+from concord.cli._common import DEFAULT_DB, _require_openai_key
 
 
 def serve_command(
@@ -40,7 +40,7 @@ def serve_command(
     # Lazy imports so `concord --help` doesn't pay the FastAPI/uvicorn cost.
     import uvicorn
 
-    from ..web.app import create_app
+    from concord.web.app import create_app
 
     app_instance = create_app(db_path)
     uvicorn.run(app_instance, host=host, port=port, reload=reload)

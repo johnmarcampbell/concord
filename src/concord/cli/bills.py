@@ -1,13 +1,19 @@
 """CLI commands for the Bills entity (scrape / scrape enrich / load / index / run)."""
 
 import os
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from ..api import ENV_API_KEY, Client
+from concord.api import ENV_API_KEY, ApiError, Client
+from concord.pipeline.index_bills import index as index_bills
+from concord.pipeline.load_bills import load as load_bills
+from concord.scraper import bills as bills_scraper
+from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, BILLS_JSONL_NAME
+
 from ._apps import index_app, load_app, run_app, scrape_app
 from ._common import DEFAULT_DB, Progress, _parse_congresses, _parse_csv
 
@@ -84,8 +90,6 @@ def _parse_bill_ids(raw: str) -> list[tuple[int, str, int]]:
 
 def _parse_sections(raw: str) -> list[str]:
     """Parse ``--sections cosponsors,actions`` into a validated list."""
-    from ..scraper.bills import BILL_ENRICHMENT_SECTIONS
-
     parsed = _parse_csv(raw, name="sections", coerce=str.lower)
     unknown = [s for s in parsed if s not in BILL_ENRICHMENT_SECTIONS]
     if unknown:
@@ -105,7 +109,6 @@ def _autoselect_unenriched_bills(
     if not db_path.exists():
         typer.echo(f"error: database not found: {db_path}", err=True)
         raise typer.Exit(code=2)
-    import sqlite3
 
     conn = sqlite3.connect(db_path)
     try:
@@ -135,9 +138,6 @@ def _run_scrape_bills(
     limit: int | None,
     show_progress: bool,
 ) -> int:
-    from ..api import ApiError
-    from ..scraper import bills as bills_scraper
-
     try:
         api_client = Client()
     except ApiError as exc:
@@ -169,7 +169,7 @@ def _run_scrape_bills(
 
     typer.echo(
         f"Wrote {stats.bills_written} bill snapshot(s) to "
-        f"{storage_dir / bills_scraper.BILLS_JSONL_NAME} "
+        f"{storage_dir / BILLS_JSONL_NAME} "
         f"across {len(congresses)} congress(es) x {len(bill_types)} bill type(s)."
     )
     return stats.bills_written
@@ -183,9 +183,6 @@ def _run_scrape_bills_enrich(
     limit: int | None,
     show_progress: bool,
 ) -> int:
-    from ..api import ApiError
-    from ..scraper import bills as bills_scraper
-
     try:
         api_client = Client()
     except ApiError as exc:
@@ -232,9 +229,6 @@ def _run_load_bills(
     db_path: Path,
     limit: int | None,
 ) -> int:
-    from ..pipeline.load_bills import load as load_bills
-    from ..scraper.bills import BILLS_JSONL_NAME
-
     jsonl_path = storage_dir / BILLS_JSONL_NAME
     if not jsonl_path.exists():
         typer.echo(
@@ -260,8 +254,6 @@ def _run_index_bills(
     if not db_path.exists():
         typer.echo(f"error: database not found: {db_path}", err=True)
         raise typer.Exit(code=2)
-
-    from ..pipeline.index_bills import index as index_bills
 
     stats = index_bills(db_path=db_path, limit=limit)
     typer.echo(f"Indexed {stats.indexed_bills} bill(s) into bills_fts.")
