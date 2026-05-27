@@ -1,6 +1,6 @@
 [project]
 name = "congress-concord"
-version = "0.2.1rc1"
+version = "0.2.1"
 description = "Collect, index, and search U.S. Congress data — Congressional Record, Members, Bills, Votes — via api.congress.gov."
 readme = "README.md"
 requires-python = ">=3.12"
