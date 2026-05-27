@@ -14,8 +14,10 @@ Retry policy
 
 The ``www.congress.gov`` HTML tier is a separate service from
 ``api.congress.gov`` and has its own (undocumented) rate limit — bulk pulls
-of many articles can trip 429s. Retries mirror :mod:`concord.api`:
+of many articles can trip 429s or 403s. Retries mirror :mod:`concord.api`:
 
+* HTTP 403: congress.gov uses 403 as a rate-limit signal in addition to 429.
+  Treated identically to 429: retry **indefinitely** with exponential backoff.
 * HTTP 429: retry **indefinitely**, honoring ``Retry-After`` and otherwise
   backing off exponentially capped at :data:`MAX_BACKOFF`.
 * HTTP 5xx and transport errors (DNS, timeout, connection reset): retry up
@@ -33,7 +35,12 @@ from html.parser import HTMLParser
 
 import httpx
 
-from concord.api import HTTP_SERVER_ERROR_MAX, HTTP_SERVER_ERROR_MIN, HTTP_TOO_MANY_REQUESTS
+from concord.api import (
+    HTTP_FORBIDDEN,
+    HTTP_SERVER_ERROR_MAX,
+    HTTP_SERVER_ERROR_MIN,
+    HTTP_TOO_MANY_REQUESTS,
+)
 
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
@@ -144,6 +151,17 @@ def _get_with_retry(
             continue
 
         status = response.status_code
+
+        if status == HTTP_FORBIDDEN:
+            # congress.gov returns 403 instead of 429 when rate-limiting bulk
+            # fetches. Treat it the same as 429: back off and retry indefinitely
+            # rather than surfacing a permanent failure. Retries do not count
+            # against transient_attempts — being throttled is a wait condition,
+            # not a fault.
+            delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
+            _log.warning("403 from %s (rate-limited?); backing off %.1fs before retry", url, delay)
+            sleep(delay)
+            continue
 
         if status == HTTP_TOO_MANY_REQUESTS:
             delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)

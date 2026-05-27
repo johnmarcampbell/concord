@@ -76,6 +76,7 @@ MAX_5XX_RETRIES = 5
 _BACKOFF_BASE = 2.0
 
 #: HTTP status codes we treat specially.
+HTTP_FORBIDDEN = 403
 HTTP_TOO_MANY_REQUESTS = 429
 HTTP_SERVER_ERROR_MIN = 500
 HTTP_SERVER_ERROR_MAX = 600  # exclusive upper bound
