@@ -327,3 +327,277 @@ class TestScrapeEnrichment:
                 fetched_at=FIXED_FETCHED_AT,
                 sections=["nonsense"],
             )
+
+
+# ---------------------------------------------------------------------------
+# --skip-unchanged (ADR 0015)
+# ---------------------------------------------------------------------------
+
+
+def _seed_bills_jsonl(
+    path: Path,
+    *,
+    fetched_at: str,
+    keys: list[tuple[int, str, int]],
+    payload: dict[str, Any] | None = None,
+) -> None:
+    payload = payload or {}
+    with path.open("a", encoding="utf-8") as fh:
+        for congress, bt, number in keys:
+            fh.write(
+                json.dumps(
+                    {
+                        "fetched_at": fetched_at,
+                        "key": {
+                            "congress": congress,
+                            "bill_type": bt,
+                            "bill_number": number,
+                        },
+                        "payload": payload,
+                    }
+                )
+            )
+            fh.write("\n")
+
+
+def _stub_list(*stubs: dict[str, Any]) -> dict[str, Any]:
+    return {"bills": list(stubs), "pagination": {"count": len(stubs)}}
+
+
+class TestScrapeBasicSkipUnchanged:
+    def test_flag_off_unchanged_behavior(self, tmp_path: Path) -> None:
+        client = _client_serving(
+            _stub_list(
+                {"number": "1", "type": "HR", "updateDate": "2026-04-01"},
+            ),
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+            )
+        assert stats.bills_written == 1
+        assert stats.bills_skipped == 0
+
+    def test_empty_jsonl_no_skip(self, tmp_path: Path) -> None:
+        client = _client_serving(
+            _stub_list({"number": "1", "type": "HR", "updateDate": "2026-04-01"}),
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+                skip_unchanged=True,
+            )
+        assert stats.bills_written == 1
+        assert stats.bills_skipped == 0
+
+    def test_stub_older_than_snapshot_skips(self, tmp_path: Path) -> None:
+        out = tmp_path / BILLS_JSONL_NAME
+        _seed_bills_jsonl(
+            out,
+            fetched_at="2026-05-01T00:00:00Z",
+            keys=[(119, "hr", 1)],
+        )
+        client = _client_serving(
+            _stub_list({"number": "1", "type": "HR", "updateDate": "2026-01-01"}),
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+                skip_unchanged=True,
+            )
+        assert stats.bills_written == 0
+        assert stats.bills_skipped == 1
+        # Seed line preserved, no new line.
+        assert len(out.read_text().splitlines()) == 1
+
+    def test_stub_newer_than_snapshot_fetches(self, tmp_path: Path) -> None:
+        out = tmp_path / BILLS_JSONL_NAME
+        _seed_bills_jsonl(
+            out,
+            fetched_at="2026-01-01T00:00:00Z",
+            keys=[(119, "hr", 1)],
+        )
+        client = _client_serving(
+            _stub_list({"number": "1", "type": "HR", "updateDate": "2026-04-01"}),
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+                skip_unchanged=True,
+            )
+        assert stats.bills_written == 1
+        assert stats.bills_skipped == 0
+
+    def test_stub_equal_to_snapshot_skips(self, tmp_path: Path) -> None:
+        out = tmp_path / BILLS_JSONL_NAME
+        _seed_bills_jsonl(
+            out,
+            fetched_at="2026-04-01T00:00:00Z",
+            keys=[(119, "hr", 1)],
+        )
+        client = _client_serving(
+            _stub_list({"number": "1", "type": "HR", "updateDate": "2026-04-01"}),
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+                skip_unchanged=True,
+            )
+        assert stats.bills_skipped == 1
+
+    def test_date_only_stub_vs_full_iso_snapshot(self, tmp_path: Path) -> None:
+        # Stub "2026-04-01" → midnight UTC. Snapshot fetched_at = 05:00:00Z → after.
+        out = tmp_path / BILLS_JSONL_NAME
+        _seed_bills_jsonl(
+            out,
+            fetched_at="2026-04-01T05:00:00Z",
+            keys=[(119, "hr", 1)],
+        )
+        client = _client_serving(
+            _stub_list({"number": "1", "type": "HR", "updateDate": "2026-04-01"}),
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+                skip_unchanged=True,
+            )
+        assert stats.bills_skipped == 1
+
+    def test_missing_update_date_fetches(self, tmp_path: Path) -> None:
+        out = tmp_path / BILLS_JSONL_NAME
+        _seed_bills_jsonl(
+            out,
+            fetched_at="2026-05-01T00:00:00Z",
+            keys=[(119, "hr", 1)],
+        )
+        client = _client_serving(
+            _stub_list({"number": "1", "type": "HR"}),  # no updateDate
+            {1: _fixture("detail_119_hr_1.json")},
+        )
+        with client:
+            stats = scrape_basic(
+                client=client,
+                congresses=[119],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                bill_types=["hr"],
+                skip_unchanged=True,
+            )
+        # Fail-safe: unparseable signal → fetch.
+        assert stats.bills_written == 1
+        assert stats.bills_skipped == 0
+
+
+class TestScrapeEnrichmentSkipUnchanged:
+    def test_per_section_freshness(self, tmp_path: Path) -> None:
+        # cosponsors was fetched fresh; the other four are missing → fetch them.
+        existing_cosponsors = tmp_path / enrichment_jsonl_name("cosponsors")
+        existing_cosponsors.write_text(
+            json.dumps(
+                {
+                    "fetched_at": "2026-05-01T00:00:00Z",
+                    "key": {"congress": 119, "bill_type": "hr", "bill_number": 1},
+                    "payload": {},
+                }
+            )
+            + "\n"
+        )
+
+        def _signal_lookup(key: tuple[int, str, int]) -> datetime | None:
+            # Bill stub updated 2026-04-01 (older than cosponsors' 2026-05-01)
+            return datetime(2026, 4, 1, tzinfo=UTC)
+
+        client = _enrichment_client()
+        with client:
+            stats = scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                skip_unchanged=True,
+                bill_signal_lookup=_signal_lookup,
+            )
+        # 4 fetched (actions, subjects, titles, summaries); 1 skipped (cosponsors).
+        assert stats.snapshots_written == 4
+        assert stats.sections_skipped == 1
+        # cosponsors file unchanged: one line.
+        assert len(existing_cosponsors.read_text().splitlines()) == 1
+
+    def test_flag_off_fetches_all(self, tmp_path: Path) -> None:
+        existing_cosponsors = tmp_path / enrichment_jsonl_name("cosponsors")
+        existing_cosponsors.write_text(
+            json.dumps(
+                {
+                    "fetched_at": "2026-05-01T00:00:00Z",
+                    "key": {"congress": 119, "bill_type": "hr", "bill_number": 1},
+                    "payload": {},
+                }
+            )
+            + "\n"
+        )
+        client = _enrichment_client()
+        with client:
+            stats = scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+            )
+        assert stats.snapshots_written == 5
+        assert stats.sections_skipped == 0
+
+    def test_no_signal_lookup_falls_through(self, tmp_path: Path) -> None:
+        # skip_unchanged set but no signal lookup → can't decide, fetch.
+        existing_cosponsors = tmp_path / enrichment_jsonl_name("cosponsors")
+        existing_cosponsors.write_text(
+            json.dumps(
+                {
+                    "fetched_at": "2026-05-01T00:00:00Z",
+                    "key": {"congress": 119, "bill_type": "hr", "bill_number": 1},
+                    "payload": {},
+                }
+            )
+            + "\n"
+        )
+        client = _enrichment_client()
+        with client:
+            stats = scrape_enrichment(
+                client=client,
+                bill_keys=[(119, "hr", 1)],
+                storage_dir=tmp_path,
+                fetched_at=FIXED_FETCHED_AT,
+                skip_unchanged=True,
+                bill_signal_lookup=None,
+            )
+        assert stats.snapshots_written == 5
+        assert stats.sections_skipped == 0

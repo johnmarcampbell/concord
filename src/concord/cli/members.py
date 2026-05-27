@@ -32,6 +32,7 @@ def _run_scrape_members(
     congresses: list[int],
     storage_path: Path,
     show_progress: bool,
+    skip_unchanged: bool = False,
 ) -> int:
     try:
         api_client = Client()
@@ -56,21 +57,23 @@ def _run_scrape_members(
 
     try:
         with api_client:
-            written = members_scraper.scrape(
+            stats = members_scraper.scrape(
                 client=api_client,
                 congresses=congresses,
                 storage_path=storage_path,
                 fetched_at=datetime.now(UTC),
                 progress=_on_progress if show_progress else None,
+                skip_unchanged=skip_unchanged,
             )
     finally:
         progress.commit()
 
+    suffix = f" ({stats.members_skipped} skipped)" if stats.members_skipped else ""
     typer.echo(
-        f"Wrote {written} member snapshot(s) to {storage_path} "
-        f"across {len(congresses)} congress(es)."
+        f"Wrote {stats.members_written} member snapshot(s) to {storage_path} "
+        f"across {len(congresses)} congress(es){suffix}."
     )
-    return written
+    return stats.members_written
 
 
 def _run_load_members(
@@ -135,6 +138,16 @@ def scrape_members_command(
             help="Print a stderr line per congress as the scrape proceeds.",
         ),
     ] = True,
+    skip_unchanged: Annotated[
+        bool,
+        typer.Option(
+            "--skip-unchanged",
+            help=(
+                "Skip members whose upstream updateDate has not advanced "
+                "since the last snapshot. See ADR 0015."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Snapshot every Member of the given Congresses into JSONL.
 
@@ -148,6 +161,7 @@ def scrape_members_command(
         congresses=parsed,
         storage_path=storage_path,
         show_progress=show_progress,
+        skip_unchanged=skip_unchanged,
     )
 
 

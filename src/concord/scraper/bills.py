@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from concord.api import Client
+from concord.scraper._common import (
+    is_stub_unchanged,
+    load_freshness_map,
+    parse_signal_timestamp,
+)
 
 _log = logging.getLogger("concord.scraper.bills")
 
@@ -86,6 +91,94 @@ class ScrapeStats(NamedTuple):
 
     bills_written: int
     bills_seen: int
+    bills_skipped: int = 0
+
+
+def _bill_stub_signal(stub: dict[str, Any]) -> datetime | None:
+    """Return the max of ``updateDate`` / ``updateDateIncludingText`` on a stub."""
+    candidates = (
+        parse_signal_timestamp(stub.get("updateDate")),
+        parse_signal_timestamp(stub.get("updateDateIncludingText")),
+    )
+    parsed = [c for c in candidates if c is not None]
+    return max(parsed) if parsed else None
+
+
+class _BasicPairResult(NamedTuple):
+    seen: int
+    written: int
+    skipped: int
+    done: bool
+
+
+def _scrape_basic_pair(  # noqa: PLR0913 — per-pair worker, all kwargs are state forwarded from scrape_basic
+    *,
+    client: Client,
+    congress: int,
+    bt: str,
+    fh: Any,
+    iso: str,
+    remaining: float,
+    skip_unchanged: bool,
+    freshness: dict[tuple[Any, ...], datetime],
+    progress: Callable[[ScrapeProgressEvent], None] | None,
+) -> _BasicPairResult:
+    """Walk one ``(congress, bill_type)`` slot; write detail envelopes."""
+    pair_seen = 0
+    pair_written = 0
+    pair_skipped = 0
+    pair_total: list[int | None] = [None]
+    done = False
+    for stub in client.list_bills(congress, bt, on_total=lambda t: pair_total.__setitem__(0, t)):
+        pair_seen += 1
+        bill_number = _parse_bill_number(stub)
+        if bill_number is None:
+            continue
+        if skip_unchanged and is_stub_unchanged(
+            freshness=freshness,
+            key=(congress, bt, bill_number),
+            signal=_bill_stub_signal(stub),
+        ):
+            pair_skipped += 1
+            continue
+        detail = client.get_bill_detail(congress, bt, bill_number)
+        envelope = {
+            "fetched_at": iso,
+            "key": {
+                "congress": congress,
+                "bill_type": bt,
+                "bill_number": bill_number,
+            },
+            "payload": detail,
+        }
+        fh.write(json.dumps(envelope, ensure_ascii=False))
+        fh.write("\n")
+        pair_written += 1
+        if progress is not None:
+            progress(
+                ScrapeProgressEvent(
+                    congress=congress,
+                    bill_type=bt,
+                    bills_seen=pair_seen,
+                    bills_written=pair_written,
+                    category_total=pair_total[0],
+                )
+            )
+        if pair_written >= remaining:
+            done = True
+            break
+    if progress is not None:
+        progress(
+            ScrapeProgressEvent(
+                congress=congress,
+                bill_type=bt,
+                bills_seen=pair_seen,
+                bills_written=pair_written,
+                is_pair_done=True,
+                category_total=pair_total[0],
+            )
+        )
+    return _BasicPairResult(seen=pair_seen, written=pair_written, skipped=pair_skipped, done=done)
 
 
 def scrape_basic(
@@ -97,6 +190,7 @@ def scrape_basic(
     bill_types: Iterable[str] | None = None,
     limit: int | None = None,
     progress: Callable[[ScrapeProgressEvent], None] | None = None,
+    skip_unchanged: bool = False,
 ) -> ScrapeStats:
     """Append one detail snapshot per Bill to ``<storage_dir>/bills.jsonl``.
 
@@ -109,6 +203,11 @@ def scrape_basic(
     * If ``limit`` is set, stop once ``limit`` detail envelopes have been
       written across all pairs.
 
+    When ``skip_unchanged`` is set, stubs whose ``updateDate`` /
+    ``updateDateIncludingText`` is not newer than the latest snapshot in
+    ``bills.jsonl`` are skipped (no detail fetch, no JSONL write). See
+    ADR 0015.
+
     The output file is opened in append mode; the storage directory is
     created if missing.
     """
@@ -117,14 +216,18 @@ def scrape_basic(
     iso = fetched_at.isoformat()
 
     types = tuple(bill_types) if bill_types is not None else DEFAULT_BILL_TYPES
-    # Pre-compute a write cap that avoids a boolean compound check inside the
-    # inner loop (keeps scrape_basic within the mccabe complexity budget).
     _limit: float = float("inf") if limit is None else limit
+
+    freshness = (
+        load_freshness_map(out_path, ("congress", "bill_type", "bill_number"))
+        if skip_unchanged
+        else {}
+    )
 
     written = 0
     seen = 0
+    skipped = 0
     done = False
-    pair_total: list[int | None] = [None]  # mutable cell; reset per pair
     with out_path.open("a", encoding="utf-8") as fh:
         for congress in congresses:
             if done:
@@ -132,58 +235,25 @@ def scrape_basic(
             for bill_type in types:
                 if done:
                     break
-                bt = bill_type.lower()
-                pair_seen = 0
-                pair_written = 0
-                pair_total[0] = None
-                for stub in client.list_bills(
-                    congress, bt, on_total=lambda t: pair_total.__setitem__(0, t)
-                ):
-                    pair_seen += 1
-                    seen += 1
-                    bill_number = _parse_bill_number(stub)
-                    if bill_number is None:
-                        continue
-                    detail = client.get_bill_detail(congress, bt, bill_number)
-                    envelope = {
-                        "fetched_at": iso,
-                        "key": {
-                            "congress": congress,
-                            "bill_type": bt,
-                            "bill_number": bill_number,
-                        },
-                        "payload": detail,
-                    }
-                    fh.write(json.dumps(envelope, ensure_ascii=False))
-                    fh.write("\n")
-                    pair_written += 1
-                    written += 1
-                    if progress is not None:
-                        progress(
-                            ScrapeProgressEvent(
-                                congress=congress,
-                                bill_type=bt,
-                                bills_seen=pair_seen,
-                                bills_written=pair_written,
-                                category_total=pair_total[0],
-                            )
-                        )
-                    if written >= _limit:
-                        done = True
-                        break
-                if progress is not None:
-                    progress(
-                        ScrapeProgressEvent(
-                            congress=congress,
-                            bill_type=bt,
-                            bills_seen=pair_seen,
-                            bills_written=pair_written,
-                            is_pair_done=True,
-                            category_total=pair_total[0],
-                        )
-                    )
+                remaining = _limit - written
+                pair = _scrape_basic_pair(
+                    client=client,
+                    congress=congress,
+                    bt=bill_type.lower(),
+                    fh=fh,
+                    iso=iso,
+                    remaining=remaining,
+                    skip_unchanged=skip_unchanged,
+                    freshness=freshness,
+                    progress=progress,
+                )
+                seen += pair.seen
+                written += pair.written
+                skipped += pair.skipped
+                if pair.done:
+                    done = True
 
-    return ScrapeStats(bills_written=written, bills_seen=seen)
+    return ScrapeStats(bills_written=written, bills_seen=seen, bills_skipped=skipped)
 
 
 class EnrichProgressEvent(NamedTuple):
@@ -208,6 +278,7 @@ class EnrichStats(NamedTuple):
     bills_enriched: int
     snapshots_written: int
     section_failures: int
+    sections_skipped: int = 0
 
 
 _ENRICHMENT_FETCHERS: dict[str, str] = {
@@ -219,7 +290,73 @@ _ENRICHMENT_FETCHERS: dict[str, str] = {
 }
 
 
-def scrape_enrichment(
+class _BillEnrichResult(NamedTuple):
+    written: int
+    failures: int
+    skipped: int
+    partial: tuple[str, ...]
+
+
+def _enrich_one_bill(
+    *,
+    client: Client,
+    bill_key: tuple[int, str, int],
+    requested_sections: tuple[str, ...],
+    handles: dict[str, Any],
+    iso: str,
+    skip_unchanged: bool,
+    section_freshness: dict[str, dict[tuple[Any, ...], datetime]],
+    signal: datetime | None,
+) -> _BillEnrichResult:
+    """Fetch enrichment sections for one bill; write per-section envelopes."""
+    congress, bill_type, bill_number = bill_key
+    bt = bill_type.lower()
+    normalized_key = (congress, bt, bill_number)
+    written = 0
+    failures = 0
+    skipped = 0
+    partial: list[str] = []
+    for section in requested_sections:
+        if skip_unchanged and is_stub_unchanged(
+            freshness=section_freshness[section],
+            key=normalized_key,
+            signal=signal,
+        ):
+            skipped += 1
+            continue
+        method = getattr(client, _ENRICHMENT_FETCHERS[section])
+        try:
+            payload = method(congress, bt, bill_number)
+        except Exception as exc:
+            _log.warning(
+                "enrichment fetch failed for %s/%s/%s/%s: %s",
+                congress,
+                bt,
+                bill_number,
+                section,
+                exc,
+            )
+            partial.append(section)
+            failures += 1
+            continue
+        envelope = {
+            "fetched_at": iso,
+            "key": {
+                "congress": congress,
+                "bill_type": bt,
+                "bill_number": bill_number,
+            },
+            "payload": payload,
+        }
+        handles[section].write(json.dumps(envelope, ensure_ascii=False))
+        handles[section].write("\n")
+        written += 1
+    return _BillEnrichResult(
+        written=written, failures=failures, skipped=skipped, partial=tuple(partial)
+    )
+
+
+def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into an options object hides the call sites
     *,
     client: Client,
     bill_keys: Iterable[tuple[int, str, int]],
@@ -229,6 +366,8 @@ def scrape_enrichment(
     limit: int | None = None,
     bills_total: int | None = None,
     progress: Callable[[EnrichProgressEvent], None] | None = None,
+    skip_unchanged: bool = False,
+    bill_signal_lookup: Callable[[tuple[int, str, int]], datetime | None] | None = None,
 ) -> EnrichStats:
     """Append one ADR 0006 envelope per (bill, section) to ``data/bill_<section>.jsonl``.
 
@@ -253,6 +392,17 @@ def scrape_enrichment(
             )
 
     iso = fetched_at.isoformat()
+    # Per-section freshness maps gate which sub-endpoint fetches we
+    # skip when ``skip_unchanged`` is set (ADR 0015). Each section can
+    # refresh independently — see ADR 0009.
+    section_freshness: dict[str, dict[tuple[Any, ...], datetime]] = {}
+    if skip_unchanged:
+        for section in requested_sections:
+            section_freshness[section] = load_freshness_map(
+                storage_dir / enrichment_jsonl_name(section),
+                ("congress", "bill_type", "bill_number"),
+            )
+
     # Open every requested section's file once; the per-bill loop writes
     # to whichever it just fetched.
     handles: dict[str, Any] = {}
@@ -265,47 +415,36 @@ def scrape_enrichment(
         bills_enriched = 0
         snapshots_written = 0
         section_failures = 0
+        sections_skipped = 0
         for bill_key in bill_keys:
             congress, bill_type, bill_number = bill_key
             bt = bill_type.lower()
-            sections_written = 0
-            partial: list[str] = []
-            for section in requested_sections:
-                method = getattr(client, _ENRICHMENT_FETCHERS[section])
-                try:
-                    payload = method(congress, bt, bill_number)
-                except Exception as exc:
-                    _log.warning(
-                        "enrichment fetch failed for %s/%s/%s/%s: %s",
-                        congress,
-                        bt,
-                        bill_number,
-                        section,
-                        exc,
-                    )
-                    partial.append(section)
-                    section_failures += 1
-                    continue
-                envelope = {
-                    "fetched_at": iso,
-                    "key": {
-                        "congress": congress,
-                        "bill_type": bt,
-                        "bill_number": bill_number,
-                    },
-                    "payload": payload,
-                }
-                handles[section].write(json.dumps(envelope, ensure_ascii=False))
-                handles[section].write("\n")
-                snapshots_written += 1
-                sections_written += 1
+            normalized_key = (congress, bt, bill_number)
+            signal = (
+                bill_signal_lookup(normalized_key)
+                if skip_unchanged and bill_signal_lookup is not None
+                else None
+            )
+            result = _enrich_one_bill(
+                client=client,
+                bill_key=bill_key,
+                requested_sections=requested_sections,
+                handles=handles,
+                iso=iso,
+                skip_unchanged=skip_unchanged,
+                section_freshness=section_freshness,
+                signal=signal,
+            )
+            snapshots_written += result.written
+            section_failures += result.failures
+            sections_skipped += result.skipped
             bills_enriched += 1
             if progress is not None:
                 progress(
                     EnrichProgressEvent(
                         bill_key=(congress, bt, bill_number),
-                        sections_written=sections_written,
-                        partial_failures=tuple(partial),
+                        sections_written=result.written,
+                        partial_failures=result.partial,
                         bills_done=bills_enriched,
                         bills_total=bills_total,
                     )
@@ -320,6 +459,7 @@ def scrape_enrichment(
         bills_enriched=bills_enriched,
         snapshots_written=snapshots_written,
         section_failures=section_failures,
+        sections_skipped=sections_skipped,
     )
 
 

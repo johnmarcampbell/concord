@@ -25,6 +25,11 @@ from pathlib import Path
 from typing import IO, Any, NamedTuple
 
 from concord.api import Client
+from concord.scraper._common import (
+    is_stub_unchanged,
+    load_freshness_map,
+    parse_signal_timestamp,
+)
 from concord.senate_xml import DETAIL_REQUEST_SLEEP_SECONDS, SenateClient
 
 _log = logging.getLogger("concord.scraper.votes")
@@ -56,11 +61,13 @@ class ScrapeProgressEvent(NamedTuple):
 
 
 class ScrapeStats(NamedTuple):
-    """Outcome of one :func:`scrape_house` invocation."""
+    """Outcome of one :func:`scrape_house` or :func:`scrape_senate` invocation."""
 
     votes_written: int
     positions_written: int
     votes_seen: int
+    votes_skipped: int = 0
+    positions_skipped: int = 0
 
 
 class _PairResult(NamedTuple):
@@ -69,6 +76,8 @@ class _PairResult(NamedTuple):
     positions_written: int
     done: bool
     pair_total: int | None = None
+    skipped: int = 0
+    positions_skipped: int = 0
 
 
 def scrape_house(
@@ -80,6 +89,7 @@ def scrape_house(
     sessions: Iterable[int] = (1, 2),
     limit: int | None = None,
     progress: Callable[[ScrapeProgressEvent], None] | None = None,
+    skip_unchanged: bool = False,
 ) -> ScrapeStats:
     """Append one detail + one members snapshot per House vote.
 
@@ -99,9 +109,18 @@ def scrape_house(
     iso = fetched_at.isoformat()
     sessions_tuple = tuple(sessions)
 
+    # Detail and positions refresh independently under ``skip_unchanged``
+    # (ADR 0015) — so a positions-only failure on the previous run
+    # doesn't strand the roll when detail is fresh.
+    key_fields = ("chamber", "congress", "session", "roll_number")
+    detail_freshness = load_freshness_map(detail_path, key_fields) if skip_unchanged else {}
+    positions_freshness = load_freshness_map(members_path, key_fields) if skip_unchanged else {}
+
     total_written = 0
     total_positions = 0
     total_seen = 0
+    total_skipped = 0
+    total_positions_skipped = 0
     done = False
     with (
         detail_path.open("a", encoding="utf-8") as detail_fh,
@@ -122,10 +141,15 @@ def scrape_house(
                     members_fh=members_fh,
                     iso=iso,
                     remaining=remaining,
+                    skip_unchanged=skip_unchanged,
+                    detail_freshness=detail_freshness,
+                    positions_freshness=positions_freshness,
                 )
                 total_seen += pair.seen
                 total_written += pair.written
                 total_positions += pair.positions_written
+                total_skipped += pair.skipped
+                total_positions_skipped += pair.positions_skipped
                 if pair.done:
                     done = True
                 if progress is not None:
@@ -145,10 +169,12 @@ def scrape_house(
         votes_written=total_written,
         positions_written=total_positions,
         votes_seen=total_seen,
+        votes_skipped=total_skipped,
+        positions_skipped=total_positions_skipped,
     )
 
 
-def _scrape_pair(
+def _scrape_pair(  # noqa: PLR0913 — pair worker forwards state from scrape_house
     *,
     client: Client,
     congress: int,
@@ -158,11 +184,18 @@ def _scrape_pair(
     iso: str,
     remaining: int | None,
     per_vote_progress: Callable[[ScrapeProgressEvent], None] | None = None,
+    skip_unchanged: bool = False,
+    detail_freshness: dict[tuple[Any, ...], datetime] | None = None,
+    positions_freshness: dict[tuple[Any, ...], datetime] | None = None,
 ) -> _PairResult:
     """Walk one ``(congress, session)`` slot; write detail + members envelopes."""
+    detail_freshness = detail_freshness or {}
+    positions_freshness = positions_freshness or {}
     seen = 0
     written = 0
+    skipped = 0
     positions_written = 0
+    positions_skipped = 0
     done = False
     pair_total: int | None = None
 
@@ -175,17 +208,37 @@ def _scrape_pair(
         roll_number = _parse_roll_number(stub)
         if roll_number is None:
             continue
-        detail = client.get_house_vote_detail(congress, session, roll_number)
+        roll_key: tuple[Any, ...] = ("house", congress, session, roll_number)
+        signal = parse_signal_timestamp(stub.get("updateDate")) if skip_unchanged else None
+        skip_detail = skip_unchanged and is_stub_unchanged(
+            freshness=detail_freshness, key=roll_key, signal=signal
+        )
+        skip_positions = skip_unchanged and is_stub_unchanged(
+            freshness=positions_freshness, key=roll_key, signal=signal
+        )
+        if skip_detail and skip_positions:
+            skipped += 1
+            positions_skipped += 1
+            continue
         key = {
             "chamber": "house",
             "congress": congress,
             "session": session,
             "roll_number": roll_number,
         }
-        _append_envelope(detail_fh, iso=iso, key=key, payload=detail)
-        if _fetch_and_write_members(client, congress, session, roll_number, members_fh, iso, key):
-            positions_written += 1
-        written += 1
+        if not skip_detail:
+            detail = client.get_house_vote_detail(congress, session, roll_number)
+            _append_envelope(detail_fh, iso=iso, key=key, payload=detail)
+            written += 1
+        else:
+            skipped += 1
+        if not skip_positions:
+            if _fetch_and_write_members(
+                client, congress, session, roll_number, members_fh, iso, key
+            ):
+                positions_written += 1
+        else:
+            positions_skipped += 1
         if per_vote_progress is not None:
             per_vote_progress(
                 ScrapeProgressEvent(
@@ -206,6 +259,8 @@ def _scrape_pair(
         positions_written=positions_written,
         done=done,
         pair_total=pair_total,
+        skipped=skipped,
+        positions_skipped=positions_skipped,
     )
 
 
@@ -259,7 +314,7 @@ def _fetch_and_write_members(
     return True
 
 
-def scrape_senate(
+def scrape_senate(  # noqa: PLR0913 — kwargs match scrape_house surface
     *,
     client_xml: SenateClient,
     congresses: Iterable[int],
@@ -269,6 +324,7 @@ def scrape_senate(
     limit: int | None = None,
     progress: Callable[[ScrapeProgressEvent], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    skip_unchanged: bool = False,
 ) -> ScrapeStats:
     """Append snapshot envelopes for every Senate roll-call vote.
 
@@ -300,8 +356,22 @@ def scrape_senate(
             payload=roster_xml,
         )
 
+    # Senate menu XML carries no per-roll modify-date (ADR 0015) — skip
+    # is presence-only. ``known_keys`` is the set of rolls already
+    # snapshotted in senate_votes.jsonl.
+    known_keys: set[tuple[Any, ...]] = (
+        set(
+            load_freshness_map(
+                detail_path, ("chamber", "congress", "session", "roll_number")
+            ).keys()
+        )
+        if skip_unchanged
+        else set()
+    )
+
     total_written = 0
     total_seen = 0
+    total_skipped = 0
     done = False
 
     with detail_path.open("a", encoding="utf-8") as detail_fh:
@@ -311,62 +381,105 @@ def scrape_senate(
             for session in sessions_tuple:
                 if done:
                     break
-                remaining = None if limit is None else max(0, limit - total_written)
-                roll_numbers = client_xml.list_roll_call_numbers(congress, session)
-                seen = len(roll_numbers)
-                senate_pair_total = len(roll_numbers)
-                total_seen += seen
-                pair_written = 0
-                for roll_number in roll_numbers:
-                    detail_bytes = client_xml.get_roll_call_xml(congress, session, roll_number)
-                    detail_xml = detail_bytes.decode("utf-8")
-                    _append_envelope(
-                        detail_fh,
-                        iso=iso,
-                        key={
-                            "chamber": "senate",
-                            "congress": congress,
-                            "session": session,
-                            "roll_number": roll_number,
-                        },
-                        payload=detail_xml,
-                    )
-                    pair_written += 1
-                    total_written += 1
-                    if progress is not None:
-                        progress(
-                            ScrapeProgressEvent(
-                                chamber="senate",
-                                congress=congress,
-                                session=session,
-                                votes_seen=seen,
-                                votes_written=pair_written,
-                                category_total=senate_pair_total,
-                            )
-                        )
-                    if remaining is not None and pair_written >= remaining:
-                        done = True
-                        break
-                    if DETAIL_REQUEST_SLEEP_SECONDS > 0:
-                        sleep(DETAIL_REQUEST_SLEEP_SECONDS)
-                if progress is not None:
-                    progress(
-                        ScrapeProgressEvent(
-                            chamber="senate",
-                            congress=congress,
-                            session=session,
-                            votes_seen=seen,
-                            votes_written=pair_written,
-                            is_pair_done=True,
-                            category_total=senate_pair_total,
-                        )
-                    )
+                pair = _scrape_senate_pair(
+                    client_xml=client_xml,
+                    congress=congress,
+                    session=session,
+                    detail_fh=detail_fh,
+                    iso=iso,
+                    remaining=None if limit is None else max(0, limit - total_written),
+                    skip_unchanged=skip_unchanged,
+                    known_keys=known_keys,
+                    sleep=sleep,
+                    progress=progress,
+                )
+                total_seen += pair.seen
+                total_written += pair.written
+                total_skipped += pair.skipped
+                if pair.done:
+                    done = True
 
     return ScrapeStats(
         votes_written=total_written,
         positions_written=0,
         votes_seen=total_seen,
+        votes_skipped=total_skipped,
     )
+
+
+class _SenatePairResult(NamedTuple):
+    seen: int
+    written: int
+    skipped: int
+    done: bool
+
+
+def _scrape_senate_pair(  # noqa: PLR0913 — pair worker forwards state from scrape_senate
+    *,
+    client_xml: SenateClient,
+    congress: int,
+    session: int,
+    detail_fh: IO[str],
+    iso: str,
+    remaining: int | None,
+    skip_unchanged: bool,
+    known_keys: set[tuple[Any, ...]],
+    sleep: Callable[[float], None],
+    progress: Callable[[ScrapeProgressEvent], None] | None,
+) -> _SenatePairResult:
+    roll_numbers = client_xml.list_roll_call_numbers(congress, session)
+    seen = len(roll_numbers)
+    senate_pair_total = len(roll_numbers)
+    pair_written = 0
+    pair_skipped = 0
+    done = False
+    for roll_number in roll_numbers:
+        if skip_unchanged and ("senate", congress, session, roll_number) in known_keys:
+            pair_skipped += 1
+            continue
+        detail_bytes = client_xml.get_roll_call_xml(congress, session, roll_number)
+        detail_xml = detail_bytes.decode("utf-8")
+        _append_envelope(
+            detail_fh,
+            iso=iso,
+            key={
+                "chamber": "senate",
+                "congress": congress,
+                "session": session,
+                "roll_number": roll_number,
+            },
+            payload=detail_xml,
+        )
+        pair_written += 1
+        if progress is not None:
+            progress(
+                ScrapeProgressEvent(
+                    chamber="senate",
+                    congress=congress,
+                    session=session,
+                    votes_seen=seen,
+                    votes_written=pair_written,
+                    category_total=senate_pair_total,
+                )
+            )
+        if remaining is not None and pair_written >= remaining:
+            done = True
+            break
+        if DETAIL_REQUEST_SLEEP_SECONDS > 0:
+            sleep(DETAIL_REQUEST_SLEEP_SECONDS)
+    if progress is not None:
+        progress(
+            ScrapeProgressEvent(
+                chamber="senate",
+                congress=congress,
+                session=session,
+                votes_seen=seen,
+                votes_written=pair_written,
+                is_pair_done=True,
+                category_total=senate_pair_total,
+            )
+        )
+    return _SenatePairResult(seen=seen, written=pair_written, skipped=pair_skipped, done=done)
 
 
 __all__ = [
