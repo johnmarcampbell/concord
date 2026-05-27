@@ -23,13 +23,13 @@ Domain terms used here are defined in [CONTEXT.md](../../CONTEXT.md): Bill, Bill
 1. Add a `--skip-unchanged` flag to `concord scrape bills`, `concord scrape members`, and `concord scrape votes` that is **off by default** — invoking these commands without the flag must behave exactly as it does today.
 2. When the flag is set, skip the per-record detail/enrichment fetch for any record whose upstream `updateDate` has not advanced past our last snapshot's `fetched_at`. For Senate votes specifically, skip the detail fetch when a snapshot for the roll already exists in `senate_votes.jsonl` (presence-only signal — see Approach).
 3. Apply the same comparison **per file** for multi-file entities: Bills enrichment maintains an independent freshness map per `bill_<section>.jsonl`; House votes maintains independent freshness maps for `house_votes.jsonl` and `house_vote_positions.jsonl`.
-4. Land a new [ADR 0014 — Staleness-aware re-scrape for mutable entities](../adr/0014-staleness-aware-rescrape.md) documenting per-entity staleness signals, the comparison rule, and the rejected alternatives.
+4. Land a new [ADR 0015 — Staleness-aware re-scrape for mutable entities](../adr/0015-staleness-aware-rescrape.md) documenting per-entity staleness signals, the comparison rule, and the rejected alternatives.
 5. Add a thin shared helper in `src/concord/scraper/_common.py` (new file) that loads a freshness map `{key_tuple: latest_fetched_at}` from a JSONL file. ADR 0007 explicitly allows this kind of thin utility.
 
 ## Non-goals
 
 1. **Changing default scrape behavior.** No silent change. The flag is opt-in.
-2. **Wall-clock freshness windows.** The original conversation floated a `--refresh-after 72h` knob; grilling concluded `updateDate` is the sharper signal, and a second knob would add "which wins?" semantics. Drop entirely; document as rejected in ADR 0014.
+2. **Wall-clock freshness windows.** The original conversation floated a `--refresh-after 72h` knob; grilling concluded `updateDate` is the sharper signal, and a second knob would add "which wins?" semantics. Drop entirely; document as rejected in ADR 0015.
 3. **Compaction of superseded snapshots.** [ADR 0006](../adr/0006-snapshot-on-fetch-for-mutable-entities.md) flags compaction as a future concern; this plan doesn't touch it.
 4. **A resume cursor.** We're not persisting "where did the last run stop?" state — `--skip-unchanged` re-walks every list endpoint and lets the JSONL itself dictate what to skip. The list-endpoint walk is cheap (paginated server-side), so re-walking on resume costs nothing meaningful.
 5. **Forcing a re-fetch of a specific record.** No `--force <key>` escape hatch in this change. Workaround if a Senate errata correction needs picking up: run without `--skip-unchanged`. Add `--force` only if usage shows the need.
@@ -43,7 +43,7 @@ Domain terms used here are defined in [CONTEXT.md](../../CONTEXT.md): Bill, Bill
 - [ADR 0007 — Parallel pipelines per entity](../adr/0007-parallel-pipelines-per-entity.md) — explicitly allows a thin `scraper/_common.py`. No base class hierarchy; the helper stays a utility.
 - [ADR 0009 — Multi-endpoint entities split JSONL](../adr/0009-multi-endpoint-entities-split-jsonl.md) — names "Each sub-endpoint can refresh independently" as a buy of the per-file split; this plan honors that by maintaining a per-section freshness map for Bills enrichment.
 - [ADR 0010 — Votes phased by chamber](../adr/0010-votes-phased-by-chamber.md) — Senate sourced from senate.gov LIS XML, not api.congress.gov; explains why Senate's staleness signal must be different.
-- [ADR 0014 — Staleness-aware re-scrape for mutable entities](../adr/0014-staleness-aware-rescrape.md) — **new, created with this plan.**
+- [ADR 0015 — Staleness-aware re-scrape for mutable entities](../adr/0015-staleness-aware-rescrape.md) — **new, created with this plan.**
 
 ## Relevant files and code
 
@@ -60,7 +60,7 @@ Files to read or modify:
 - [src/concord/senate_xml.py:156](../../src/concord/senate_xml.py:156) — `list_roll_call_numbers`; confirms the Senate menu surface is roll-numbers-only.
 - [tests/fixtures/api/bills/list_hr_119.json](../../tests/fixtures/api/bills/list_hr_119.json), [tests/fixtures/api/members/current_house.json](../../tests/fixtures/api/members/current_house.json), [tests/fixtures/api/votes/list_house_119_1.json](../../tests/fixtures/api/votes/list_house_119_1.json) — confirm fixture shapes for `updateDate` / `updateDateIncludingText`.
 - [tests/test_scraper_bills.py](../../tests/test_scraper_bills.py), [tests/test_scraper_members.py](../../tests/test_scraper_members.py), [tests/test_scraper_votes.py](../../tests/test_scraper_votes.py) — existing scraper tests; new tests live alongside.
-- [CONTEXT.md](../../CONTEXT.md) — no glossary additions required (the new terms are mechanism-level, not domain). If the chamber-asymmetric Vote handling needs surfacing anywhere, it goes in ADR 0014, not CONTEXT.md.
+- [CONTEXT.md](../../CONTEXT.md) — no glossary additions required (the new terms are mechanism-level, not domain). If the chamber-asymmetric Vote handling needs surfacing anywhere, it goes in ADR 0015, not CONTEXT.md.
 
 ## Approach
 
@@ -85,19 +85,19 @@ The mechanism is the same shape across all three entities, with one branch for S
 
 ### Key design decisions resolved in grilling
 
-- **Senate uses presence-only skip, not `updateDate`.** The senate.gov menu XML does not expose a modify-date. ADR 0006 notes Senate votes are "mostly immutable once a roll is closed, but errata corrections do appear." Trade-off: missing rare errata corrections automatically. Workaround: run without the flag periodically, or add `--force <roll>` later. ADR 0014 will document this asymmetry.
+- **Senate uses presence-only skip, not `updateDate`.** The senate.gov menu XML does not expose a modify-date. ADR 0006 notes Senate votes are "mostly immutable once a roll is closed, but errata corrections do appear." Trade-off: missing rare errata corrections automatically. Workaround: run without the flag periodically, or add `--force <roll>` later. ADR 0015 will document this asymmetry.
 - **Per-section freshness for Bills enrichment, not bill-level uniform.** Honors ADR 0009's "each sub-endpoint can refresh independently" — a section we re-pulled this morning is skipped even if the bill text changed yesterday.
 - **House votes detail and positions are tracked independently.** Same reasoning: a positions-only failure on the previous run (positions fetch is already best-effort per [src/concord/scraper/votes.py:233](../../src/concord/scraper/votes.py:233)) shouldn't strand the roll permanently when detail is fresh. Build two freshness maps; gate each fetch separately.
 - **Use `max(updateDate, updateDateIncludingText)` for Bills.** Most conservative; never under-skips. The two fields are not identical (`updateDateIncludingText` lags or leads depending on what changed).
 - **Compare timestamps as timezone-aware `datetime`s.** `datetime.fromisoformat()` (Python 3.12+ accepts `Z` and offsets natively); date-only strings get midnight UTC. Unparseable on either side ⇒ treat as stale (fail-safe).
 - **Compare direction: skip when `stub.updateDate <= last_fetched_at`.** Equality counts as "skip" — if the server-reported update was at or before our snapshot, we already have it.
 - **Flag is off by default.** No silent change to scrape behavior.
-- **No `--refresh-after 72h` knob.** Dropped; `updateDate` is sharper. Documented as rejected in ADR 0014.
-- **New ADR 0014 — Staleness-aware re-scrape for mutable entities.** Records the contract change (scrape is no longer guaranteed to refetch everything under the flag), the per-entity signal table above, and the two rejected alternatives (wall-clock window; uniform bill-level enrichment).
+- **No `--refresh-after 72h` knob.** Dropped; `updateDate` is sharper. Documented as rejected in ADR 0015.
+- **New ADR 0015 — Staleness-aware re-scrape for mutable entities.** Records the contract change (scrape is no longer guaranteed to refetch everything under the flag), the per-entity signal table above, and the two rejected alternatives (wall-clock window; uniform bill-level enrichment).
 
 ## Step-by-step plan
 
-1. **Write ADR 0014.** Create [docs/adr/0014-staleness-aware-rescrape.md](../adr/0014-staleness-aware-rescrape.md) following the format used in the existing ADRs in [docs/adr/](../adr/). Sections: Context, Decision, Consequences (Trade-offs accepted, Things this buys, What stays open), Rejected: wall-clock refresh window, Rejected: uniform bill-level enrichment freshness. Status: `Accepted, 2026-05-27`. Cross-reference ADRs 0002, 0006, 0007, 0009, 0010. Verify `ls docs/adr/0014-*.md` shows the new file.
+1. **Write ADR 0015.** Create [docs/adr/0015-staleness-aware-rescrape.md](../adr/0015-staleness-aware-rescrape.md) following the format used in the existing ADRs in [docs/adr/](../adr/). Sections: Context, Decision, Consequences (Trade-offs accepted, Things this buys, What stays open), Rejected: wall-clock refresh window, Rejected: uniform bill-level enrichment freshness. Status: `Accepted, 2026-05-27`. Cross-reference ADRs 0002, 0006, 0007, 0009, 0010. Verify `ls docs/adr/0015-*.md` shows the new file.
 
 2. **Create `src/concord/scraper/_common.py`.** New module. Exports:
    - `load_freshness_map(path: Path, key_fields: tuple[str, ...]) -> dict[tuple, datetime]` — reads the JSONL line by line; ignores malformed lines (log warning); for each line, builds `tuple(envelope["key"][k] for k in key_fields)`, parses `envelope["fetched_at"]` with `datetime.fromisoformat()`, and keeps the maximum per key. Returns `{}` if the file does not exist. The returned `datetime` is always timezone-aware (assume UTC if naive).
@@ -129,9 +129,9 @@ The mechanism is the same shape across all three entities, with one branch for S
 
    If `skip_detail and skip_positions`, `continue` (both files already have a snapshot at or after the upstream update). Otherwise, fetch only the one(s) that aren't being skipped — `_fetch_and_write_members` already runs independently of the detail write, so a "skip detail, fetch positions" branch is straightforward. Add `votes_skipped: int` and `positions_skipped: int` to `ScrapeStats`.
 
-8. **Wire `skip_unchanged` into `scraper/votes.py:scrape_senate`.** Add `skip_unchanged: bool = False`. Build a presence-only set from `senate_votes.jsonl` (just the keys of the freshness map; the timestamp is unused). Before fetching each roll's detail XML, check `if skip_unchanged and ("senate", congress, session, roll_number) in known_keys: continue`. The roster fetch always runs (one call per invocation, not per record). Reuse the `votes_skipped` counter from step 7. Note in a comment that this is presence-only because the menu XML lacks a modify-date — refer to ADR 0014.
+8. **Wire `skip_unchanged` into `scraper/votes.py:scrape_senate`.** Add `skip_unchanged: bool = False`. Build a presence-only set from `senate_votes.jsonl` (just the keys of the freshness map; the timestamp is unused). Before fetching each roll's detail XML, check `if skip_unchanged and ("senate", congress, session, roll_number) in known_keys: continue`. The roster fetch always runs (one call per invocation, not per record). Reuse the `votes_skipped` counter from step 7. Note in a comment that this is presence-only because the menu XML lacks a modify-date — refer to ADR 0015.
 
-9. **Surface `--skip-unchanged` in the CLI for all four entry points.** Add a Typer `bool` option named `--skip-unchanged` (default `False`) with help text `"Skip records whose upstream updateDate has not advanced since the last snapshot. Senate votes: skip if any snapshot already exists for the roll. See ADR 0014."`. Wire it through:
+9. **Surface `--skip-unchanged` in the CLI for all four entry points.** Add a Typer `bool` option named `--skip-unchanged` (default `False`) with help text `"Skip records whose upstream updateDate has not advanced since the last snapshot. Senate votes: skip if any snapshot already exists for the roll. See ADR 0015."`. Wire it through:
    - [src/concord/cli/bills.py:133](../../src/concord/cli/bills.py:133) `_run_scrape_bills` → `scrape_basic(..., skip_unchanged=...)`.
    - [src/concord/cli/bills.py:184](../../src/concord/cli/bills.py:184) `_run_scrape_bills_enrich` → `scrape_enrichment(..., skip_unchanged=..., bill_signal_lookup=...)`. The lookup is built by re-loading `bills.jsonl` once via `load_freshness_map` but with a different value type — actually, the cleaner shape is: load each bill's payload to get its `updateDate*`. Two options:
      (a) Extend `load_freshness_map` to also return a `{key: signal_datetime}` map driven from the payload.
@@ -184,7 +184,7 @@ Not applicable. This change is a Stage 0 (scrape) behavior change — no new tab
 
 ## Acceptance criteria
 
-- [ ] `docs/adr/0014-staleness-aware-rescrape.md` exists and follows the same shape as the existing ADRs.
+- [ ] `docs/adr/0015-staleness-aware-rescrape.md` exists and follows the same shape as the existing ADRs.
 - [ ] `src/concord/scraper/_common.py` exists with `load_freshness_map`, `parse_signal_timestamp`, `is_stub_unchanged`, `load_bill_signal_map`. Module docstring references ADR 0007.
 - [ ] `concord scrape bills --skip-unchanged`, `concord scrape members --skip-unchanged`, `concord scrape votes --skip-unchanged` all run without error and skip records correctly when prior JSONL exists.
 - [ ] `concord scrape <entity>` (without the flag) behaves identically to today.
@@ -194,7 +194,7 @@ Not applicable. This change is a Stage 0 (scrape) behavior change — no new tab
 - [ ] `uv run mypy src` passes.
 - [ ] `uv run ruff check` and `uv run ruff format --check` pass.
 - [ ] `git grep --no-index 'TODO\|FIXME' src/concord/scraper/` shows no new TODOs introduced by this change.
-- [ ] ADR 0014 explicitly documents the chamber-asymmetric Vote handling (House: `updateDate`; Senate: presence-only) and the rejected alternatives (wall-clock window, uniform bill-level enrichment freshness).
+- [ ] ADR 0015 explicitly documents the chamber-asymmetric Vote handling (House: `updateDate`; Senate: presence-only) and the rejected alternatives (wall-clock window, uniform bill-level enrichment freshness).
 
 ## Open questions
 
