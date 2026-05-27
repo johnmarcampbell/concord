@@ -26,6 +26,8 @@ from concord.api import ENV_API_KEY, ApiError, Client
 from concord.models import Article, Issue, Proceeding
 from concord.pipeline.index_proceedings import IndexResult
 from concord.pipeline.load_proceedings import PullResult
+from concord.scraper.votes import SENATE_ROSTER_JSONL_NAME, SENATE_VOTES_JSONL_NAME
+from concord.senate_xml import SenateClient
 from concord.storage import SqliteStorage
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -1462,8 +1464,6 @@ def _senate_votes_handler():
 
 
 def _patch_senate_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    from concord.senate_xml import SenateClient
-
     original = SenateClient.__init__
 
     def patched(self, **kwargs):
@@ -1614,11 +1614,6 @@ class TestLoadVotesCommand:
         tmp_path: Path,
     ) -> None:
         """Senate-only scrape → load chain must not be gated on house_votes.jsonl."""
-        from concord.scraper.votes import (
-            SENATE_ROSTER_JSONL_NAME,
-            SENATE_VOTES_JSONL_NAME,
-        )
-
         senate_fixtures = Path(__file__).parent / "fixtures" / "senate"
         detail = (senate_fixtures / "detail_119_1_00007_bill.xml").read_text()
         roster = (senate_fixtures / "senators_cfm.xml").read_text()
