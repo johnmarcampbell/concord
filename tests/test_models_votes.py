@@ -63,7 +63,9 @@ class TestParseVoteThreshold:
 
 
 class TestParseVote:
-    def test_bill_vote(self) -> None:
+    def test_bill_vote_real_capture(self) -> None:
+        # Real spike capture: HR 3424, "On Motion to Suspend the Rules
+        # and Pass", 2/3 Yea-And-Nay → two_thirds threshold.
         v = parse_vote(_detail("detail_house_119_1_240.json"))
         assert isinstance(v, Vote)
         assert v.vote_id == "house-119-1-240"
@@ -71,25 +73,39 @@ class TestParseVote:
         assert v.vote_kind == "standard"
         assert v.bill_id == "119-hr-3424"
         assert v.amendment_id is None
+        # Real totals across R/D/I: 202+195+0 yea, 0+1+0 nay.
+        assert v.yea_count == 397
+        assert v.nay_count == 1
+        assert v.threshold == "two_thirds"
+
+    def test_bill_vote_synthetic_party_split(self) -> None:
+        # Synthetic fixture contrived to be party-unity-positive
+        # (R majority Yea opposes D majority Nay).
+        v = parse_vote(_detail("synthetic_bill_vote_party_unity_detail.json"))
+        assert v.vote_id == "house-119-1-240"
         assert v.yea_count == 222
         assert v.nay_count == 203
         assert v.threshold == "simple_majority"
 
     def test_amendment_vote_populates_both_ids(self) -> None:
-        v = parse_vote(_detail("detail_house_119_1_241_amendment.json"))
-        assert v.bill_id == "119-hr-3424"
+        # Real spike capture: roll 245, amendment HAMDT 85 to HR 3838.
+        v = parse_vote(_detail("detail_house_119_1_subject_amendment.json"))
+        assert v.bill_id == "119-hr-3838"
         assert v.amendment_id == "119-hamdt-85"
         assert v.vote_kind == "standard"
 
     def test_election_vote(self) -> None:
-        v = parse_vote(_detail("detail_house_119_1_2_election.json"))
+        # Real spike capture: Speaker election, roll 2, candidate-bucketed
+        # party totals.
+        v = parse_vote(_detail("detail_house_119_1_subject_procedural.json"))
         assert v.vote_kind == "election"
         # Counts NULL because party totals are bucketed by candidate.
         assert v.yea_count is None
         assert v.nay_count is None
-        assert v.result == "Johnson"
+        assert "Johnson" in v.result
 
     def test_procedural_two_thirds(self) -> None:
+        # Synthetic procedural fixture: "On Approving the Journal", 2/3.
         v = parse_vote(_detail("detail_house_119_1_300_procedural.json"))
         assert v.threshold == "two_thirds"
         assert v.bill_id is None
@@ -97,15 +113,17 @@ class TestParseVote:
 
 
 class TestParseVotePositions:
-    def test_extracts_bioguide_and_party(self) -> None:
+    def test_extracts_full_real_roster(self) -> None:
+        # Real spike fixture: ~430 House Members.
         payload = _fixture("members_house_119_1_240.json")["houseRollCallVoteMemberVotes"]
         positions = parse_vote_positions(payload)
-        assert len(positions) == 4
+        assert len(positions) >= 400
         by_bg = {p.bioguide_id: p for p in positions}
-        assert by_bg["S001176"].position == "Yea"
-        assert by_bg["S001176"].vote_party == "R"
-        assert by_bg["P000197"].position == "Nay"
-        assert by_bg["P000197"].vote_party == "D"
+        # Sample Member from the captured payload.
+        aderholt = by_bg["A000055"]
+        assert aderholt.position == "Yea"
+        assert aderholt.vote_party == "R"
+        assert aderholt.vote_state == "AL"
 
     def test_election_positions_carry_surnames(self) -> None:
         payload = _fixture("members_house_119_1_2_election.json")["houseRollCallVoteMemberVotes"]

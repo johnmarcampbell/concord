@@ -1580,7 +1580,15 @@ def index_votes_command(
     ] = DEFAULT_DB,
     limit: Annotated[
         int | None,
-        typer.Option("--limit", help="Cap on vote_positions rows processed."),
+        typer.Option(
+            "--limit",
+            help=(
+                "Spot-check only: caps the numerator-pass vote_positions "
+                "row set. The party-unity flag pass always runs over all "
+                "rows. With a small limit, some Members' denominators "
+                "are truncated mid-Member; not for production."
+            ),
+        ),
     ] = None,
 ) -> None:
     """Compute ``votes.is_party_unity`` + ``member_party_unity``.

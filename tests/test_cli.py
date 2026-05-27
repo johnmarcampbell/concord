@@ -1424,7 +1424,16 @@ def _votes_fixture(name: str) -> dict[str, Any]:
 
 
 def _votes_handler():
-    list_payload = _votes_fixture("list_house_119_1.json")
+    # Inline list payload so the rolls match the per-roll detail
+    # fixtures the test has on hand. (Master's real list pairs rolls
+    # 240 + 306, but no fixture exists for roll 306.)
+    list_payload = {
+        "houseRollCallVotes": [
+            {"congress": 119, "sessionNumber": 1, "rollCallNumber": 240},
+            {"congress": 119, "sessionNumber": 1, "rollCallNumber": 241},
+        ],
+        "pagination": {"count": 2},
+    }
     details = {
         240: _votes_fixture("detail_house_119_1_240.json"),
         241: _votes_fixture("detail_house_119_1_241_amendment.json"),

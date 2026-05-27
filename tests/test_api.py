@@ -686,11 +686,16 @@ class TestGetBillSummaries:
 
 class TestListHouseVotes:
     def test_iterates_single_page(self, fixtures_dir: Path) -> None:
+        # Real spike capture: rolls 240 and 306 on the captured page.
+        # Strip `pagination.next` so the test exercises single-page
+        # iteration (the real capture has next set because the live
+        # API has 362 rolls; the mock would loop forever otherwise).
         payload = json.loads((fixtures_dir / "api/votes/list_house_119_1.json").read_text())
+        payload = {**payload, "pagination": {"count": 2}}
         client = _make_client(lambda r: _json_response(payload))
         with client:
             votes = list(client.list_house_votes(congress=119, session=1))
-        assert [v["rollCallNumber"] for v in votes] == [240, 241]
+        assert [v["rollCallNumber"] for v in votes] == [240, 306]
 
     def test_paginates_until_no_next(self, fixtures_dir: Path) -> None:
         page1 = json.loads((fixtures_dir / "api/votes/list_house_119_1.json").read_text())
@@ -710,7 +715,7 @@ class TestListHouseVotes:
         client = _make_client(handler)
         with client:
             votes = list(client.list_house_votes(congress=119, session=1))
-        assert [v["rollCallNumber"] for v in votes] == [240, 241, 242, 243]
+        assert [v["rollCallNumber"] for v in votes] == [240, 306, 242, 243]
 
     def test_uses_correct_path(self) -> None:
         captured: list[str] = []
@@ -727,12 +732,13 @@ class TestListHouseVotes:
 
 class TestGetHouseVoteDetail:
     def test_unwraps_envelope(self, fixtures_dir: Path) -> None:
+        # Real spike capture: HR 3424, "On Motion to Suspend the Rules and Pass".
         payload = json.loads((fixtures_dir / "api/votes/detail_house_119_1_240.json").read_text())
         client = _make_client(lambda r: _json_response(payload))
         with client:
             vote = client.get_house_vote_detail(congress=119, session=1, roll_number=240)
         assert vote["rollCallNumber"] == 240
-        assert vote["voteQuestion"] == "On Passage of the Bill"
+        assert vote["voteQuestion"] == "On Motion to Suspend the Rules and Pass"
 
     def test_missing_envelope_raises(self) -> None:
         client = _make_client(lambda r: _json_response({"notVote": {}}))
@@ -742,11 +748,12 @@ class TestGetHouseVoteDetail:
 
 class TestGetHouseVoteMembers:
     def test_unwraps_envelope(self, fixtures_dir: Path) -> None:
+        # Real spike capture: full ~430-Member roster.
         payload = json.loads((fixtures_dir / "api/votes/members_house_119_1_240.json").read_text())
         client = _make_client(lambda r: _json_response(payload))
         with client:
             members = client.get_house_vote_members(congress=119, session=1, roll_number=240)
-        assert len(members["results"]) == 4
+        assert len(members["results"]) >= 400
 
     def test_uses_correct_path(self) -> None:
         captured: list[str] = []

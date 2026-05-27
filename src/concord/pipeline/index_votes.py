@@ -72,10 +72,14 @@ class IndexStats(NamedTuple):
 def index(*, db_path: Path, limit: int | None = None) -> IndexStats:
     """Recompute ``votes.is_party_unity`` + ``member_party_unity``.
 
-    ``limit`` caps the number of rows considered in the
-    ``vote_positions`` working set during the party-unity numerator
-    aggregation; useful for spot-checking on large databases.
-    Production runs leave it unset.
+    ``limit`` is a **spot-check knob only**: it caps the row set in
+    the numerator-pass ``vote_positions`` query, leaving the first-pass
+    party-majority computation untouched. With a small limit some
+    Members' denominators are truncated mid-Member, producing
+    intentionally incomplete `member_party_unity` rows — that's
+    acceptable for "did the pipeline wire up at all" checks but not
+    for any production stat. Production runs leave it unset; the
+    full party-unity pass takes <30s at 3-Congress scope.
     """
     storage = SqliteStorage(db_path, load_vec=False)
     try:

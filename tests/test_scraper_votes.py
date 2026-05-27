@@ -25,6 +25,23 @@ def _fixture(name: str) -> dict[str, Any]:
     return json.loads((VOTES_DIR / name).read_text())
 
 
+def _two_roll_list_payload() -> dict[str, Any]:
+    """Inline list payload pairing the two synthetic detail fixtures.
+
+    Master's real ``list_house_119_1.json`` pairs rolls 240 and 306,
+    but no real fixture for roll 306 exists. The scraper test needs a
+    list whose stubs match the detail fixtures it has on hand, so we
+    synthesize the list payload here.
+    """
+    return {
+        "houseRollCallVotes": [
+            {"congress": 119, "sessionNumber": 1, "rollCallNumber": 240},
+            {"congress": 119, "sessionNumber": 1, "rollCallNumber": 241},
+        ],
+        "pagination": {"count": 2},
+    }
+
+
 def _client(
     list_payload: dict[str, Any],
     details_by_roll: dict[int, dict[str, Any]],
@@ -64,7 +81,7 @@ def _client(
 class TestScrapeHouse:
     def test_writes_paired_detail_and_members(self, tmp_path: Path) -> None:
         client = _client(
-            _fixture("list_house_119_1.json"),
+            _two_roll_list_payload(),
             {
                 240: _fixture("detail_house_119_1_240.json"),
                 241: _fixture("detail_house_119_1_241_amendment.json"),
@@ -92,7 +109,7 @@ class TestScrapeHouse:
 
     def test_envelope_shape_matches_adr_0006(self, tmp_path: Path) -> None:
         client = _client(
-            _fixture("list_house_119_1.json"),
+            _two_roll_list_payload(),
             {
                 240: _fixture("detail_house_119_1_240.json"),
                 241: _fixture("detail_house_119_1_241_amendment.json"),
@@ -122,7 +139,7 @@ class TestScrapeHouse:
 
     def test_only_writes_house_files(self, tmp_path: Path) -> None:
         client = _client(
-            _fixture("list_house_119_1.json"),
+            _two_roll_list_payload(),
             {
                 240: _fixture("detail_house_119_1_240.json"),
                 241: _fixture("detail_house_119_1_241_amendment.json"),
@@ -145,7 +162,7 @@ class TestScrapeHouse:
 
     def test_limit_caps_writes(self, tmp_path: Path) -> None:
         client = _client(
-            _fixture("list_house_119_1.json"),
+            _two_roll_list_payload(),
             {
                 240: _fixture("detail_house_119_1_240.json"),
                 241: _fixture("detail_house_119_1_241_amendment.json"),
@@ -170,7 +187,7 @@ class TestScrapeHouse:
     def test_progress_emitted_per_pair(self, tmp_path: Path) -> None:
         events: list[ScrapeProgressEvent] = []
         client = _client(
-            _fixture("list_house_119_1.json"),
+            _two_roll_list_payload(),
             {
                 240: _fixture("detail_house_119_1_240.json"),
                 241: _fixture("detail_house_119_1_241_amendment.json"),
