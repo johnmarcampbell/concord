@@ -18,8 +18,7 @@ from concord.pipeline.index_proceedings import IndexResult, index
 from concord.pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
 from concord.pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
 from concord.scraper.proceedings import scrape as _run_pull
-from concord.storage import JsonlStorage, MongoStorage, SqliteStorage
-from concord.storage.base import Storage
+from concord.storage import JsonlStorage, SqliteStorage
 
 from ._apps import index_app, load_app, run_app, scrape_app
 from ._common import (
@@ -45,7 +44,7 @@ def _run_scrape_proceedings(
     *,
     start: date,
     end: date,
-    storage: Storage,
+    storage: JsonlStorage,
     storage_label: str,
     limit: int | None,
     show_progress: bool,
@@ -249,24 +248,6 @@ def scrape_proceedings_command(
             help="Print a line per issue to stderr as the scrape proceeds.",
         ),
     ] = True,
-    mongo_uri: Annotated[
-        str | None,
-        typer.Option(
-            "--mongo-uri",
-            help="MongoDB connection URI. When set, --storage is ignored.",
-        ),
-    ] = None,
-    mongo_db: Annotated[
-        str,
-        typer.Option("--mongo-db", help="MongoDB database name (with --mongo-uri)."),
-    ] = "concord",
-    mongo_collection: Annotated[
-        str,
-        typer.Option(
-            "--mongo-collection",
-            help="MongoDB collection name (with --mongo-uri).",
-        ),
-    ] = "proceedings",
 ) -> None:
     """Scrape every article in every issue between --from and --to (inclusive).
 
@@ -277,24 +258,11 @@ def scrape_proceedings_command(
     start = _parse_date(from_)
     end = _parse_date(to or _today())
 
-    storage: Storage
-    storage_label: str
-    if mongo_uri is not None:
-        try:
-            storage = MongoStorage.from_uri(mongo_uri, db=mongo_db, collection=mongo_collection)
-        except ImportError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(code=2) from exc
-        storage_label = f"mongodb://{mongo_db}.{mongo_collection}"
-    else:
-        storage = JsonlStorage(storage_path)
-        storage_label = str(storage_path)
-
     _run_scrape_proceedings(
         start=start,
         end=end,
-        storage=storage,
-        storage_label=storage_label,
+        storage=JsonlStorage(storage_path),
+        storage_label=str(storage_path),
         limit=limit,
         show_progress=show_progress,
     )

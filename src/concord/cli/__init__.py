@@ -29,8 +29,6 @@ scriptable.
 
 import typer
 
-from concord.storage import MongoStorage  # re-export; patched by tests
-
 # Side-effectful: each module decorates its commands onto the stage apps.
 from . import bills, members, proceedings, votes  # noqa: F401
 from ._apps import index_app, load_app, run_app, scrape_app
@@ -94,7 +92,6 @@ __all__ = [
     "DEFAULT_JSONL",
     "DEFAULT_MEMBERS_JSONL",
     "ENV_OPENAI_API_KEY",
-    "MongoStorage",
     "Progress",
     "app",
     "index_proceedings_command",

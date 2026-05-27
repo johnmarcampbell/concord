@@ -163,7 +163,7 @@ src/concord/
     index_members.py       # Stage 2 — members_fts
   storage/
     base.py            # Storage Protocol
-    jsonl.py, mongo.py # raw-store backends for Proceedings
+    jsonl.py           # raw-store backend for Proceedings
     sqlite.py          # derived store — all entities, all indexes
   web/
     app.py, search.py  # FastAPI routes + federated query layer
