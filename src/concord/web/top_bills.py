@@ -6,8 +6,6 @@ aren't in the local SQLite store, so the section degrades gracefully on
 a partial dataset.
 """
 
-from __future__ import annotations
-
 from typing import NamedTuple
 
 
