@@ -46,9 +46,13 @@ This requires one-time manual setup in the PyPI and TestPyPI web UIs: register `
 
 `concord.__version__` is exposed at the package root via `importlib.metadata.version("congress-concord")` rather than a hard-coded string. That way the version is never duplicated, and editable installs (where `importlib.metadata` may raise) fall back to `"0.0.0+unknown"`.
 
-### First published version: `0.2.0`
+### First published version: `0.2.1`
 
-The codebase has grown substantially since `0.1.0` was set (Members, Bills, Votes, web layer, semantic search, ~100× the LOC). Starting fresh PyPI history at `0.2.0` honestly signals "there was a before" even though that before never shipped publicly. `1.0.0` is reserved for the day the CLI contract is firm enough to be worth promising — not today.
+The codebase has grown substantially since `0.1.0` was set (Members, Bills, Votes, web layer, semantic search, ~100× the LOC), so starting fresh PyPI history below the `0.2.x` line wouldn't honestly reflect where the project is. `1.0.0` is reserved for the day the CLI contract is firm enough to be worth promising — not today.
+
+The actual first-published version is `0.2.1`, not `0.2.0`. `v0.2.0` already existed as a GitHub release (created before this ADR landed and before `release.yml` had a PyPI publish job), so the version was effectively "burned" in the project's release history even though no wheel ever reached PyPI. Rather than retroactively recycle it, the first PyPI publish skips ahead one patch: `v0.2.1rc1` for the TestPyPI dry-run, `v0.2.1` for real PyPI.
+
+The pyproject.toml version is the **source of truth for what gets published**, not the git tag. `uv build` reads `[project].version` from pyproject and bakes it into the wheel filename and metadata; the git tag is only a workflow trigger. So every release requires two coordinated changes: bump `pyproject.toml` (committed and merged to master) *then* publish a GitHub release whose tag matches that version. Forgetting either step is the manual-bump tradeoff this ADR accepts; the alternative (`hatch-vcs` deriving version from the tag) was rejected for the reasons above.
 
 ## Consequences
 
