@@ -1,6 +1,6 @@
 # 0003 — SQLite as the derived store
 
-**Status**: Accepted, 2026-05-24.
+**Status**: Accepted, 2026-05-24. Amended 2026-05-27: the "What stays open" caveat about `MongoStorage` was retired by [ADR 0013](0013-drop-mongo-storage-backend.md). The body below is preserved as written for historical accuracy.
 **Supersedes** (in practice): the implicit choice of MongoDB carried over from the pre-rebuild project. The Mongo storage backend (#25) remains in the codebase but is no longer the recommended path.
 
 ## Context

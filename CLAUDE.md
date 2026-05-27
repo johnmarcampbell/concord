@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [CONTEXT.md](CONTEXT.md) is the **domain glossary**. The terms it defines (Issue, Article, Granule ID, Proceeding, Member, Term, Bill, Vote, Chunk, Party Unity Score, Stage 0/1/2/3, …) are load-bearing — use them verbatim in code, comments, and prose. Don't invent synonyms.
 - [docs/adr/](docs/adr/) records the project's **non-obvious design decisions** (one decision per file). Skim the index before architectural work; read the relevant ADR(s) in full before changing anything they touch. The most foundational:
   - 0002 — JSONL is the canonical raw store; SQLite is derived/rebuildable.
-  - 0003 — SQLite + FTS5 + sqlite-vec is the derived store; Mongo backend exists but isn't the default.
+  - 0003 / 0013 — SQLite + FTS5 + sqlite-vec is the derived store; the Mongo backend that 0003 left in place was removed by 0013.
   - 0005 / 0008 — Chunks are the unit of retrieval; one `chunks` table discriminated by `source_type` spans Proceedings, Bills, etc.
   - 0006 / 0009 — Mutable entities use snapshot-on-fetch (`{fetched_at, key, payload}`); multi-endpoint entities (Bills) split into one JSONL per sub-endpoint.
   - 0007 — Stage 0 + Stage 1 are parallel per entity type; Stage 2/3 are shared.
@@ -71,7 +71,7 @@ src/concord/
   pipeline/index_<entity>.py         # Stage 2 — chunks + FTS5 + vec (shared chunks table per ADR 0008)
   storage/
     base.py                          # Storage Protocol
-    jsonl.py, mongo.py               # raw-store backends (Proceedings)
+    jsonl.py                         # raw-store backend (Proceedings)
     sqlite.py                        # derived store — all entities + indexes; owns ensure_schema()
   web/                               # FastAPI + Jinja2 + HTMX; reads the SQLite the pipeline writes
   cli/                               # Typer entry point (one module per entity)
@@ -92,5 +92,4 @@ Cross-cutting things worth knowing:
 
 - `pytest.mark.parametrize` takes a **tuple of names**, not a comma string: `("url", "expected")`, not `"url,expected"`. Ruff (`PT006`) will flag the wrong form.
 - `mypy --strict` runs on `src/concord/` only; tests are looser via the override in `pyproject.toml`. Don't relax `src/` to match tests.
-- The Mongo backend (`storage/mongo.py`) still works and is exercised by tests, but isn't the default path (ADR 0003). Don't remove it; do route new entity work through `SqliteStorage`.
 - Re-running the pipeline is always safe — dedup keys handle it. Don't add "delete first, then ingest" workflows; idempotency is the contract.

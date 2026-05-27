@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import mongomock
 import openai
 import pytest
 import uvicorn
@@ -27,7 +26,9 @@ from concord.api import ENV_API_KEY, ApiError, Client
 from concord.models import Article, Issue, Proceeding
 from concord.pipeline.index_proceedings import IndexResult
 from concord.pipeline.load_proceedings import PullResult
-from concord.storage import MongoStorage, SqliteStorage
+from concord.scraper.votes import SENATE_ROSTER_JSONL_NAME, SENATE_VOTES_JSONL_NAME
+from concord.senate_xml import SenateClient
+from concord.storage import SqliteStorage
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -332,80 +333,6 @@ class TestMissingApiKey:
         )
         assert result.exit_code == 2
         assert "simulated init failure" in _strip(result.output)
-
-
-# -- Mongo backend wiring ----------------------------------------------------
-
-
-class TestMongoBackend:
-    def test_mongo_uri_routes_to_mongo_storage(
-        self,
-        runner: CliRunner,
-        with_api_key: None,
-        stub_pull: list[dict[str, Any]],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """With --mongo-uri, the CLI calls MongoStorage.from_uri instead of JsonlStorage."""
-        calls: list[dict[str, Any]] = []
-
-        def fake_from_uri(uri: str, *, db: str, collection: str) -> MongoStorage:
-            calls.append({"uri": uri, "db": db, "collection": collection})
-            # Return a stand-in that satisfies the Storage protocol.
-            return MongoStorage(collection=mongomock.MongoClient()[db][collection])
-
-        monkeypatch.setattr(cli_module.MongoStorage, "from_uri", staticmethod(fake_from_uri))
-        result = runner.invoke(
-            cli_module.app,
-            [
-                "scrape",
-                "proceedings",
-                "--from",
-                "2026-05-22",
-                "--to",
-                "2026-05-22",
-                "--mongo-uri",
-                "mongodb://example.invalid:27017",
-                "--mongo-db",
-                "my_db",
-                "--mongo-collection",
-                "my_coll",
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        assert calls == [
-            {"uri": "mongodb://example.invalid:27017", "db": "my_db", "collection": "my_coll"}
-        ]
-        # Success summary names the mongo target, not a file path.
-        assert "mongodb://my_db.my_coll" in _strip(result.output)
-
-    def test_pymongo_missing_exits_cleanly(
-        self,
-        runner: CliRunner,
-        with_api_key: None,
-        stub_pull: list[dict[str, Any]],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Helpful error if MongoStorage.from_uri raises ImportError (no [mongo])."""
-
-        def fake_from_uri(*_args: Any, **_kwargs: Any) -> Any:
-            raise ImportError("pymongo not installed; install concord[mongo]")
-
-        monkeypatch.setattr(cli_module.MongoStorage, "from_uri", staticmethod(fake_from_uri))
-        result = runner.invoke(
-            cli_module.app,
-            [
-                "scrape",
-                "proceedings",
-                "--from",
-                "2026-05-22",
-                "--to",
-                "2026-05-22",
-                "--mongo-uri",
-                "mongodb://example.invalid:27017",
-            ],
-        )
-        assert result.exit_code == 2
-        assert "pymongo not installed" in _strip(result.output)
 
 
 # -- `concord load` ----------------------------------------------------------
@@ -1537,8 +1464,6 @@ def _senate_votes_handler():
 
 
 def _patch_senate_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    from concord.senate_xml import SenateClient  # noqa: PLC0415 — lazy import: per-test mock setup
-
     original = SenateClient.__init__
 
     def patched(self, **kwargs):
@@ -1689,11 +1614,6 @@ class TestLoadVotesCommand:
         tmp_path: Path,
     ) -> None:
         """Senate-only scrape → load chain must not be gated on house_votes.jsonl."""
-        from concord.scraper.votes import (  # noqa: PLC0415 — lazy: only this test needs the constants
-            SENATE_ROSTER_JSONL_NAME,
-            SENATE_VOTES_JSONL_NAME,
-        )
-
         senate_fixtures = Path(__file__).parent / "fixtures" / "senate"
         detail = (senate_fixtures / "detail_119_1_00007_bill.xml").read_text()
         roster = (senate_fixtures / "senators_cfm.xml").read_text()
