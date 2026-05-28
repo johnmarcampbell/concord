@@ -90,7 +90,7 @@ class Vote(BaseModel):
     congress: int
     session: SessionNumber
     roll_number: int
-    vote_kind: VoteKind = "standard"
+    vote_kind: VoteKind
     start_date: str  # ISO 8601 with offset, as the API supplies
     vote_question: str
     vote_type: str
@@ -102,6 +102,10 @@ class Vote(BaseModel):
     not_voting_count: int | None = None
     bill_id: str | None = None
     amendment_id: str | None = None
+    # Stage 1 (load_votes) doesn't know whether a vote is party-unity —
+    # that requires the per-member positions. Stage 2 (index_votes)
+    # computes it and runs ``UPDATE votes SET is_party_unity = ?``. The
+    # ``False`` default IS the "not yet indexed" state in the contract.
     is_party_unity: bool = False
     update_date: str
 
@@ -298,12 +302,12 @@ class ParsedVoteDetail(BaseModel):
     congress: int
     session: SessionNumber
     roll_number: int
-    vote_kind: VoteKind = "standard"
+    vote_kind: VoteKind
     start_date: str
     update_date: str
     vote_question: str
     vote_type: str
-    vote_title: str = ""
+    vote_title: str
     threshold: VoteThreshold | None = None
     result: str
     yea_count: int | None = None
@@ -312,7 +316,7 @@ class ParsedVoteDetail(BaseModel):
     not_voting_count: int | None = None
     bill_id: str | None = None
     amendment_id: str | None = None
-    positions: list[ParsedVotePosition] = []
+    positions: list[ParsedVotePosition]
 
     @field_validator("chamber", mode="before")
     @classmethod

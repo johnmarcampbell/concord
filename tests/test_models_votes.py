@@ -148,6 +148,7 @@ class TestVoteModel:
             congress=119,
             session=1,
             roll_number=1,
+            vote_kind="standard",
             start_date="2026-01-01T00:00:00Z",
             vote_question="Q",
             vote_type="Yea-and-Nay",

@@ -125,7 +125,7 @@ class Cosponsor(BaseModel):
     bioguide_id: str
     sponsorship_date: str
     sponsorship_withdrawn_date: str | None = None  # only set when withdrawn
-    is_original_cosponsor: bool = False
+    is_original_cosponsor: bool
 
     @classmethod
     def from_congress_api(cls, payload: dict[str, Any]) -> "Cosponsor":
@@ -142,7 +142,7 @@ class Cosponsor(BaseModel):
             bioguide_id=bioguide,
             sponsorship_date=payload["sponsorshipDate"],
             sponsorship_withdrawn_date=payload.get("sponsorshipWithdrawnDate"),
-            is_original_cosponsor=payload.get("isOriginalCosponsor", False),
+            is_original_cosponsor=payload["isOriginalCosponsor"],
         )
 
 

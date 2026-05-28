@@ -268,6 +268,7 @@ class TestBillProfile:
                         bioguide_id="Z999999",
                         sponsorship_date="2025-02-01",
                         sponsorship_withdrawn_date="2025-03-15",
+                        is_original_cosponsor=False,
                     ),
                 ],
                 fetched_at="2026-05-26T00:00:00Z",
@@ -451,7 +452,13 @@ class TestHumanizeAge:
         with SqliteStorage(db_path, load_vec=False) as storage:
             storage.replace_bill_cosponsors(
                 "119-hr-1",
-                [Cosponsor(bioguide_id="A000001", sponsorship_date="2020-01-01")],
+                [
+                    Cosponsor(
+                        bioguide_id="A000001",
+                        sponsorship_date="2020-01-01",
+                        is_original_cosponsor=True,
+                    )
+                ],
                 fetched_at="2020-01-01T00:00:00+00:00",
             )
         resp = client.get("/bills/119/hr/1")

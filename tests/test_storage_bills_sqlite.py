@@ -53,6 +53,7 @@ def _cosponsor(bioguide_id: str, **overrides: object) -> Cosponsor:
     defaults: dict[str, object] = {
         "bioguide_id": bioguide_id,
         "sponsorship_date": "2025-01-09",
+        "is_original_cosponsor": False,
     }
     defaults.update(overrides)
     return Cosponsor(**defaults)  # type: ignore[arg-type]
