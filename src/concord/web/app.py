@@ -399,6 +399,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
             ),
             None,
         )
+        term_groups = search_mod.collapse_term_history(terms)
         sponsored = search_mod.sponsored_bills_for_member(db, bioguide_id, limit=25)
         sponsored_total = search_mod.count_sponsored_bills_for_member(db, bioguide_id)
         cosponsored = search_mod.cosponsored_bills_for_member(db, bioguide_id, limit=25)
@@ -416,6 +417,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
             {
                 "member": member,
                 "terms": terms,
+                "term_groups": term_groups,
                 "current_term": current_term,
                 "sponsored_bills": sponsored,
                 "sponsored_bills_total": sponsored_total,

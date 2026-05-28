@@ -364,6 +364,64 @@ def terms_for_member(db: sqlite3.Connection, bioguide_id: str) -> list[dict[str,
     return [dict(r) for r in rows]
 
 
+def collapse_term_history(
+    terms: list[dict[str, Any]],
+    today: date | None = None,
+) -> list[dict[str, Any]]:
+    """Collapse adjacent Terms that match on chamber/state/district/party.
+
+    Input is the raw term list from :func:`terms_for_member` (sorted by
+    congress DESC). Adjacent rows that share chamber, state, district,
+    and party become a single group spanning a Congress range and the
+    corresponding year range. The displayed end year is capped at the
+    current calendar year so a Term ending Jan 3 of the next Congress
+    doesn't read as already-served-through-that-year.
+    """
+    if not terms:
+        return []
+    today = today or date.today()
+    current_year = today.year
+
+    def _year(s: str | None) -> int | None:
+        return int(s[:4]) if s else None
+
+    def _key(t: dict[str, Any]) -> tuple[str, str, int | None, str | None]:
+        return (t["chamber"], t["state"], t.get("district"), t.get("party"))
+
+    groups: list[dict[str, Any]] = []
+    for t in terms:
+        ys = _year(t["start_date"])
+        ye = _year(t["end_date"])
+        if groups and _key(t) == groups[-1]["_key"]:
+            g = groups[-1]
+            g["congress_min"] = min(g["congress_min"], t["congress"])
+            g["congress_max"] = max(g["congress_max"], t["congress"])
+            if ys is not None:
+                g["year_min"] = ys if g["year_min"] is None else min(g["year_min"], ys)
+            if ye is not None:
+                g["year_max"] = ye if g["year_max"] is None else max(g["year_max"], ye)
+        else:
+            groups.append(
+                {
+                    "_key": _key(t),
+                    "chamber": t["chamber"],
+                    "state": t["state"],
+                    "district": t.get("district"),
+                    "party": t.get("party"),
+                    "congress_min": t["congress"],
+                    "congress_max": t["congress"],
+                    "year_min": ys,
+                    "year_max": ye,
+                }
+            )
+
+    for g in groups:
+        if g["year_max"] is not None and g["year_max"] > current_year:
+            g["year_max"] = current_year
+        del g["_key"]
+    return groups
+
+
 # -- Bills (Phase 2a) -------------------------------------------------------
 
 

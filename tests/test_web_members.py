@@ -5,6 +5,7 @@ Covers ``/members`` (browse list with chamber/party filters), the
 that surfaces Members alongside Proceedings.
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from concord.models import Member, Term
 from concord.pipeline.index_members import index as index_members
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app
+from concord.web.search import collapse_term_history
 
 
 class _StubData:
@@ -170,6 +172,105 @@ class TestMemberProfile:
     def test_unknown_bioguide_404(self, client: TestClient) -> None:
         resp = client.get("/members/X999999")
         assert resp.status_code == 404
+
+
+class TestCollapseTermHistory:
+    """Unit tests for the term-history collapse + year-cap helper."""
+
+    def test_empty(self) -> None:
+        assert collapse_term_history([]) == []
+
+    def test_collapses_consecutive_identical_terms(self) -> None:
+        terms = [
+            {
+                "congress": 119,
+                "chamber": "senate",
+                "state": "AK",
+                "district": None,
+                "party": "Republican",
+                "start_date": "2025-01-03",
+                "end_date": "2027-01-03",
+            },
+            {
+                "congress": 118,
+                "chamber": "senate",
+                "state": "AK",
+                "district": None,
+                "party": "Republican",
+                "start_date": "2023-01-03",
+                "end_date": "2025-01-03",
+            },
+            {
+                "congress": 117,
+                "chamber": "senate",
+                "state": "AK",
+                "district": None,
+                "party": "Republican",
+                "start_date": "2021-01-03",
+                "end_date": "2023-01-03",
+            },
+        ]
+        groups = collapse_term_history(terms, today=date(2026, 5, 28))
+        assert len(groups) == 1
+        g = groups[0]
+        assert g["congress_min"] == 117
+        assert g["congress_max"] == 119
+        assert g["year_min"] == 2021
+        # Capped at the current year (2026), not the term's 2027 end_date.
+        assert g["year_max"] == 2026
+
+    def test_splits_when_chamber_changes(self) -> None:
+        terms = [
+            {
+                "congress": 119,
+                "chamber": "senate",
+                "state": "NY",
+                "district": None,
+                "party": "Democratic",
+                "start_date": "2025-01-03",
+                "end_date": "2027-01-03",
+            },
+            {
+                "congress": 118,
+                "chamber": "house",
+                "state": "NY",
+                "district": 14,
+                "party": "Democratic",
+                "start_date": "2023-01-03",
+                "end_date": "2025-01-03",
+            },
+        ]
+        groups = collapse_term_history(terms, today=date(2026, 5, 28))
+        assert len(groups) == 2
+        assert groups[0]["chamber"] == "senate"
+        assert groups[1]["chamber"] == "house"
+        assert groups[1]["district"] == 14
+
+    def test_splits_when_party_changes(self) -> None:
+        terms = [
+            {
+                "congress": 109,
+                "chamber": "senate",
+                "state": "VT",
+                "district": None,
+                "party": "Independent",
+                "start_date": "2005-01-03",
+                "end_date": "2007-01-03",
+            },
+            {
+                "congress": 108,
+                "chamber": "senate",
+                "state": "VT",
+                "district": None,
+                "party": "Republican",
+                "start_date": "2003-01-03",
+                "end_date": "2005-01-03",
+            },
+        ]
+        groups = collapse_term_history(terms, today=date(2026, 5, 28))
+        assert len(groups) == 2
+        assert groups[0]["party"] == "Independent"
+        assert groups[1]["party"] == "Republican"
 
 
 class TestFederatedSearch:
