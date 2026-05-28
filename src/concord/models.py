@@ -18,8 +18,6 @@ Members (Phase 1):
 - :class:`MemberSnapshot` — ADR 0006 envelope wrapping a raw API payload.
 """
 
-from __future__ import annotations
-
 import re
 from datetime import date, datetime
 from typing import Any, Literal
@@ -110,7 +108,7 @@ class Article(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _check_granule_id_matches_urls(self) -> Article:
+    def _check_granule_id_matches_urls(self) -> "Article":
         from_text = parse_granule_id(str(self.text_url))
         if from_text != self.granule_id:
             raise ValueError(
@@ -158,7 +156,7 @@ class Proceeding(BaseModel):
     @classmethod
     def build(
         cls, *, issue: Issue, article: Article, text: str, fetched_at: datetime
-    ) -> Proceeding:
+    ) -> "Proceeding":
         """Combine an issue, an article, and fetched text into a Proceeding."""
         return cls(
             **issue.model_dump(),

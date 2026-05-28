@@ -1,7 +1,5 @@
 """Tests for the Vote pydantic models and parse helpers."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any

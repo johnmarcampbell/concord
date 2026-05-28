@@ -5,8 +5,6 @@ into the new schema, plus the UPSERT-on-bioguide + DELETE-then-INSERT
 contract that keeps the SQL state consistent with the latest snapshot.
 """
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 

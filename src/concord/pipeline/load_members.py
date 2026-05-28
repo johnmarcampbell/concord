@@ -26,8 +26,6 @@ Re-running over a JSONL that gained new snapshots converges the SQL
 state to the latest-snapshot projection.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from datetime import datetime

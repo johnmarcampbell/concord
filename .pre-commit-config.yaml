@@ -5,3 +5,10 @@ repos:
       - id: ruff-format
       - id: ruff
         args: [--fix]
+  - repo: local
+    hooks:
+      - id: no-future-annotations
+        name: Forbid `from __future__ import annotations`
+        language: pygrep
+        entry: '^from __future__ import annotations'
+        types: [python]

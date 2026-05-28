@@ -1,7 +1,5 @@
 """Tests for the Votes SQLite schema + storage methods (Phase 3a)."""
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 

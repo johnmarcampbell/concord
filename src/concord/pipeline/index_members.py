@@ -10,8 +10,6 @@ embedding pass for Member names (BM25 + porter stemming is the right
 tool for short proper-noun lookups).
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import NamedTuple
 

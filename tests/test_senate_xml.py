@@ -5,8 +5,6 @@ process. XML responses are real captures from the live feeds, stored
 under ``tests/fixtures/senate/``.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from pathlib import Path
 

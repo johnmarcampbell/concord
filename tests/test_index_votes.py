@@ -1,7 +1,5 @@
 """Tests for the Votes Stage 2 indexer — party-unity computation."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 from concord.models import Vote, VotePosition

@@ -8,8 +8,6 @@ several Congresses will appear in each Congress's listing and produce
 one snapshot per appearance.
 """
 
-from __future__ import annotations
-
 import json
 from collections.abc import Callable, Iterable
 from datetime import datetime

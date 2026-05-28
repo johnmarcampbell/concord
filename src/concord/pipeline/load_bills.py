@@ -16,8 +16,6 @@ over a JSONL that gained new snapshots converges the SQL projection to
 the latest-snapshot view.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from collections.abc import Callable

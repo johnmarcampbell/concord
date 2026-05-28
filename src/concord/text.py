@@ -26,8 +26,6 @@ of many articles can trip 429s or 403s. Retries mirror :mod:`concord.api`:
 Retry decisions are logged via :mod:`logging` (logger ``concord.text``).
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from collections.abc import Callable
