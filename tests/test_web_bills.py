@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,7 +21,9 @@ from concord.models import (
     Term,
 )
 from concord.pipeline.index_bills import index as index_bills
+from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, enrichment_jsonl_name
 from concord.storage.sqlite import SqliteStorage
+from concord.web import app as web_app
 from concord.web.app import create_app, humanize_age
 
 
@@ -444,3 +447,257 @@ class TestHumanizeAge:
         # "Fetched ... ago" should appear (years old, so "year(s) ago").
         assert "year" in resp.text
         assert "ago" in resp.text
+
+
+# -----------------------------------------------------------------------------
+# Web-initiated enrichment (ADR 0016)
+# -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def enrichment_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+    """Same seeded DB as ``client``, but with the two enrichment env vars set."""
+    monkeypatch.setenv("CONGRESS_API_KEY", "test-key")
+    monkeypatch.setenv("CONCORD_ENABLE_WEB_ENRICHMENT", "1")
+    db_path = tmp_path / "test.db"
+    storage = SqliteStorage(db_path)
+    _seed(storage)
+    storage.close()
+    index_bills(db_path=db_path)
+    app = create_app(db_path, embedder=Embedder(_StubOpenAI()), storage_dir=tmp_path)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+class TestEnrichmentGating:
+    """Both env vars must be present for the routes to be registered."""
+
+    def test_disabled_by_default(self, client: TestClient) -> None:
+        assert client.app.state.enrichment_enabled is False
+
+    def test_enabled_with_both_env_vars(self, enrichment_client: TestClient) -> None:
+        assert enrichment_client.app.state.enrichment_enabled is True
+
+    def test_missing_api_key_disables(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("CONGRESS_API_KEY", raising=False)
+        monkeypatch.setenv("CONCORD_ENABLE_WEB_ENRICHMENT", "1")
+        db_path = tmp_path / "test.db"
+        SqliteStorage(db_path).close()
+        app = create_app(db_path, embedder=Embedder(_StubOpenAI()), storage_dir=tmp_path)
+        assert app.state.enrichment_enabled is False
+
+    def test_missing_flag_disables(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("CONGRESS_API_KEY", "test-key")
+        monkeypatch.delenv("CONCORD_ENABLE_WEB_ENRICHMENT", raising=False)
+        db_path = tmp_path / "test.db"
+        SqliteStorage(db_path).close()
+        app = create_app(db_path, embedder=Embedder(_StubOpenAI()), storage_dir=tmp_path)
+        assert app.state.enrichment_enabled is False
+
+    def test_unrecognized_flag_disables(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("CONGRESS_API_KEY", "test-key")
+        monkeypatch.setenv("CONCORD_ENABLE_WEB_ENRICHMENT", "banana")
+        db_path = tmp_path / "test.db"
+        SqliteStorage(db_path).close()
+        app = create_app(db_path, embedder=Embedder(_StubOpenAI()), storage_dir=tmp_path)
+        assert app.state.enrichment_enabled is False
+
+    def test_routes_404_when_disabled(self, client: TestClient) -> None:
+        # GET enrichment-status returns 405 because the route isn't registered;
+        # FastAPI returns 405 for unknown methods on a known path prefix, 404
+        # otherwise. The bill path is known; the suffix isn't.
+        resp = client.post("/bills/119/hr/1/enrichment")
+        assert resp.status_code == 404
+        resp = client.get("/bills/119/hr/1/enrichment-status")
+        assert resp.status_code == 404
+
+
+class TestEnrichmentProfileButton:
+    def test_button_renders_when_enabled_and_missing_enrichment(
+        self, enrichment_client: TestClient
+    ) -> None:
+        resp = enrichment_client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Request enrichment" in body
+        # The five per-section CLI placeholders also remain — they're the
+        # fallback for the non-enrichment-enabled deployment.
+        assert "Cosponsors not yet fetched" in body
+
+    def test_button_absent_when_disabled(self, client: TestClient) -> None:
+        resp = client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        assert "Request enrichment" not in resp.text
+
+    def test_button_absent_when_fully_enriched(self, enrichment_client: TestClient) -> None:
+        db_path = enrichment_client.app.state.db_path
+        stamp = "2026-05-26T00:00:00Z"
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_actions("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_subjects("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_titles("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_summaries("119-hr-1", [], fetched_at=stamp)
+        resp = enrichment_client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        assert "Request enrichment" not in resp.text
+
+    def test_failed_banner_when_error_recorded(self, enrichment_client: TestClient) -> None:
+        db_path = enrichment_client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.set_bill_enrichment_error("119-hr-1", "rate limited by api.congress.gov")
+        resp = enrichment_client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Enrichment failed" in body
+        assert "rate limited by api.congress.gov" in body
+        assert "Try again" in body
+
+
+class TestEnrichmentPostRoute:
+    def test_post_returns_in_flight_fragment_and_registers_bill(
+        self, enrichment_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Block the background task from doing any real work — we only
+        # care about the request-flow behavior here.
+        monkeypatch.setattr(web_app, "_enrich_one_bill", lambda app, bill_id: None)
+
+        resp = enrichment_client.post("/bills/119/hr/1/enrichment")
+        assert resp.status_code == 200
+        body = resp.text
+        # The in-flight fragment includes the status-poll hx-get.
+        assert "enrichment-status" in body
+        assert "119" in body
+        assert "hr" in body
+        # The bill is recorded as in-flight; the background task we
+        # patched in is a no-op, so the discard doesn't run, but on
+        # the real flow it would clear the set.
+        # (We don't assert the set state here because BackgroundTasks
+        # runs synchronously in TestClient and the lambda is the task.)
+
+    def test_post_404_for_invalid_bill_type(self, enrichment_client: TestClient) -> None:
+        resp = enrichment_client.post("/bills/119/xyz/1/enrichment")
+        assert resp.status_code == 404
+
+
+class TestEnrichmentStatusRoute:
+    def test_status_in_flight(self, enrichment_client: TestClient) -> None:
+        enrichment_client.app.state.enrichment_in_flight.add("119-hr-1")
+        try:
+            resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
+            assert resp.status_code == 200
+            assert "Enriching this bill" in resp.text
+        finally:
+            enrichment_client.app.state.enrichment_in_flight.discard("119-hr-1")
+
+    def test_status_done_when_no_error_and_not_in_flight(
+        self, enrichment_client: TestClient
+    ) -> None:
+        resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
+        assert resp.status_code == 200
+        assert "Enrichment complete" in resp.text
+
+    def test_status_failed_when_error_set(self, enrichment_client: TestClient) -> None:
+        db_path = enrichment_client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.set_bill_enrichment_error("119-hr-1", "boom: 500 from upstream")
+        resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Enrichment failed" in body
+        assert "boom: 500 from upstream" in body
+
+    def test_status_404_for_invalid_bill_type(self, enrichment_client: TestClient) -> None:
+        resp = enrichment_client.get("/bills/119/xyz/1/enrichment-status")
+        assert resp.status_code == 404
+
+
+class _StubClient:
+    """Stand-in for ``concord.api.Client`` — no network calls made in tests."""
+
+    def __enter__(self) -> _StubClient:
+        return self
+
+    def __exit__(self, *_a: object) -> None:
+        pass
+
+
+class TestEnrichOneBillBackgroundTask:
+    """Drive _enrich_one_bill directly with a stubbed Client + scraper."""
+
+    def test_success_path_clears_error_and_records_fetched_at(
+        self,
+        enrichment_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Pre-record an error to verify it gets cleared at the start.
+        db_path = enrichment_client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.set_bill_enrichment_error("119-hr-1", "previous failure")
+
+        monkeypatch.setattr("concord.api.Client", lambda *a, **kw: _StubClient())
+
+        # Stub scrape_enrichment to write minimal empty payload envelopes
+        # for all five sections — load_one then projects them as empty
+        # lists and stamps *_fetched_at.
+        def _fake_scrape(
+            *,
+            client: object,
+            bill_keys: list[tuple[int, str, int]],
+            storage_dir: Path,
+            fetched_at: datetime,
+        ) -> object:
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            for section in BILL_ENRICHMENT_SECTIONS:
+                payload: dict[str, object]
+                if section == "subjects":
+                    payload = {"subjects": {"legislativeSubjects": []}}
+                else:
+                    payload = {section: []}
+                envelope = {
+                    "fetched_at": fetched_at.isoformat(),
+                    "key": {"congress": 119, "bill_type": "hr", "bill_number": 1},
+                    "payload": payload,
+                }
+                with (storage_dir / enrichment_jsonl_name(section)).open(
+                    "a", encoding="utf-8"
+                ) as fh:
+                    fh.write(json.dumps(envelope) + "\n")
+            return None
+
+        monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _fake_scrape)
+
+        web_app._enrich_one_bill(enrichment_client.app, "119-hr-1")
+
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["last_enrichment_error"] is None
+            assert row["cosponsors_fetched_at"] is not None
+            assert row["actions_fetched_at"] is not None
+        # In-flight set is cleared in finally.
+        assert "119-hr-1" not in enrichment_client.app.state.enrichment_in_flight
+
+    def test_failure_path_records_error_and_clears_inflight(
+        self, enrichment_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("concord.api.Client", lambda *a, **kw: _StubClient())
+
+        def _boom(**kw: object) -> object:
+            raise RuntimeError("upstream rate limit")
+
+        monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _boom)
+
+        enrichment_client.app.state.enrichment_in_flight.add("119-hr-1")
+        web_app._enrich_one_bill(enrichment_client.app, "119-hr-1")
+
+        db_path = enrichment_client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["last_enrichment_error"] is not None
+            assert "upstream rate limit" in row["last_enrichment_error"]
+        assert "119-hr-1" not in enrichment_client.app.state.enrichment_in_flight

@@ -1,0 +1,12 @@
+<div id="enrichment-status" class="border border-stone-200 bg-stone-50 rounded p-3 text-sm flex items-center justify-between gap-3">
+  <div class="text-stone-700">
+    This bill hasn't been enriched yet — fetch cosponsors, actions, subjects, titles, and summaries from Congress.gov.
+  </div>
+  <button
+    type="button"
+    hx-post="/bills/{{ bill.congress }}/{{ bill.bill_type }}/{{ bill.bill_number }}/enrichment"
+    hx-target="#enrichment-status"
+    hx-swap="outerHTML"
+    class="px-3 py-1 rounded bg-stone-800 text-white text-sm hover:bg-stone-700"
+  >Request enrichment</button>
+</div>

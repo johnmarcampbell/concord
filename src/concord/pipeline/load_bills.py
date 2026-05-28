@@ -123,6 +123,180 @@ def load(
     )
 
 
+def load_one(
+    *,
+    storage_dir: Path,
+    db_path: Path,
+    bill_id: str,
+) -> LoadStats:
+    """Project the latest snapshots for one Bill into SQLite.
+
+    Filters ``bills.jsonl`` and the five tier-2 sibling files down to
+    the envelopes whose key matches ``bill_id`` (format
+    ``"{congress}-{bill_type}-{bill_number}"``), UPSERTs the parent
+    bill row if found, and runs each per-section projector inside one
+    transaction. Used by the web-initiated enrichment flow (ADR 0016)
+    so the request-side projection cost is O(1) per bill rather than
+    O(N).
+    """
+    try:
+        congress_s, bill_type, bill_number_s = bill_id.split("-", 2)
+        congress = int(congress_s)
+        bill_number = int(bill_number_s)
+        bill_type = bill_type.lower()
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"invalid bill_id {bill_id!r}: expected '{{c}}-{{t}}-{{n}}'") from exc
+    target_key = (congress, bill_type, bill_number)
+
+    bills_written = 0
+    snapshots_read = 0
+    malformed = 0
+
+    jsonl_path = storage_dir / BILLS_JSONL_NAME
+    latest: tuple[datetime, dict[str, Any]] | None = None
+    if jsonl_path.exists():
+        latest, snapshots_read, malformed = _scan_tier1_for_key(jsonl_path, target_key)
+
+    storage = SqliteStorage(db_path, load_vec=False)
+    try:
+        if latest is not None:
+            fetched_at, payload = latest
+            try:
+                bill = parse_bill(payload)
+                storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
+                bills_written = 1
+            except Exception as exc:
+                malformed += 1
+                _log.warning("skipping bill after parse failure: %s", exc)
+
+        tier2_snapshots_read = 0
+        tier2_bills_updated = 0
+        tier2_orphans_skipped = 0
+        with storage.transaction():
+            for section in BILL_ENRICHMENT_SECTIONS:
+                t2 = _load_tier2_section_for_bill(storage_dir, section, storage, bill_id)
+                tier2_snapshots_read += t2["snapshots_read"]
+                tier2_bills_updated += t2["bills_updated"]
+                tier2_orphans_skipped += t2["orphans_skipped"]
+                malformed += t2["malformed"]
+    finally:
+        storage.close()
+
+    return LoadStats(
+        bills_written=bills_written,
+        snapshots_read=snapshots_read,
+        malformed=malformed,
+        tier2_snapshots_read=tier2_snapshots_read,
+        tier2_bills_updated=tier2_bills_updated,
+        tier2_orphans_skipped=tier2_orphans_skipped,
+    )
+
+
+def _scan_tier1_for_key(
+    jsonl_path: Path,
+    target_key: tuple[int, str, int],
+) -> tuple[tuple[datetime, dict[str, Any]] | None, int, int]:
+    """Return ``(latest, matched, malformed)`` for one key in bills.jsonl.
+
+    ``matched`` is the count of envelopes whose key equals ``target_key``;
+    it gives a per-bill analogue of ``snapshots_read`` from the bulk path
+    (envelopes for other bills are ignored, not counted).
+    """
+    snapshots_read = 0
+    malformed = 0
+    latest: tuple[datetime, dict[str, Any]] | None = None
+    with jsonl_path.open("r", encoding="utf-8") as fh:
+        for line_no, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                envelope = json.loads(line)
+                key = envelope["key"]
+                congress = int(key["congress"])
+                bill_type = str(key["bill_type"]).lower()
+                bill_number = int(key["bill_number"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                malformed += 1
+                _log.warning("skipping malformed bills.jsonl line %d: %s", line_no, exc)
+                continue
+            if (congress, bill_type, bill_number) != target_key:
+                continue
+            snapshots_read += 1
+            try:
+                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
+                payload = envelope["payload"]
+            except (KeyError, TypeError, ValueError) as exc:
+                malformed += 1
+                _log.warning("skipping bills.jsonl line %d with bad envelope: %s", line_no, exc)
+                continue
+            if latest is None or fetched_at > latest[0]:
+                latest = (fetched_at, payload)
+    return latest, snapshots_read, malformed
+
+
+def _load_tier2_section_for_bill(
+    storage_dir: Path,
+    section: str,
+    storage: SqliteStorage,
+    bill_id: str,
+) -> dict[str, int]:
+    """Per-bill twin of :func:`_load_tier2_section`."""
+    counters = {
+        "snapshots_read": 0,
+        "bills_updated": 0,
+        "orphans_skipped": 0,
+        "malformed": 0,
+    }
+    path = storage_dir / enrichment_jsonl_name(section)
+    if not path.exists():
+        return counters
+
+    latest: tuple[datetime, dict[str, Any]] | None = None
+    with path.open("r", encoding="utf-8") as fh:
+        for line_no, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                envelope = json.loads(line)
+                key = envelope["key"]
+                congress = int(key["congress"])
+                bill_type = str(key["bill_type"]).lower()
+                bill_number = int(key["bill_number"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                counters["malformed"] += 1
+                _log.warning("skipping malformed %s line %d: %s", path.name, line_no, exc)
+                continue
+            if f"{congress}-{bill_type}-{bill_number}" != bill_id:
+                continue
+            counters["snapshots_read"] += 1
+            try:
+                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
+                payload = envelope["payload"]
+            except (KeyError, TypeError, ValueError) as exc:
+                counters["malformed"] += 1
+                _log.warning("skipping %s line %d with bad envelope: %s", path.name, line_no, exc)
+                continue
+            if latest is None or fetched_at > latest[0]:
+                latest = (fetched_at, payload)
+
+    if latest is None:
+        return counters
+    if bill_id not in storage.bill_ids_present([bill_id]):
+        counters["orphans_skipped"] = 1
+        _log.info(
+            "tier-2 orphan: %s in %s but no parent bill row; skipping",
+            bill_id,
+            section,
+        )
+        return counters
+    fetched_at, payload = latest
+    _project_section(storage, section, bill_id, payload, fetched_at.isoformat())
+    counters["bills_updated"] = 1
+    return counters
+
+
 def _ingest_tier1(
     jsonl_path: Path,
     latest_per_key: dict[tuple[int, str, int], tuple[datetime, dict[str, Any]]],
@@ -320,4 +494,4 @@ _SECTION_PROJECTORS: dict[str, Callable[[SqliteStorage, str, dict[str, Any], str
 }
 
 
-__all__ = ["LoadStats", "load"]
+__all__ = ["LoadStats", "load", "load_one"]

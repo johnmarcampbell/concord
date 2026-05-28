@@ -7,8 +7,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from concord.pipeline.index_bills import index as index_bills
+from concord.pipeline.index_bills import reindex_one
 from concord.pipeline.load_bills import load as load_bills
+from concord.pipeline.load_bills import load_one
 from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
 from concord.storage.sqlite import SqliteStorage
 
@@ -408,3 +412,142 @@ class TestIndexBills:
                 ("energy",),
             ).fetchall()
             assert [r["bill_id"] for r in rows] == ["119-hr-1"]
+
+
+class TestLoadOne:
+    """Per-bill projection used by the web-initiated enrichment flow (ADR 0016)."""
+
+    def _seed(self, tmp_path: Path) -> tuple[Path, Path]:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        _write_jsonl(
+            storage_dir,
+            [
+                _envelope_for(_detail_payload("detail_119_hr_1.json")),
+                _envelope_for(_detail_payload("detail_119_hr_22.json")),
+            ],
+        )
+        return storage_dir, db
+
+    def test_load_one_projects_only_the_named_bill(self, tmp_path: Path) -> None:
+        storage_dir, db = self._seed(tmp_path)
+        # Tier-2 cosponsors for *both* bills.
+        for bill_key in [(119, "hr", 1), (119, "hr", 22)]:
+            with (storage_dir / enrichment_jsonl_name("cosponsors")).open(
+                "a", encoding="utf-8"
+            ) as fh:
+                fh.write(
+                    json.dumps(
+                        _envelope_for_section(
+                            _fixture("cosponsors_119_hr_22.json"), bill_key=bill_key
+                        )
+                    )
+                    + "\n"
+                )
+
+        # Project hr-1 only via load_one — hr-22 should not appear at all.
+        stats = load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-1")
+        assert stats.bills_written == 1
+        assert stats.tier2_bills_updated == 1  # cosponsors for hr-1 only
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.get_bill("119-hr-1") is not None
+            assert storage.get_bill("119-hr-22") is None
+            assert len(storage.cosponsors_for_bill("119-hr-1")) == 3
+
+    def test_load_one_idempotent(self, tmp_path: Path) -> None:
+        storage_dir, db = self._seed(tmp_path)
+        load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-1")
+        # Second run is a no-op against unchanged JSONL.
+        stats = load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-1")
+        assert stats.bills_written == 1  # UPSERT still touches the row
+        with SqliteStorage(db, load_vec=False) as storage:
+            (count,) = storage.connection.execute("SELECT COUNT(*) FROM bills").fetchone()
+            assert count == 1
+
+    def test_load_one_unknown_bill_is_noop(self, tmp_path: Path) -> None:
+        storage_dir, db = self._seed(tmp_path)
+        # bill_id not present in bills.jsonl: nothing to project.
+        stats = load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-9999")
+        assert stats.bills_written == 0
+        assert stats.tier2_bills_updated == 0
+
+    def test_load_one_invalid_bill_id_raises(self, tmp_path: Path) -> None:
+        storage_dir, db = self._seed(tmp_path)
+        with pytest.raises(ValueError, match="invalid bill_id"):
+            load_one(storage_dir=storage_dir, db_path=db, bill_id="not-a-bill")
+
+    def test_load_one_preserves_other_bill_fetched_at(self, tmp_path: Path) -> None:
+        """Loading hr-1 must not touch the cosponsors_fetched_at on hr-22."""
+        storage_dir, db = self._seed(tmp_path)
+        # Bulk-load both bills + tier-2 for hr-22.
+        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+            json.dumps(
+                _envelope_for_section(
+                    _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 22)
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            before = storage.get_bill("119-hr-22")
+            assert before is not None
+            stamp = before["cosponsors_fetched_at"]
+            assert stamp is not None
+
+        load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-1")
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            after = storage.get_bill("119-hr-22")
+            assert after is not None
+            assert after["cosponsors_fetched_at"] == stamp
+
+
+class TestReindexOne:
+    def test_reindex_one_updates_only_the_matching_row(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        _write_jsonl(
+            storage_dir,
+            [
+                _envelope_for(_detail_payload("detail_119_hr_1.json")),
+                _envelope_for(_detail_payload("detail_119_hr_22.json")),
+            ],
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        index_bills(db_path=db)
+
+        # Mutate the bills row directly, then re-index *only* that bill.
+        with SqliteStorage(db, load_vec=False) as storage:
+            storage.connection.execute(
+                "UPDATE bills SET title = ? WHERE bill_id = ?",
+                ("Renamed Energy Act", "119-hr-1"),
+            )
+            storage.connection.commit()
+
+        reindex_one(db_path=db, bill_id="119-hr-1")
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            # Updated row appears with the new title.
+            rows = storage.connection.execute(
+                "SELECT bill_id FROM bills_fts WHERE bills_fts MATCH ?",
+                ("renamed",),
+            ).fetchall()
+            assert [r["bill_id"] for r in rows] == ["119-hr-1"]
+            # The untouched row is still present (only one FTS row was touched).
+            rows = storage.connection.execute(
+                "SELECT bill_id FROM bills_fts ORDER BY bill_id"
+            ).fetchall()
+            assert [r["bill_id"] for r in rows] == ["119-hr-1", "119-hr-22"]
+
+    def test_reindex_one_missing_bill_is_noop(self, tmp_path: Path) -> None:
+        db = tmp_path / "test.db"
+        # Bare schema, no rows.
+        SqliteStorage(db, load_vec=False).close()
+        # No exception; FTS stays empty.
+        reindex_one(db_path=db, bill_id="119-hr-9999")
+        with SqliteStorage(db, load_vec=False) as storage:
+            (count,) = storage.connection.execute("SELECT COUNT(*) FROM bills_fts").fetchone()
+            assert count == 0

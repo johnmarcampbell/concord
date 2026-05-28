@@ -13,6 +13,16 @@ def serve_command(
         Path,
         typer.Option("--db", help="SQLite database (from `concord load` + `concord index`)."),
     ] = DEFAULT_DB,
+    storage_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--storage-dir",
+            help=(
+                "JSONL canonical store directory. Only consulted by the web-initiated "
+                "enrichment flow (ADR 0016). Defaults to the parent of --db."
+            ),
+        ),
+    ] = None,
     host: Annotated[
         str,
         typer.Option("--host", help="Bind address. Use 127.0.0.1 behind a reverse proxy."),
@@ -42,5 +52,5 @@ def serve_command(
 
     from concord.web.app import create_app
 
-    app_instance = create_app(db_path)
+    app_instance = create_app(db_path, storage_dir=storage_dir)
     uvicorn.run(app_instance, host=host, port=port, reload=reload)

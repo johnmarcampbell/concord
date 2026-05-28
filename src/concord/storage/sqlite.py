@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS bills (
     subjects_fetched_at   TEXT,
     titles_fetched_at     TEXT,
     summaries_fetched_at  TEXT,
+    last_enrichment_error TEXT,
     UNIQUE (congress, bill_type, bill_number)
 );
 
@@ -979,6 +980,22 @@ class SqliteStorage:
             self._conn.execute(
                 "UPDATE bills SET summaries_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
+            )
+
+    def set_bill_enrichment_error(self, bill_id: str, error: str) -> None:
+        """Record an enrichment-attempt error on the bills row."""
+        with self._maybe_transaction():
+            self._conn.execute(
+                "UPDATE bills SET last_enrichment_error = ? WHERE bill_id = ?",
+                (error, bill_id),
+            )
+
+    def clear_bill_enrichment_error(self, bill_id: str) -> None:
+        """Clear any previously-recorded enrichment-attempt error."""
+        with self._maybe_transaction():
+            self._conn.execute(
+                "UPDATE bills SET last_enrichment_error = NULL WHERE bill_id = ?",
+                (bill_id,),
             )
 
     def cosponsors_for_bill(self, bill_id: str) -> list[sqlite3.Row]:

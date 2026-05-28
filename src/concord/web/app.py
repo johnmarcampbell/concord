@@ -20,6 +20,9 @@ Rate limiting (slowapi, in-process per-IP) is applied to ``/search``
 only — the other routes don't call OpenAI and don't need protection.
 """
 
+import asyncio
+import logging
+import os
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -28,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlite_vec  # type: ignore[import-untyped]
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,6 +40,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from concord.embedding import Embedder
+from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
 from concord.storage.sqlite import ensure_schema
 from concord.web.top_bills import CURATED_TOP_BILLS
 
@@ -95,11 +99,24 @@ _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
 
+_log = logging.getLogger("concord.web")
+
+#: Recognized truthy values for ``CONCORD_ENABLE_WEB_ENRICHMENT``. Anything
+#: else (unset, empty, "0", "no", "banana") leaves enrichment disabled.
+_ENRICHMENT_FLAG_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _read_enrichment_flag(raw: str | None) -> bool:
+    if raw is None:
+        return False
+    return raw.strip().lower() in _ENRICHMENT_FLAG_TRUTHY
+
 
 def create_app(
     db_path: Path | str,
     *,
     embedder: Embedder | None = None,
+    storage_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build a fully wired FastAPI app.
 
@@ -111,6 +128,11 @@ def create_app(
         Optional injected :class:`Embedder`. When ``None`` (production
         default), constructs one from a default ``openai.OpenAI()``.
         Tests pass a stub to avoid network and OpenAI key requirements.
+    storage_dir:
+        Path to the JSONL canonical store. Defaults to ``db_path.parent``
+        to match the conventional ``./data/`` layout. Only consulted by
+        the web-initiated enrichment flow (ADR 0016) — readers don't need
+        it.
     """
     db_path = Path(db_path)
     # First-boot bootstrap: if the DB file is missing, create it and apply
@@ -123,6 +145,16 @@ def create_app(
 
         embedder = Embedder(openai.OpenAI())
 
+    storage_dir_path = Path(storage_dir) if storage_dir is not None else db_path.parent
+
+    # Two gates for the web-initiated enrichment button (ADR 0016): a key
+    # to call api.congress.gov with, and an explicit opt-in flag so a
+    # casual deployment can't be coaxed into triggering Stage 0 from the
+    # web layer just by hand-crafting the POST URL.
+    has_congress_api_key = bool(os.environ.get("CONGRESS_API_KEY"))
+    enrichment_flag = _read_enrichment_flag(os.environ.get("CONCORD_ENABLE_WEB_ENRICHMENT"))
+    enrichment_enabled = has_congress_api_key and enrichment_flag
+
     limiter = Limiter(key_func=get_remote_address)
     app = FastAPI(
         title="Concord",
@@ -130,8 +162,15 @@ def create_app(
         version="0.1.0",
     )
     app.state.db_path = db_path
+    app.state.storage_dir = storage_dir_path
     app.state.embedder = embedder
     app.state.limiter = limiter
+    app.state.enrichment_enabled = enrichment_enabled
+    # Cross-request de-dup of in-flight enrichment jobs. Single-worker
+    # only — multi-worker uvicorn would need a SQLite-backed table. See
+    # ADR 0016.
+    app.state.enrichment_in_flight = set()
+    app.state.enrichment_lock = asyncio.Lock()
     # slowapi's handler signature is narrower than Starlette's generic one;
     # the call is correct at runtime.
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
@@ -144,6 +183,8 @@ def create_app(
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     _register_routes(app, limiter)
+    if enrichment_enabled:
+        _register_enrichment_routes(app)
     return app
 
 
@@ -476,6 +517,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         titles = search_mod.titles_for_bill(db, bill_id)
         summaries = search_mod.summaries_for_bill(db, bill_id)
         vote_history = search_mod.vote_history_for_bill(db, bill_id)
+        enrichment_state, enrichment_error = _compute_enrichment_state(request.app, bill, bill_id)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "bills/profile.html",
@@ -487,6 +529,9 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "titles": titles,
                 "summaries": summaries,
                 "vote_history": vote_history,
+                "enrichment_enabled": request.app.state.enrichment_enabled,
+                "enrichment_state": enrichment_state,
+                "enrichment_error": enrichment_error,
             },
         )
 
@@ -658,6 +703,163 @@ def humanize_age(value: str | datetime | None, *, now: datetime | None = None) -
             plural = "" if count == 1 else "s"
             return f"{count} {unit_name}{plural} ago"
     return ""
+
+
+def _compute_enrichment_state(
+    app: FastAPI,
+    bill: dict[str, Any],
+    bill_id: str,
+) -> tuple[str | None, str | None]:
+    """Pick the partial-name and error string for the profile page's button.
+
+    Returns ``(state_partial, error)`` where ``state_partial`` is the
+    template basename to include (or ``None`` when the button shouldn't
+    render — disabled, or fully enriched and no error). ``error`` is the
+    last failure message when state is ``"_enrichment_failed"``, else
+    ``None``.
+    """
+    if not app.state.enrichment_enabled:
+        return None, None
+    if bill_id in app.state.enrichment_in_flight:
+        return "_enrichment_in_flight", None
+    last_error = bill.get("last_enrichment_error")
+    if last_error:
+        return "_enrichment_failed", last_error
+    any_missing = any(
+        bill.get(f"{section}_fetched_at") is None for section in BILL_ENRICHMENT_SECTIONS
+    )
+    if any_missing:
+        return "_enrichment_button", None
+    return None, None
+
+
+def _register_enrichment_routes(app: FastAPI) -> None:
+    """Register the two web-initiated enrichment routes (ADR 0016)."""
+    templates: Jinja2Templates = app.state.templates
+
+    @app.post(
+        "/bills/{congress}/{bill_type}/{bill_number}/enrichment",
+        response_class=HTMLResponse,
+    )
+    async def request_enrichment(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> Response:
+        bt = bill_type.lower()
+        if bt not in _VALID_BILL_TYPES:
+            raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
+        bill_id = f"{congress}-{bt}-{bill_number}"
+        state = request.app.state
+        async with state.enrichment_lock:
+            if bill_id not in state.enrichment_in_flight:
+                state.enrichment_in_flight.add(bill_id)
+                background_tasks.add_task(_enrich_one_bill, request.app, bill_id)
+        return templates.TemplateResponse(
+            request,
+            "bills/_enrichment_in_flight.html",
+            {
+                "bill": {"congress": congress, "bill_type": bt, "bill_number": bill_number},
+            },
+        )
+
+    @app.get(
+        "/bills/{congress}/{bill_type}/{bill_number}/enrichment-status",
+        response_class=HTMLResponse,
+    )
+    def enrichment_status(
+        request: Request,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+        db: sqlite3.Connection = Depends(_db_for_status),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        bt = bill_type.lower()
+        if bt not in _VALID_BILL_TYPES:
+            raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
+        bill_id = f"{congress}-{bt}-{bill_number}"
+        context = {
+            "bill": {"congress": congress, "bill_type": bt, "bill_number": bill_number},
+        }
+        if bill_id in request.app.state.enrichment_in_flight:
+            return templates.TemplateResponse(request, "bills/_enrichment_in_flight.html", context)
+        row = db.execute(
+            "SELECT last_enrichment_error FROM bills WHERE bill_id = ?",
+            (bill_id,),
+        ).fetchone()
+        last_error = row["last_enrichment_error"] if row is not None else None
+        if last_error:
+            return templates.TemplateResponse(
+                request,
+                "bills/_enrichment_failed.html",
+                {**context, "enrichment_error": last_error},
+            )
+        return templates.TemplateResponse(request, "bills/_enrichment_done.html", context)
+
+
+def _db_for_status(request: Request) -> Iterator[sqlite3.Connection]:
+    """Per-request connection for the enrichment-status endpoint.
+
+    The bulk-search ``get_db`` is defined as a nested closure inside
+    :func:`_register_routes`, so the enrichment-status endpoint (registered
+    in a separate helper) gets its own equivalent here. No sqlite-vec
+    extension load — the status query is one indexed SELECT.
+    """
+    conn = sqlite3.connect(request.app.state.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _enrich_one_bill(app: FastAPI, bill_id: str) -> None:
+    """Background-task body: scrape → load_one → reindex_one for one bill.
+
+    Runs synchronously inside FastAPI's ``BackgroundTasks`` threadpool;
+    network calls happen on a worker thread so the event loop is not
+    blocked. Any exception is captured on
+    ``bills.last_enrichment_error``; the in-flight set is always cleared
+    in the ``finally`` block so a crash mid-job doesn't strand the
+    button in the in-flight state.
+    """
+    from concord.api import Client  # noqa: PLC0415 — defer heavy import to first enrichment click
+    from concord.pipeline import index_bills, load_bills  # noqa: PLC0415
+    from concord.scraper.bills import scrape_enrichment  # noqa: PLC0415
+    from concord.storage.sqlite import SqliteStorage  # noqa: PLC0415
+
+    db_path: Path = app.state.db_path
+    storage_dir: Path = app.state.storage_dir
+
+    storage = SqliteStorage(db_path, load_vec=False)
+    try:
+        storage.clear_bill_enrichment_error(bill_id)
+    finally:
+        storage.close()
+
+    try:
+        congress_s, bill_type, bill_number_s = bill_id.split("-", 2)
+        key = (int(congress_s), bill_type, int(bill_number_s))
+        with Client() as client:
+            scrape_enrichment(
+                client=client,
+                bill_keys=[key],
+                storage_dir=storage_dir,
+                fetched_at=datetime.now(UTC),
+            )
+        load_bills.load_one(storage_dir=storage_dir, db_path=db_path, bill_id=bill_id)
+        index_bills.reindex_one(db_path=db_path, bill_id=bill_id)
+    except Exception as exc:
+        _log.warning("enrichment failed for %s: %s", bill_id, exc)
+        storage = SqliteStorage(db_path, load_vec=False)
+        try:
+            storage.set_bill_enrichment_error(bill_id, str(exc)[:500])
+        finally:
+            storage.close()
+    finally:
+        app.state.enrichment_in_flight.discard(bill_id)
 
 
 def _parse_optional_date(value: str | None) -> date | None:
