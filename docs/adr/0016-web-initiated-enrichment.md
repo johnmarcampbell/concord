@@ -21,7 +21,14 @@ Both must be true for the button to render and for the two new routes to be regi
 
 Cross-request de-duplication of in-flight enrichments uses an in-process `set[str]` of `bill_id`s plus an `asyncio.Lock`, stashed on `app.state.enrichment_in_flight` / `app.state.enrichment_lock`. A re-POST while an enrichment is in flight returns the same in-flight status fragment without enqueuing a second task.
 
-Per-bill state machine surfaced as four HTMX fragments — `_enrichment_button`, `_enrichment_in_flight`, `_enrichment_done`, `_enrichment_failed` — driven by a 3-second polling `GET /bills/{c}/{t}/{n}/enrichment-status` endpoint. Failures are captured on a new `bills.last_enrichment_error TEXT NULL` column, cleared at the start of each attempt and written on any exception path. The state machine's `Done` is the strict conjunction "all five `*_fetched_at` populated AND no error"; partial-success (some sections populated, others NULL) is treated as "not done yet" and falls back to the button so a re-click retries the still-NULL sections. The scraper's `EnrichStats.section_failures` count (per-section exceptions it swallowed) is also written to `last_enrichment_error` so a 0-of-5 or 3-of-5 run doesn't masquerade as success.
+Per-bill state machine surfaced as four HTMX fragments — `_enrichment_button`, `_enrichment_in_flight`, `_enrichment_done`, `_enrichment_failed` — driven by a 3-second polling `GET /bills/{c}/{t}/{n}/enrichment-status` endpoint. Failures are captured on a new `bills.last_enrichment_error TEXT NULL` column, cleared at the start of each attempt and written on any exception path. State precedence is:
+
+1. **In-flight** if the `bill_id` is in `app.state.enrichment_in_flight`.
+2. **Done** if all five `*_fetched_at` columns are populated. The five fetched_at columns are the source of truth for what's loaded; a `last_enrichment_error` left over from a prior attempt is annotation, not state, and a later success via the CLI or any other out-of-band load pass that fills in the columns must not stay rendered as failed.
+3. **Failed** if any section is NULL and `last_enrichment_error` is set.
+4. **Button** otherwise (any section NULL, no error recorded) — the user retries by clicking.
+
+The scraper's `EnrichStats.section_failures` count (per-section exceptions it swallowed) is also written to `last_enrichment_error` so a 0-of-5 or 3-of-5 run doesn't masquerade as success.
 
 Both the `POST .../enrichment` and `GET .../enrichment-status` endpoints require a local `bills` row for the requested `(congress, bill_type, bill_number)` — a hand-crafted request for an unknown bill returns 404 rather than enqueueing 5 sub-endpoint calls upstream that the loader would no-op on for lack of a parent row.
 
@@ -48,7 +55,7 @@ The bulk `load_bills.load(...)` and `index_bills.index(...)` paths are factored 
 
 - **Rate limiting.** Deferred to a separate plan ([`docs/plans/enrichment-rate-limiting.md`](../plans/enrichment-rate-limiting.md)) and a separate ADR. Without rate limiting, an adversarial visitor walking the `/bills` index could drain the `CONGRESS_API_KEY` quota; the `CONCORD_ENABLE_WEB_ENRICHMENT` kill switch is the v1 mitigation (operators leave it off until the rate-limit plan lands).
 - **Multi-worker uvicorn correctness.** Per the trade-off above. Migration path is a SQLite-backed `enrichment_jobs` table replacing the in-process set; not built until the deployment shape demands it.
-- **Per-section buttons.** Considered and rejected — the cost asymmetry across the five sections (summaries dominates) is something an operator handles via the CLI's `--sections` flag, not five UI buttons. One button enriches all five sections; partial success (3 of 5) reports as Done because the per-section placeholders for the still-NULL sections naturally invite a re-click.
+- **Per-section buttons.** Considered and rejected — the cost asymmetry across the five sections (summaries dominates) is something an operator handles via the CLI's `--sections` flag, not five UI buttons. One button enriches all five sections; partial success (3 of 5) does not yet count as Done — the button reappears (with the failed banner if `last_enrichment_error` is set) so a re-click retries the still-NULL sections without the operator having to think about which ones.
 - **Bills embeddings (Phase 5).** `reindex_one` mirrors the FTS-only scope of today's `index_bills`. When embeddings for Bills land, this helper grows a sibling chunking + embedding pass.
 
 ## Rejected: a real task queue (Celery / RQ / arq / Dramatiq)

@@ -722,15 +722,21 @@ def _compute_enrichment_state(
         return None, None
     if bill_id in app.state.enrichment_in_flight:
         return "_enrichment_in_flight", None
-    last_error = bill.get("last_enrichment_error")
-    if last_error:
-        return "_enrichment_failed", last_error
+    # All five *_fetched_at columns populated wins over any recorded
+    # error: an error from a prior attempt is "stale" once a later
+    # success (via the button, the CLI, or any other load/index pass)
+    # fills in every section. The fetched_at columns are the actual
+    # source of truth for what's loaded; ``last_enrichment_error`` is
+    # an annotation on top.
     any_missing = any(
         bill.get(f"{section}_fetched_at") is None for section in BILL_ENRICHMENT_SECTIONS
     )
-    if any_missing:
-        return "_enrichment_button", None
-    return None, None
+    if not any_missing:
+        return None, None
+    last_error = bill.get("last_enrichment_error")
+    if last_error:
+        return "_enrichment_failed", last_error
+    return "_enrichment_button", None
 
 
 def _register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
@@ -793,10 +799,13 @@ def _register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI
         }
         if bill_id in request.app.state.enrichment_in_flight:
             return templates.TemplateResponse(request, "bills/_enrichment_in_flight.html", context)
-        # Read the bill row and key off (a) any recorded error, (b) the
-        # five *_fetched_at columns. Done is the strict conjunction "all
-        # populated AND no error" — partial-success is treated as "not
-        # done yet" so a re-click retries the still-NULL sections.
+        # Read the bill row and key off (a) the five *_fetched_at
+        # columns, then (b) any recorded error. All five populated wins
+        # over a stale error: a later success via the CLI or any other
+        # out-of-band load pass fills in the columns but leaves any
+        # prior error annotation in place, and we don't want that
+        # annotation to override the observable "this bill is fully
+        # enriched" state.
         row = db.execute(
             "SELECT cosponsors_fetched_at, actions_fetched_at, subjects_fetched_at, "
             "       titles_fetched_at, summaries_fetched_at, last_enrichment_error "
@@ -805,23 +814,23 @@ def _register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"unknown bill: {bill_id}")
-        last_error = row["last_enrichment_error"]
         any_missing = any(row[f"{s}_fetched_at"] is None for s in BILL_ENRICHMENT_SECTIONS)
+        if not any_missing:
+            return templates.TemplateResponse(request, "bills/_enrichment_done.html", context)
+        last_error = row["last_enrichment_error"]
         if last_error:
             return templates.TemplateResponse(
                 request,
                 "bills/_enrichment_failed.html",
                 {**context, "enrichment_error": last_error},
             )
-        if any_missing:
-            # No error recorded but not all sections populated — the
-            # background task either hasn't started yet (race against
-            # this poll), crashed without recording (shouldn't happen
-            # given the outer try/finally; harmless if it does), or the
-            # process restarted mid-job. Either way: show the button
-            # again so the user can retry the still-NULL sections.
-            return templates.TemplateResponse(request, "bills/_enrichment_button.html", context)
-        return templates.TemplateResponse(request, "bills/_enrichment_done.html", context)
+        # No error recorded but not all sections populated — the
+        # background task either hasn't started yet (race against this
+        # poll), crashed without recording (shouldn't happen given the
+        # outer try/finally; harmless if it does), or the process
+        # restarted mid-job. Either way: show the button again so the
+        # user can retry the still-NULL sections.
+        return templates.TemplateResponse(request, "bills/_enrichment_button.html", context)
 
 
 def _bill_row_exists(db_path: Path, bill_id: str) -> bool:

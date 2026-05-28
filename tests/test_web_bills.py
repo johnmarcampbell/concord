@@ -561,6 +561,33 @@ class TestEnrichmentProfileButton:
         assert "rate limited by api.congress.gov" in body
         assert "Try again" in body
 
+    def test_stale_error_does_not_override_fully_enriched(
+        self, enrichment_client: TestClient
+    ) -> None:
+        """A bill that becomes fully enriched out-of-band (e.g. CLI run) must not stay failed.
+
+        The fetched_at columns are the source of truth; a
+        ``last_enrichment_error`` left over from a prior attempt is
+        annotation, not state. Profile page must show neither the
+        button nor the failed banner.
+        """
+        db_path = enrichment_client.app.state.db_path
+        stamp = "2026-05-26T00:00:00Z"
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.set_bill_enrichment_error("119-hr-1", "previous failure that should be ignored")
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_actions("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_subjects("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_titles("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_summaries("119-hr-1", [], fetched_at=stamp)
+        resp = enrichment_client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Enrichment failed" not in body
+        assert "previous failure that should be ignored" not in body
+        assert "Request enrichment" not in body
+        assert "Try again" not in body
+
 
 class TestEnrichmentPostRoute:
     def test_post_returns_in_flight_fragment_and_registers_bill(
@@ -605,6 +632,45 @@ class TestEnrichmentPostRoute:
         assert called == []
         assert "119-hr-9999" not in enrichment_client.app.state.enrichment_in_flight
 
+    def test_repost_while_in_flight_does_not_enqueue_second_task(
+        self, enrichment_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The set + lock on app.state must collapse concurrent POSTs to one task.
+
+        Patches ``_enrich_one_bill`` to record its calls *without*
+        discarding from the in-flight set, so after the first POST the
+        bill stays "in flight" for the second POST to observe. Then
+        fires two POSTs; the second must return the in-flight fragment
+        and the patched task must have been called exactly once across
+        both requests.
+        """
+        calls: list[str] = []
+
+        def _record_only(app: object, bill_id: str) -> None:
+            # Deliberately do NOT discard from enrichment_in_flight —
+            # the real task does, but we want to simulate the window
+            # where a second POST arrives before the first finishes.
+            calls.append(bill_id)
+
+        monkeypatch.setattr(web_app, "_enrich_one_bill", _record_only)
+
+        first = enrichment_client.post("/bills/119/hr/1/enrichment")
+        assert first.status_code == 200
+        assert "Enriching this bill" in first.text
+        assert calls == ["119-hr-1"]
+        assert enrichment_client.app.state.enrichment_in_flight == {"119-hr-1"}
+
+        # Second POST while the first "is still running" — must reuse
+        # the existing job rather than enqueueing another one.
+        second = enrichment_client.post("/bills/119/hr/1/enrichment")
+        assert second.status_code == 200
+        assert "Enriching this bill" in second.text
+        # The task was NOT called a second time.
+        assert calls == ["119-hr-1"]
+        # The set was not double-incremented and did not gain a stray
+        # entry; the bill is still recorded exactly once.
+        assert enrichment_client.app.state.enrichment_in_flight == {"119-hr-1"}
+
 
 class TestEnrichmentStatusRoute:
     def test_status_in_flight(self, enrichment_client: TestClient) -> None:
@@ -646,6 +712,25 @@ class TestEnrichmentStatusRoute:
     def test_status_404_for_unknown_bill(self, enrichment_client: TestClient) -> None:
         resp = enrichment_client.get("/bills/119/hr/9999/enrichment-status")
         assert resp.status_code == 404
+
+    def test_status_stale_error_does_not_override_fully_enriched(
+        self, enrichment_client: TestClient
+    ) -> None:
+        """Same stale-error regression as TestEnrichmentProfileButton, on the status endpoint."""
+        db_path = enrichment_client.app.state.db_path
+        stamp = "2026-05-26T00:00:00Z"
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.set_bill_enrichment_error("119-hr-1", "stale failure")
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_actions("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_subjects("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_titles("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_summaries("119-hr-1", [], fetched_at=stamp)
+        resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Enrichment complete" in body
+        assert "Enrichment failed" not in body
 
     def test_status_failed_when_error_set(self, enrichment_client: TestClient) -> None:
         db_path = enrichment_client.app.state.db_path
