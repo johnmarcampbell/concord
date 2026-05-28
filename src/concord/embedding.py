@@ -33,6 +33,8 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
+import openai
+
 #: Embedding dimension for ``text-embedding-3-small``.
 EMBEDDING_DIM = 1536
 
@@ -142,45 +144,18 @@ class Embedder:
 
     def _create_with_retry(self, batch: list[str]) -> Any:
         """Call ``embeddings.create`` once, retrying indefinitely on 429."""
-        # Lazy import: openai is a runtime dep but we don't want test stubs
-        # to need it on the import path. The Exception type comparison
-        # below falls back to class-name matching when openai isn't loaded.
-        try:
-            import openai  # noqa: PLC0415 — guarded so test stubs don't need openai installed
-
-            rate_limit_exc: type[BaseException] = openai.RateLimitError
-        except ImportError:  # pragma: no cover - openai is a hard dep in prod
-            rate_limit_exc = type("_NeverMatches", (BaseException,), {})
-
-        attempt = 0
         while True:
             try:
                 return self._client.embeddings.create(model=self._model, input=batch)
-            except rate_limit_exc as exc:
-                wait = _retry_after_seconds(exc) + RATE_LIMIT_BUFFER
-                wait = min(wait, MAX_RATE_LIMIT_WAIT)
+            except openai.RateLimitError as exc:
+                wait = min(_retry_after_seconds(exc) + RATE_LIMIT_BUFFER, MAX_RATE_LIMIT_WAIT)
                 _log.info(
                     "openai rate-limited (batch of %d); waiting %.2fs before retry",
                     len(batch),
                     wait,
                 )
                 self._sleep(wait)
-                attempt += 1
-                continue
             except Exception as exc:
-                # Defensive fallback if openai wasn't importable above:
-                # match RateLimitError by class name.
-                if exc.__class__.__name__ == "RateLimitError":
-                    wait = _retry_after_seconds(exc) + RATE_LIMIT_BUFFER
-                    wait = min(wait, MAX_RATE_LIMIT_WAIT)
-                    _log.info(
-                        "openai rate-limited (batch of %d); waiting %.2fs before retry",
-                        len(batch),
-                        wait,
-                    )
-                    self._sleep(wait)
-                    attempt += 1
-                    continue
                 raise EmbeddingError(
                     f"OpenAI embeddings.create failed for batch of {len(batch)} inputs"
                 ) from exc
@@ -189,7 +164,7 @@ class Embedder:
 # -- helpers ---------------------------------------------------------------
 
 
-def _retry_after_seconds(exc: BaseException) -> float:
+def _retry_after_seconds(exc: openai.RateLimitError) -> float:
     """Best-effort extraction of "wait this many seconds" from a 429.
 
     Order of preference:
@@ -198,24 +173,21 @@ def _retry_after_seconds(exc: BaseException) -> float:
     3. Regex over the error message for ``try again in Xms|Xs``
     4. Default: 1.0 second
     """
-    response = getattr(exc, "response", None)
-    headers = getattr(response, "headers", None)
-    if headers is not None:
-        ms = headers.get("retry-after-ms") or headers.get("Retry-After-Ms")
-        if ms is not None:
-            try:
-                return float(ms) / 1000.0
-            except (TypeError, ValueError):
-                pass
-        secs = headers.get("retry-after") or headers.get("Retry-After")
-        if secs is not None:
-            try:
-                return float(secs)
-            except (TypeError, ValueError):
-                pass
+    headers = exc.response.headers
+    ms = headers.get("retry-after-ms")
+    if ms is not None:
+        try:
+            return float(ms) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    secs = headers.get("retry-after")
+    if secs is not None:
+        try:
+            return float(secs)
+        except (TypeError, ValueError):
+            pass
 
-    message = str(exc)
-    match = _RETRY_AFTER_MESSAGE_RE.search(message)
+    match = _RETRY_AFTER_MESSAGE_RE.search(str(exc))
     if match:
         value = float(match.group(1))
         unit = match.group(2).lower()

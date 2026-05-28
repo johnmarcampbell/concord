@@ -3,6 +3,8 @@
 from collections.abc import Callable
 from typing import Any
 
+import httpx
+import openai
 import pytest
 
 from concord.embedding import (
@@ -139,31 +141,16 @@ def _make_rate_limit_error(
     *,
     retry_after_ms: str | None = None,
     retry_after: str | None = None,
-) -> Exception:
-    """Build an exception that looks enough like ``openai.RateLimitError``.
-
-    We don't import ``openai`` in tests; the Embedder falls back to matching
-    by class name when openai isn't loaded. The exception carries a
-    ``.response.headers`` attribute, mirroring the SDK's real shape.
-    """
-
-    class _Headers(dict[str, str]):
-        pass
-
-    class _Response:
-        def __init__(self) -> None:
-            self.headers = _Headers()
-            if retry_after_ms is not None:
-                self.headers["retry-after-ms"] = retry_after_ms
-            if retry_after is not None:
-                self.headers["retry-after"] = retry_after
-
-    class RateLimitError(Exception):
-        def __init__(self, msg: str) -> None:
-            super().__init__(msg)
-            self.response = _Response()
-
-    return RateLimitError(message)
+) -> openai.RateLimitError:
+    """Build a real ``openai.RateLimitError`` for retry tests."""
+    headers: dict[str, str] = {}
+    if retry_after_ms is not None:
+        headers["retry-after-ms"] = retry_after_ms
+    if retry_after is not None:
+        headers["retry-after"] = retry_after
+    request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+    response = httpx.Response(429, headers=headers, request=request)
+    return openai.RateLimitError(message, response=response, body=None)
 
 
 class _RateLimitedThenOk:
