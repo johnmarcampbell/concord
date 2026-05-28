@@ -13,8 +13,6 @@ identity record per Bill plus the five tier-2 enrichment streams:
    per ADR 0009.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 from collections.abc import Callable, Iterable

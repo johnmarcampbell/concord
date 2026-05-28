@@ -21,8 +21,6 @@ Every retry decision is logged to ``stderr`` via :mod:`logging` (logger
 heartbeat.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import time
@@ -133,7 +131,7 @@ class Client:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> Client:
+    def __enter__(self) -> "Client":
         return self
 
     def __exit__(

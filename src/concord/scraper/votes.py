@@ -14,8 +14,6 @@ Phase 3b adds ``scrape_senate`` alongside ``scrape_house`` here; both
 write into the same canonical ``votes`` table via the loader.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import time

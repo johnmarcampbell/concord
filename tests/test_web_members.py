@@ -5,8 +5,6 @@ Covers ``/members`` (browse list with chamber/party filters), the
 that surfaces Members alongside Proceedings.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

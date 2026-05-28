@@ -14,8 +14,6 @@ Bill search is FTS5-only in Phase 2a/2b; embeddings come in Phase 5 when
 the ``chunks`` table generalizes to ``source_type='bill'`` per ADR 0008.
 """
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 from typing import NamedTuple

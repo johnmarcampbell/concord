@@ -19,6 +19,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 If a proposed change conflicts with an ADR, the right move is to discuss whether to write a new ADR (or amend the existing one) — not to silently diverge. ADRs are appended, not edited away.
 
+## Never write `from __future__ import annotations`
+
+This project is Python 3.12+ and bans that import — see [CONTRIBUTING.md](CONTRIBUTING.md). A pre-commit hook and CI step block it; don't add it back.
+
 ## Branch naming
 
 The harness spawns Claude sessions on randomly-named branches like `claude/funny-kirch-3bad54`. **Rename to something descriptive before doing real work** (`git branch -m claude/<short-task-name>`). This is a project convention, not a hard tooling requirement.

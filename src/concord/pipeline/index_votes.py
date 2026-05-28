@@ -18,8 +18,6 @@ latest snapshot of the underlying tables. See [ADR 0011] for the
 methodology.
 """
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 from typing import NamedTuple

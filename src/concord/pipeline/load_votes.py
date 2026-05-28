@@ -24,8 +24,6 @@ skipped; the parent vote row still loads. Re-running over unchanged
 JSONL is a no-op for both chambers.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import re

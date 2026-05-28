@@ -7,8 +7,6 @@ the CLI now delegates to :func:`scrape` so the per-entity scraper
 modules from ADR 0007 have a consistent shape.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from datetime import date
 

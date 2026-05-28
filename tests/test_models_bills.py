@@ -1,7 +1,5 @@
 """Tests for Bill and BillSnapshot models (Phase 2a)."""
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime
 from pathlib import Path

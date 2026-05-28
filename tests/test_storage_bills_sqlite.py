@@ -1,7 +1,5 @@
 """Tests for the Bills SQLite storage layer (Phase 2a)."""
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 

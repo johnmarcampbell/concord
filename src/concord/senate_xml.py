@@ -24,8 +24,6 @@ timezone offset; :func:`_parse_senate_date` localizes them via
 offset.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 import xml.etree.ElementTree as ET
@@ -136,7 +134,7 @@ class SenateClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> SenateClient:
+    def __enter__(self) -> "SenateClient":
         return self
 
     def __exit__(

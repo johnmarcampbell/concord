@@ -1,7 +1,5 @@
 """Integration tests for the Bills web routes (Phase 2a)."""
 
-from __future__ import annotations
-
 import json
 import sqlite3
 from datetime import UTC, datetime
@@ -750,7 +748,7 @@ class TestEnrichmentStatusRoute:
 class _StubClient:
     """Stand-in for ``concord.api.Client`` — no network calls made in tests."""
 
-    def __enter__(self) -> _StubClient:
+    def __enter__(self) -> "_StubClient":
         return self
 
     def __exit__(self, *_a: object) -> None:

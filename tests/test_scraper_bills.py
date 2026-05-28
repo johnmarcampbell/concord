@@ -1,7 +1,5 @@
 """Integration tests for the Bills Stage 0 scraper."""
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime
 from pathlib import Path

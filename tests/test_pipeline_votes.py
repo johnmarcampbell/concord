@@ -1,7 +1,5 @@
 """Tests for the Votes Stage 1 loader (Phase 3a)."""
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime
 from pathlib import Path

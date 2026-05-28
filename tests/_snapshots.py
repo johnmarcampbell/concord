@@ -5,8 +5,6 @@ Phase 1, Bills/Votes/etc. from later phases) uses :func:`wrap_snapshot`
 to keep the envelope shape consistent.
 """
 
-from __future__ import annotations
-
 from datetime import datetime
 from typing import Any
 

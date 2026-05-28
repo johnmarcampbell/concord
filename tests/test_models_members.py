@@ -12,8 +12,6 @@ payload regardless of which Congress you queried, so a Term row's
 context — see :class:`TestParseMemberTerm`.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from typing import Any
 

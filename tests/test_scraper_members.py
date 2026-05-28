@@ -5,8 +5,6 @@ captured ``tests/fixtures/api/members/*.json`` fixtures via
 ``httpx.MockTransport``.
 """
 
-from __future__ import annotations
-
 import json
 from datetime import UTC, datetime
 from pathlib import Path

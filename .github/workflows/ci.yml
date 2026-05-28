@@ -19,6 +19,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Forbid `from __future__ import annotations`
+        run: |
+          if grep -rn --include='*.py' '^from __future__ import annotations' src tests; then
+            echo "::error::Remove 'from __future__ import annotations' — banned by CONTRIBUTING.md"
+            exit 1
+          fi
+
       - name: Lint (ruff)
         run: uv run ruff check
 
