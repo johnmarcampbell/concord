@@ -34,9 +34,9 @@ def _term(
     chamber: str = "house",
     state: str = "NY",
     district: int | None = 14,
-    party: str | None = "Democratic",
-    start_date: str | None = "2025-01-01",
-    end_date: str | None = None,
+    party: str = "Democratic",
+    start_date: str = "2025-01-03",
+    end_date: str = "2027-01-03",
 ) -> Term:
     return Term(
         bioguide_id=bioguide_id,

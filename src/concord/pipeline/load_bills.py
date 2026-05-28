@@ -18,23 +18,20 @@ the latest-snapshot view.
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from pydantic import ValidationError
+
 from concord.models import (
+    Bill,
     BillAction,
     BillSubject,
     BillSummary,
     BillTitle,
     Cosponsor,
-    parse_bill,
-    parse_bill_action,
-    parse_bill_subject,
-    parse_bill_summary,
-    parse_bill_title,
-    parse_cosponsor,
 )
 from concord.scraper.bills import (
     BILL_ENRICHMENT_SECTIONS,
@@ -84,10 +81,10 @@ def load(
     try:
         for (_c, _t, _n), (fetched_at, payload) in latest_per_key.items():
             try:
-                bill = parse_bill(payload)
-            except Exception as exc:
+                bill = Bill.from_congress_api(payload)
+            except (KeyError, ValueError, ValidationError) as exc:
                 malformed += 1
-                _log.warning("skipping bill after parse failure: %s", exc)
+                _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
                 continue
             storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
             bills_written += 1
@@ -160,12 +157,12 @@ def load_one(
         if latest is not None:
             fetched_at, payload = latest
             try:
-                bill = parse_bill(payload)
+                bill = Bill.from_congress_api(payload)
                 storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
                 bills_written = 1
-            except Exception as exc:
+            except (KeyError, ValueError, ValidationError) as exc:
                 malformed += 1
-                _log.warning("skipping bill after parse failure: %s", exc)
+                _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
 
         tier2_snapshots_read = 0
         tier2_bills_updated = 0
@@ -405,17 +402,33 @@ def _project_section(
     _SECTION_PROJECTORS[section](storage, bill_id, payload, fetched_at)
 
 
+def _parsed_rows[T](
+    rows: Any,
+    parse: Callable[[dict[str, Any]], T],
+    bill_id: str,
+    row_label: str,
+) -> Iterator[T]:
+    """Yield parsed rows; log + skip any that raise on ``parse``."""
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            yield parse(row)
+        except (KeyError, ValueError, ValidationError) as exc:
+            _log.warning("skipping %s row for %s: %s; payload=%r", row_label, bill_id, exc, row)
+
+
 def _project_cosponsors(
     storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
 ) -> None:
-    raw = payload.get("cosponsors") or []
     cosponsors: list[Cosponsor] = []
     seen_bioguides: set[str] = set()
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        parsed = parse_cosponsor(row)
-        if parsed is None or parsed.bioguide_id in seen_bioguides:
+    for parsed in _parsed_rows(
+        payload.get("cosponsors") or [], Cosponsor.from_congress_api, bill_id, "cosponsor"
+    ):
+        if parsed.bioguide_id in seen_bioguides:
             continue
         seen_bioguides.add(parsed.bioguide_id)
         cosponsors.append(parsed)
@@ -425,15 +438,9 @@ def _project_cosponsors(
 def _project_actions(
     storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
 ) -> None:
-    raw = payload.get("actions") or []
-    actions: list[BillAction] = []
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        parsed = parse_bill_action(row)
-        if parsed is None:
-            continue
-        actions.append(parsed)
+    actions = list(
+        _parsed_rows(payload.get("actions") or [], BillAction.from_congress_api, bill_id, "action")
+    )
     storage.replace_bill_actions(bill_id, actions, fetched_at=fetched_at)
 
 
@@ -442,44 +449,27 @@ def _project_subjects(
 ) -> None:
     subjects_obj = payload.get("subjects") or {}
     raw = subjects_obj.get("legislativeSubjects", []) if isinstance(subjects_obj, dict) else []
-    subjects: list[BillSubject] = []
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        parsed = parse_bill_subject(row)
-        if parsed is None:
-            continue
-        subjects.append(parsed)
+    subjects = list(_parsed_rows(raw, BillSubject.from_congress_api, bill_id, "subject"))
     storage.replace_bill_subjects(bill_id, subjects, fetched_at=fetched_at)
 
 
 def _project_titles(
     storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
 ) -> None:
-    raw = payload.get("titles") or []
-    titles: list[BillTitle] = []
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        parsed = parse_bill_title(row)
-        if parsed is None:
-            continue
-        titles.append(parsed)
+    titles = list(
+        _parsed_rows(payload.get("titles") or [], BillTitle.from_congress_api, bill_id, "title")
+    )
     storage.replace_bill_titles(bill_id, titles, fetched_at=fetched_at)
 
 
 def _project_summaries(
     storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
 ) -> None:
-    raw = payload.get("summaries") or []
-    summaries: list[BillSummary] = []
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        parsed = parse_bill_summary(row)
-        if parsed is None:
-            continue
-        summaries.append(parsed)
+    summaries = list(
+        _parsed_rows(
+            payload.get("summaries") or [], BillSummary.from_congress_api, bill_id, "summary"
+        )
+    )
     storage.replace_bill_summaries(bill_id, summaries, fetched_at=fetched_at)
 
 
