@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from concord.models._common import Chamber, coerce_int, normalize_chamber
+from concord.models._common import Chamber, normalize_chamber
 
 _STATE_NAME_TO_CODE = {
     "alabama": "AL",
@@ -114,7 +114,7 @@ class Term(BaseModel):
         return normalize_state(value) if isinstance(value, str) else value
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any], *, congress: int) -> "Term":  # noqa: C901 — one branch per optional payload field
+    def from_congress_api(cls, payload: dict[str, Any], *, congress: int) -> "Term":
         """Project a raw ``/member`` payload + queried Congress into one :class:`Term`.
 
         The list endpoint omits ``congress`` from each ``terms.item`` and
@@ -122,45 +122,21 @@ class Term(BaseModel):
         the queried ``congress`` argument supplies that missing context.
 
         Raises ``ValueError`` if no ``terms.item`` covers ``congress`` (the
-        payload contradicts its own listing) or if the matched item lacks a
-        usable chamber/state. Raises ``ValidationError`` if the projected
-        row fails Pydantic validation.
+        payload contradicts its own listing). Raises ``ValidationError``
+        if any required field is missing or malformed.
         """
-        bioguide_id = str(payload["bioguideId"])
-        items = _extract_term_items(payload)
-        item = _term_item_for_congress(items, congress)
+        bioguide_id = payload["bioguideId"]
+        item = _term_item_for_congress(_extract_term_items(payload), congress)
         if item is None:
             raise ValueError(
                 f"payload for {bioguide_id} has no terms.item covering Congress {congress}"
             )
 
-        chamber_raw = item.get("chamber")
-        if chamber_raw is None:
-            raise ValueError(f"term item for {bioguide_id}/{congress} has no chamber")
-        chamber = normalize_chamber(chamber_raw)
-        if chamber not in {"house", "senate"}:
-            raise ValueError(
-                f"term item for {bioguide_id}/{congress} has unknown chamber {chamber_raw!r}"
-            )
-
-        top_state = payload.get("state")
-        top_district = payload.get("district")
-        top_party = payload.get("partyName")
-
-        state = item.get("stateCode") or item.get("stateName") or top_state
-        if not state:
-            raise ValueError(f"term item for {bioguide_id}/{congress} has no state")
-
-        district = item.get("district")
-        if district is None and chamber == "house":
-            district = top_district
-        if isinstance(district, str):
-            try:
-                district = int(district)
-            except ValueError:
-                district = None
-        if chamber == "senate":
-            district = None
+        # In every fixture observed, ``terms.item`` carries ``chamber`` and
+        # ``startYear``/``endYear`` but not state/district/party — those live
+        # at the top level. Read each from its only-known-source.
+        chamber = normalize_chamber(item["chamber"])
+        district = payload.get("district") if chamber == "house" else None
 
         # Clip the chamber-career window (API's startYear/endYear) to this
         # Congress's window. Each (member, congress) row should describe the
@@ -168,24 +144,26 @@ class Term(BaseModel):
         cong_start_year = 2 * congress + 1787  # Congress 1 began 1789-01-03
         cong_end_year = 2 * congress + 1789  # = next Congress's start year
 
-        api_start = coerce_int(item.get("startYear"))
-        if api_start is not None and api_start > cong_start_year:
-            start_date = f"{api_start:04d}-01-03"  # joined mid-Congress
-        else:
-            start_date = f"{cong_start_year:04d}-01-03"
+        api_start = item.get("startYear")
+        start_date = (
+            f"{api_start:04d}-01-03"
+            if api_start is not None and api_start > cong_start_year
+            else f"{cong_start_year:04d}-01-03"
+        )
 
-        api_end = coerce_int(item.get("endYear"))
-        if api_end is not None and api_end < cong_end_year:
-            end_date = f"{api_end:04d}-01-03"  # left mid-Congress
-        else:
-            end_date = f"{cong_end_year:04d}-01-03"
+        api_end = item.get("endYear")
+        end_date = (
+            f"{api_end:04d}-01-03"
+            if api_end is not None and api_end < cong_end_year
+            else f"{cong_end_year:04d}-01-03"
+        )
 
         return cls(
             bioguide_id=bioguide_id,
             congress=congress,
             chamber=chamber,
-            party=item.get("partyName") or top_party,
-            state=state,  # validator normalizes to 2-letter
+            party=payload.get("partyName"),
+            state=payload["state"],  # validator normalizes to 2-letter
             district=district,
             start_date=start_date,
             end_date=end_date,
@@ -219,39 +197,19 @@ class Member(BaseModel):
         Identity fields (name, birth year, photo) are the same regardless of
         which Congress the API was queried for, so this is the half of a
         member payload that's safe to project without knowing the queried
-        Congress. Raises ``ValidationError`` if the projected row is malformed.
+        Congress. Raises ``ValidationError`` if a required field is missing.
         """
-        bioguide_id = str(payload["bioguideId"])
-
-        first_name = payload.get("firstName")
-        last_name = payload.get("lastName")
-        if not first_name or not last_name:
-            # Fall back to parsing the inverted "Last, First" name from the
-            # list endpoint when structured fields aren't present.
-            inverted = payload.get("invertedOrderName") or payload.get("name") or ""
-            derived_first, derived_last = _split_inverted_name(inverted)
-            first_name = first_name or derived_first
-            last_name = last_name or derived_last
-
-        display_name = payload.get("directOrderName") or (
-            f"{first_name} {last_name}".strip()
-            if first_name or last_name
-            else payload.get("name", "")
-        )
-
         depiction = payload.get("depiction") or {}
-        photo_url = depiction.get("imageUrl") if isinstance(depiction, dict) else None
-
         return cls(
-            bioguide_id=bioguide_id,
-            first_name=first_name or "",
+            bioguide_id=payload["bioguideId"],
+            first_name=payload["firstName"],
             middle_name=payload.get("middleName"),
-            last_name=last_name or "",
+            last_name=payload["lastName"],
             suffix=payload.get("suffixName"),
-            birth_year=coerce_int(payload.get("birthYear")),
-            death_year=coerce_int(payload.get("deathYear")),
-            display_name=display_name,
-            photo_url=photo_url,
+            birth_year=payload.get("birthYear"),
+            death_year=payload.get("deathYear"),
+            display_name=payload["directOrderName"],
+            photo_url=depiction.get("imageUrl"),
             biography=payload.get("biography"),
         )
 
@@ -269,20 +227,6 @@ class MemberSnapshot(BaseModel):
     fetched_at: datetime
     key: dict[str, str | int]
     payload: dict[str, Any]
-
-
-def _split_inverted_name(name: str) -> tuple[str, str]:
-    """Parse the API's ``"Last, First[ Middle][, Suffix]"`` into ``(first, last)``.
-
-    A best-effort fallback when the API's structured first/last fields are
-    absent (the list endpoint sometimes only returns the inverted form).
-    """
-    parts = [p.strip() for p in name.split(",", 1)]
-    if len(parts) == 1:
-        return parts[0], ""
-    last = parts[0]
-    first = parts[1].split()[0] if parts[1] else ""
-    return first, last
 
 
 def _extract_term_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -310,10 +254,10 @@ def _term_item_for_congress(items: list[dict[str, Any]], congress: int) -> dict[
     cong_last_year = cong_first_year + 1
     match: dict[str, Any] | None = None
     for item in items:
-        start = coerce_int(item.get("startYear"))
+        start = item.get("startYear")
         if start is None or start > cong_last_year:
             continue
-        end = coerce_int(item.get("endYear"))
+        end = item.get("endYear")
         if end is not None and end < cong_first_year:
             continue
         match = item

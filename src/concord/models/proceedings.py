@@ -50,17 +50,13 @@ class Issue(BaseModel):
     @field_validator("issue_date", mode="before")
     @classmethod
     def _coerce_issue_date(cls, value: Any) -> Any:
-        """Accept the API's ``"2026-05-22T04:00:00Z"`` datetime strings as dates."""
+        """Accept the API's ``"2026-05-22T04:00:00Z"`` datetime strings as dates.
+
+        Pydantic's ``date`` parser does not strip the time portion off a
+        Z-suffixed datetime string, so we do it here.
+        """
         if isinstance(value, str) and "T" in value:
             return value.split("T", 1)[0]
-        return value
-
-    @field_validator("issue_number", mode="before")
-    @classmethod
-    def _coerce_issue_number(cls, value: Any) -> Any:
-        """API returns ``issueNumber`` as a string; coerce to int."""
-        if isinstance(value, str):
-            return int(value)
         return value
 
 

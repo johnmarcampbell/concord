@@ -28,14 +28,4 @@ def normalize_chamber(value: Any) -> Any:
     return value
 
 
-def coerce_int(value: Any) -> int | None:
-    """Best-effort int coercion; returns None for empty/None/non-numeric."""
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-__all__ = ["Chamber", "SessionNumber", "coerce_int", "normalize_chamber"]
+__all__ = ["Chamber", "SessionNumber", "normalize_chamber"]

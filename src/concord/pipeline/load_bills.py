@@ -82,7 +82,7 @@ def load(
         for (_c, _t, _n), (fetched_at, payload) in latest_per_key.items():
             try:
                 bill = Bill.from_congress_api(payload)
-            except (ValueError, ValidationError) as exc:
+            except (KeyError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
                 continue
@@ -160,7 +160,7 @@ def load_one(
                 bill = Bill.from_congress_api(payload)
                 storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
                 bills_written = 1
-            except (ValueError, ValidationError) as exc:
+            except (KeyError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
 
@@ -416,7 +416,7 @@ def _parsed_rows[T](
             continue
         try:
             yield parse(row)
-        except (ValueError, ValidationError) as exc:
+        except (KeyError, ValueError, ValidationError) as exc:
             _log.warning("skipping %s row for %s: %s; payload=%r", row_label, bill_id, exc, row)
 
 

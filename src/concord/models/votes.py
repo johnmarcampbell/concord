@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from concord.models._common import Chamber, SessionNumber, coerce_int, normalize_chamber
+from concord.models._common import Chamber, SessionNumber, normalize_chamber
 from concord.models.bills import bill_id_from_components
 
 VoteKind = Literal["standard", "election"]
@@ -110,10 +110,14 @@ class Vote(BaseModel):
         return normalize_chamber(value)
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "Vote":
+    def from_congress_api(cls, payload: dict[str, Any], *, chamber: str) -> "Vote":
         """Project a ``/v3/house-vote/{c}/{s}/{roll}`` detail payload into a :class:`Vote`.
 
-        Handles three shape quirks the spike surfaced:
+        ``chamber`` is supplied by the caller because the API leaves it
+        ``null`` on some detail payloads (the loader knows which endpoint
+        it queried, so it can pass the right value).
+
+        Handles two shape quirks the spike surfaced:
 
         1. ``votePartyTotal`` arrives as a list on some payloads and as
            ``{"item": [...]}`` on others — :func:`_extract_vote_party_totals`
@@ -121,77 +125,56 @@ class Vote(BaseModel):
         2. Election votes (Speaker elections, etc.) bucket totals by
            candidate name rather than by party; in that shape we leave the
            count columns NULL and set ``vote_kind='election'``.
-        3. Amendment votes carry both the amendment's identity *and* the
-           underlying bill in ``legislationType`` + ``legislationNumber``
-           — the "amendment trap". Both `bill_id` and `amendment_id` get
-           populated for that case.
 
-        Raises ``ValidationError`` / ``ValueError`` on a malformed payload
-        (missing required ids, missing ``updateDate`` / ``startDate``, …).
+        Amendment votes carry both the amendment's identity *and* the
+        underlying bill in ``legislationType`` + ``legislationNumber`` — the
+        "amendment trap" — so both ``bill_id`` and ``amendment_id`` get
+        populated for that case.
+
+        Raises ``ValidationError`` on a malformed payload (missing required
+        fields, wrong type, …); raises ``ValueError`` for the same reasons
+        on the few sub-objects we crack open before constructing the model.
         """
-        chamber = normalize_chamber(payload.get("chamber") or "house")
-        congress = int(payload["congress"])
-        session = int(payload["sessionNumber"])
-        roll_number = int(payload["rollCallNumber"])
+        congress = payload["congress"]
+        session = payload["sessionNumber"]
+        roll_number = payload["rollCallNumber"]
 
         party_totals = _extract_vote_party_totals(payload)
         is_election = _is_election_vote(party_totals)
 
+        # Real fixtures show ``legislationNumber`` arriving as either int
+        # (3424) or str ("3424"); coerce so the SQL key formatter sees an int.
         bill_id = None
-        leg_type = payload.get("legislationType")
-        leg_number = payload.get("legislationNumber")
-        if leg_type and leg_number is not None:
-            try:
-                bill_id = bill_id_from_components(congress, str(leg_type), int(leg_number))
-            except (TypeError, ValueError):
-                bill_id = None
+        if (leg_type := payload.get("legislationType")) and (
+            leg_number := payload.get("legislationNumber")
+        ) is not None:
+            bill_id = bill_id_from_components(congress, leg_type, int(leg_number))
 
         amendment_id = None
-        amd_type = payload.get("amendmentType")
-        amd_number = payload.get("amendmentNumber")
-        if amd_type and amd_number is not None:
-            try:
-                amendment_id = amendment_id_from_components(
-                    congress, str(amd_type), int(amd_number)
-                )
-            except (TypeError, ValueError):
-                amendment_id = None
+        if (amd_type := payload.get("amendmentType")) and (
+            amd_number := payload.get("amendmentNumber")
+        ) is not None:
+            amendment_id = amendment_id_from_components(congress, amd_type, int(amd_number))
 
         yea = nay = present = not_voting = None
         if not is_election:
-            yea = 0
-            nay = 0
-            present = 0
-            not_voting = 0
-            for entry in party_totals:
-                yea += coerce_int(entry.get("yeaTotal")) or 0
-                nay += coerce_int(entry.get("nayTotal")) or 0
-                present += coerce_int(entry.get("presentTotal")) or 0
-                not_voting += coerce_int(entry.get("notVotingTotal")) or 0
-
-        vote_type_raw = str(payload.get("voteType") or "")
-        threshold = parse_vote_threshold(vote_type_raw)
-
-        update_date_raw = payload.get("updateDate") or payload.get("startDate")
-        if not update_date_raw:
-            raise ValueError(f"vote payload missing updateDate: {payload!r}")
-
-        start_date_raw = payload.get("startDate") or payload.get("date")
-        if not start_date_raw:
-            raise ValueError(f"vote payload missing startDate: {payload!r}")
+            yea = sum(entry["yeaTotal"] for entry in party_totals)
+            nay = sum(entry["nayTotal"] for entry in party_totals)
+            present = sum(entry["presentTotal"] for entry in party_totals)
+            not_voting = sum(entry["notVotingTotal"] for entry in party_totals)
 
         return cls(
             vote_id=vote_id_from_components(chamber, congress, session, roll_number),
-            chamber=chamber,
+            chamber=chamber,  # type: ignore[arg-type]  # validator normalizes "House" → "house"
             congress=congress,
-            session=session,  # type: ignore[arg-type]
+            session=session,
             roll_number=roll_number,
             vote_kind="election" if is_election else "standard",
-            start_date=str(start_date_raw),
-            vote_question=str(payload.get("voteQuestion") or ""),
-            vote_type=vote_type_raw,
-            threshold=threshold,
-            result=str(payload.get("result") or ""),
+            start_date=payload["startDate"],
+            vote_question=payload["voteQuestion"],
+            vote_type=payload["voteType"],
+            threshold=parse_vote_threshold(payload["voteType"]),
+            result=payload["result"],
             yea_count=yea,
             nay_count=nay,
             present_count=present,
@@ -199,7 +182,7 @@ class Vote(BaseModel):
             bill_id=bill_id,
             amendment_id=amendment_id,
             is_party_unity=False,
-            update_date=str(update_date_raw),
+            update_date=payload["updateDate"],
         )
 
 
@@ -227,19 +210,17 @@ class VotePosition(BaseModel):
         """Project one ``/.../members`` ``results`` row into a :class:`VotePosition`.
 
         Tolerates the API's casing slop (``bioguideID`` vs ``bioguideId``).
-        Raises ``ValueError`` if the row lacks a Bioguide ID or ``voteCast``
-        — the API has occasionally emitted placeholder entries for vacant
-        seats, and those cannot be linked.
+        Raises ``ValueError`` if the row lacks a Bioguide ID — the API has
+        occasionally emitted placeholder entries for vacant seats, and those
+        cannot be linked. Other missing/wrong-type fields surface as
+        ``ValidationError`` from Pydantic.
         """
         bioguide = row.get("bioguideID") or row.get("bioguideId")
-        if not isinstance(bioguide, str) or not bioguide:
+        if not bioguide:
             raise ValueError(f"vote position row missing bioguide: {row!r}")
-        position = row.get("voteCast")
-        if not isinstance(position, str) or not position:
-            raise ValueError(f"vote position row missing voteCast: {row!r}")
         return cls(
             bioguide_id=bioguide,
-            position=position,
+            position=row.get("voteCast"),  # type: ignore[arg-type]  # Pydantic raises on None
             vote_party=row.get("voteParty"),
             vote_state=row.get("voteState"),
         )

@@ -62,49 +62,38 @@ class Bill(BaseModel):
         writes. The first sponsor is taken (Bills have at most one per
         Congress's rules — the array is the API's convention, not a
         multi-sponsor signal). Raises ``ValidationError`` on a malformed
-        or incomplete payload.
+        or incomplete payload; raises ``ValueError`` if both ``updateDate``
+        sources are absent.
         """
-        congress = int(payload["congress"])
-        bill_type_raw = payload["type"]
+        # The API delivers ``number`` as a string ("1") on the detail
+        # endpoint; coerce before composing the SQL primary key.
         bill_number = int(payload["number"])
 
         sponsors = payload.get("sponsors") or []
-        sponsor_bioguide = None
-        if sponsors:
-            first = sponsors[0]
-            if isinstance(first, dict):
-                sponsor_bioguide = first.get("bioguideId")
+        sponsor_bioguide = sponsors[0]["bioguideId"] if sponsors else None
 
-        policy_area_raw = payload.get("policyArea")
-        policy_area = policy_area_raw.get("name") if isinstance(policy_area_raw, dict) else None
+        policy_area = (payload.get("policyArea") or {}).get("name")
+        latest_action = payload.get("latestAction") or {}
 
-        latest_action_raw = payload.get("latestAction") or {}
-        latest_action_date = (
-            latest_action_raw.get("actionDate") if isinstance(latest_action_raw, dict) else None
-        )
-        latest_action_text = (
-            latest_action_raw.get("text") if isinstance(latest_action_raw, dict) else None
-        )
-
-        update_date_raw = payload.get("updateDateIncludingText") or payload.get("updateDate")
-        if not update_date_raw:
+        # The detail endpoint exposes two timestamps; the ``IncludingText``
+        # variant ticks when the bill *text* changes, so prefer it when set.
+        update_date = payload.get("updateDateIncludingText") or payload.get("updateDate")
+        if not update_date:
             raise ValueError(f"bill payload missing updateDate: {payload!r}")
 
-        bill_type = str(bill_type_raw).lower()
-
         return cls(
-            bill_id=bill_id_from_components(congress, bill_type, bill_number),
-            congress=congress,
-            bill_type=bill_type,  # type: ignore[arg-type]
+            bill_id=bill_id_from_components(payload["congress"], payload["type"], bill_number),
+            congress=payload["congress"],
+            bill_type=payload["type"],  # validator lowercases
             bill_number=bill_number,
             origin_chamber=payload["originChamber"],
             title=payload["title"],
             introduced_date=payload.get("introducedDate"),
             policy_area=policy_area,
             sponsor_bioguide_id=sponsor_bioguide,
-            latest_action_date=latest_action_date,
-            latest_action_text=latest_action_text,
-            update_date=str(update_date_raw),
+            latest_action_date=latest_action.get("actionDate"),
+            latest_action_text=latest_action.get("text"),
+            update_date=update_date,
         )
 
 
@@ -142,27 +131,18 @@ class Cosponsor(BaseModel):
     def from_congress_api(cls, payload: dict[str, Any]) -> "Cosponsor":
         """Project one ``/cosponsors`` row into a :class:`Cosponsor`.
 
-        Raises ``ValidationError`` (or ``ValueError`` for the bioguide check
-        below) if the row lacks the fields needed to link a position back to
-        a Member — the API has been known to emit placeholder entries for
-        unfilled vacancies, and the loader should surface those rather than
-        silently drop them.
+        Raises ``ValueError`` if the row lacks a ``bioguideId`` — the API
+        has been known to emit placeholder entries for unfilled vacancies,
+        and the loader should surface those rather than silently drop them.
         """
         bioguide = payload.get("bioguideId")
-        if not isinstance(bioguide, str) or not bioguide:
+        if not bioguide:
             raise ValueError(f"cosponsor row missing bioguideId: {payload!r}")
-        raw_original = payload.get("isOriginalCosponsor")
-        if isinstance(raw_original, bool):
-            is_original = raw_original
-        elif isinstance(raw_original, str):
-            is_original = raw_original.lower() in {"true", "y", "yes", "1"}
-        else:
-            is_original = False
         return cls(
             bioguide_id=bioguide,
             sponsorship_date=payload.get("sponsorshipDate"),
             sponsorship_withdrawn_date=payload.get("sponsorshipWithdrawnDate"),
-            is_original_cosponsor=is_original,
+            is_original_cosponsor=payload.get("isOriginalCosponsor", False),
         )
 
 
@@ -183,11 +163,10 @@ class BillAction(BaseModel):
         text = payload.get("text")
         if not action_date or not text:
             raise ValueError(f"action row missing actionDate/text: {payload!r}")
-        source_raw = payload.get("sourceSystem")
-        source_system = source_raw.get("name") if isinstance(source_raw, dict) else None
+        source_system = (payload.get("sourceSystem") or {}).get("name")
         return cls(
-            action_date=str(action_date),
-            action_text=str(text),
+            action_date=action_date,
+            action_text=text,
             action_code=payload.get("actionCode"),
             source_system=source_system,
         )
@@ -208,7 +187,7 @@ class BillSubject(BaseModel):
     def from_congress_api(cls, payload: dict[str, Any]) -> "BillSubject":
         """Project one ``legislativeSubjects`` row into a :class:`BillSubject`."""
         name = payload.get("name")
-        if not isinstance(name, str) or not name:
+        if not name:
             raise ValueError(f"subject row missing name: {payload!r}")
         return cls(name=name)
 
@@ -230,9 +209,9 @@ class BillTitle(BaseModel):
         if not title_type or not title_text:
             raise ValueError(f"title row missing titleType/title: {payload!r}")
         return cls(
-            title_type=str(title_type),
-            title_text=str(title_text),
-            chamber=payload.get("chamberName") or payload.get("chamberCode") or None,
+            title_type=title_type,
+            title_text=title_text,
+            chamber=payload.get("chamberName"),
         )
 
 
@@ -254,10 +233,10 @@ class BillSummary(BaseModel):
         if not version_code or text is None:
             raise ValueError(f"summary row missing versionCode/text: {payload!r}")
         return cls(
-            version_code=str(version_code),
+            version_code=version_code,
             action_date=payload.get("actionDate"),
             action_desc=payload.get("actionDesc"),
-            summary_text=str(text),
+            summary_text=text,
         )
 
 

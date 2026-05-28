@@ -146,10 +146,14 @@ def _load_house(
 
     votes_written = 0
     positions_written = 0
-    for fetched_at, payload in latest_votes.values():
+    for key, (fetched_at, payload) in latest_votes.items():
+        # The API leaves ``chamber`` ``null`` on some payloads; we know it
+        # from the envelope key (the loader queried /house-vote/…), so pass
+        # it explicitly rather than letting the parser guess.
+        chamber = key[0]
         try:
-            vote = Vote.from_congress_api(payload)
-        except (ValueError, ValidationError) as exc:
+            vote = Vote.from_congress_api(payload, chamber=chamber)
+        except (KeyError, ValueError, ValidationError) as exc:
             malformed += 1
             _log.warning("skipping house vote after parse failure: %s; payload=%r", exc, payload)
             continue
@@ -261,7 +265,7 @@ def _parse_position_rows(payload: dict[str, Any], vote_id: str) -> list[VotePosi
             continue
         try:
             position = VotePosition.from_congress_api(row)
-        except (ValueError, ValidationError) as exc:
+        except (KeyError, ValueError, ValidationError) as exc:
             _log.warning("skipping position row for %s: %s; payload=%r", vote_id, exc, row)
             continue
         by_bioguide[position.bioguide_id] = position

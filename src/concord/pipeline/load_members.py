@@ -103,7 +103,7 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR091
     for (bioguide_id, congress), (_, payload) in latest_per_cell.items():
         try:
             term = Term.from_congress_api(payload, congress=congress)
-        except (ValueError, ValidationError) as exc:
+        except (KeyError, ValueError, ValidationError) as exc:
             malformed += 1
             _log.warning(
                 "skipping term %s/%d after parse failure: %s; payload=%r",
@@ -123,7 +123,7 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR091
         for bioguide_id, (fetched_at, payload) in latest_per_member.items():
             try:
                 member = Member.from_congress_api(payload)
-            except (ValueError, ValidationError) as exc:
+            except (KeyError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning(
                     "skipping member %s after parse failure: %s; payload=%r",

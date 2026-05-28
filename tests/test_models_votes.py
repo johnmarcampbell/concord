@@ -62,7 +62,7 @@ class TestVoteFromCongressApi:
     def test_bill_vote_real_capture(self) -> None:
         # Real spike capture: HR 3424, "On Motion to Suspend the Rules
         # and Pass", 2/3 Yea-And-Nay → two_thirds threshold.
-        v = Vote.from_congress_api(_detail("detail_house_119_1_240.json"))
+        v = Vote.from_congress_api(_detail("detail_house_119_1_240.json"), chamber="house")
         assert isinstance(v, Vote)
         assert v.vote_id == "house-119-1-240"
         assert v.chamber == "house"
@@ -77,7 +77,9 @@ class TestVoteFromCongressApi:
     def test_bill_vote_synthetic_party_split(self) -> None:
         # Synthetic fixture contrived to be party-unity-positive
         # (R majority Yea opposes D majority Nay).
-        v = Vote.from_congress_api(_detail("synthetic_bill_vote_party_unity_detail.json"))
+        v = Vote.from_congress_api(
+            _detail("synthetic_bill_vote_party_unity_detail.json"), chamber="house"
+        )
         assert v.vote_id == "house-119-1-240"
         assert v.yea_count == 222
         assert v.nay_count == 203
@@ -85,7 +87,9 @@ class TestVoteFromCongressApi:
 
     def test_amendment_vote_populates_both_ids(self) -> None:
         # Real spike capture: roll 245, amendment HAMDT 85 to HR 3838.
-        v = Vote.from_congress_api(_detail("detail_house_119_1_subject_amendment.json"))
+        v = Vote.from_congress_api(
+            _detail("detail_house_119_1_subject_amendment.json"), chamber="house"
+        )
         assert v.bill_id == "119-hr-3838"
         assert v.amendment_id == "119-hamdt-85"
         assert v.vote_kind == "standard"
@@ -93,7 +97,9 @@ class TestVoteFromCongressApi:
     def test_election_vote(self) -> None:
         # Real spike capture: Speaker election, roll 2, candidate-bucketed
         # party totals.
-        v = Vote.from_congress_api(_detail("detail_house_119_1_subject_procedural.json"))
+        v = Vote.from_congress_api(
+            _detail("detail_house_119_1_subject_procedural.json"), chamber="house"
+        )
         assert v.vote_kind == "election"
         # Counts NULL because party totals are bucketed by candidate.
         assert v.yea_count is None
@@ -102,7 +108,9 @@ class TestVoteFromCongressApi:
 
     def test_procedural_two_thirds(self) -> None:
         # Synthetic procedural fixture: "On Approving the Journal", 2/3.
-        v = Vote.from_congress_api(_detail("detail_house_119_1_300_procedural.json"))
+        v = Vote.from_congress_api(
+            _detail("detail_house_119_1_300_procedural.json"), chamber="house"
+        )
         assert v.threshold == "two_thirds"
         assert v.bill_id is None
         assert v.amendment_id is None
