@@ -733,7 +733,7 @@ def _compute_enrichment_state(
     return None, None
 
 
-def _register_enrichment_routes(app: FastAPI) -> None:
+def _register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
     """Register the two web-initiated enrichment routes (ADR 0016)."""
     templates: Jinja2Templates = app.state.templates
 
@@ -752,6 +752,14 @@ def _register_enrichment_routes(app: FastAPI) -> None:
         if bt not in _VALID_BILL_TYPES:
             raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
         bill_id = f"{congress}-{bt}-{bill_number}"
+        # Refuse to enqueue enrichment for a bill that isn't in the local
+        # store. Without this check, a hand-crafted POST for an unknown
+        # bill would still pay 5 sub-endpoint calls upstream; ADR 0006
+        # snapshots would land in JSONL but `load_one` would no-op
+        # because there's no parent ``bills`` row to attach tier-2 data
+        # to.
+        if not _bill_row_exists(request.app.state.db_path, bill_id):
+            raise HTTPException(status_code=404, detail=f"unknown bill: {bill_id}")
         state = request.app.state
         async with state.enrichment_lock:
             if bill_id not in state.enrichment_in_flight:
@@ -785,18 +793,50 @@ def _register_enrichment_routes(app: FastAPI) -> None:
         }
         if bill_id in request.app.state.enrichment_in_flight:
             return templates.TemplateResponse(request, "bills/_enrichment_in_flight.html", context)
+        # Read the bill row and key off (a) any recorded error, (b) the
+        # five *_fetched_at columns. Done is the strict conjunction "all
+        # populated AND no error" — partial-success is treated as "not
+        # done yet" so a re-click retries the still-NULL sections.
         row = db.execute(
-            "SELECT last_enrichment_error FROM bills WHERE bill_id = ?",
+            "SELECT cosponsors_fetched_at, actions_fetched_at, subjects_fetched_at, "
+            "       titles_fetched_at, summaries_fetched_at, last_enrichment_error "
+            "FROM bills WHERE bill_id = ?",
             (bill_id,),
         ).fetchone()
-        last_error = row["last_enrichment_error"] if row is not None else None
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"unknown bill: {bill_id}")
+        last_error = row["last_enrichment_error"]
+        any_missing = any(row[f"{s}_fetched_at"] is None for s in BILL_ENRICHMENT_SECTIONS)
         if last_error:
             return templates.TemplateResponse(
                 request,
                 "bills/_enrichment_failed.html",
                 {**context, "enrichment_error": last_error},
             )
+        if any_missing:
+            # No error recorded but not all sections populated — the
+            # background task either hasn't started yet (race against
+            # this poll), crashed without recording (shouldn't happen
+            # given the outer try/finally; harmless if it does), or the
+            # process restarted mid-job. Either way: show the button
+            # again so the user can retry the still-NULL sections.
+            return templates.TemplateResponse(request, "bills/_enrichment_button.html", context)
         return templates.TemplateResponse(request, "bills/_enrichment_done.html", context)
+
+
+def _bill_row_exists(db_path: Path, bill_id: str) -> bool:
+    """Return True iff ``bill_id`` has a row in the local ``bills`` table.
+
+    Used to gate the enrichment POST so a hand-crafted request for a
+    bill that isn't in the store can't trigger 5 upstream sub-endpoint
+    calls only to no-op at the loader step.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.execute("SELECT 1 FROM bills WHERE bill_id = ? LIMIT 1", (bill_id,))
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
 
 
 def _db_for_status(request: Request) -> Iterator[sqlite3.Connection]:
@@ -821,9 +861,12 @@ def _enrich_one_bill(app: FastAPI, bill_id: str) -> None:
     Runs synchronously inside FastAPI's ``BackgroundTasks`` threadpool;
     network calls happen on a worker thread so the event loop is not
     blocked. Any exception is captured on
-    ``bills.last_enrichment_error``; the in-flight set is always cleared
-    in the ``finally`` block so a crash mid-job doesn't strand the
-    button in the in-flight state.
+    ``bills.last_enrichment_error``; per-section failures returned by
+    the scraper (``EnrichStats.section_failures``) also surface as an
+    error so partial-failure runs don't masquerade as success. The
+    in-flight set is always cleared in the outermost ``finally`` so a
+    crash anywhere in the job (including the initial error-clear) can't
+    strand the button in the in-flight state.
     """
     from concord.api import Client  # noqa: PLC0415 — defer heavy import to first enrichment click
     from concord.pipeline import index_bills, load_bills  # noqa: PLC0415
@@ -833,33 +876,61 @@ def _enrich_one_bill(app: FastAPI, bill_id: str) -> None:
     db_path: Path = app.state.db_path
     storage_dir: Path = app.state.storage_dir
 
-    storage = SqliteStorage(db_path, load_vec=False)
     try:
-        storage.clear_bill_enrichment_error(bill_id)
-    finally:
-        storage.close()
-
-    try:
-        congress_s, bill_type, bill_number_s = bill_id.split("-", 2)
-        key = (int(congress_s), bill_type, int(bill_number_s))
-        with Client() as client:
-            scrape_enrichment(
-                client=client,
-                bill_keys=[key],
-                storage_dir=storage_dir,
-                fetched_at=datetime.now(UTC),
-            )
-        load_bills.load_one(storage_dir=storage_dir, db_path=db_path, bill_id=bill_id)
-        index_bills.reindex_one(db_path=db_path, bill_id=bill_id)
-    except Exception as exc:
-        _log.warning("enrichment failed for %s: %s", bill_id, exc)
-        storage = SqliteStorage(db_path, load_vec=False)
         try:
-            storage.set_bill_enrichment_error(bill_id, str(exc)[:500])
-        finally:
-            storage.close()
+            storage = SqliteStorage(db_path, load_vec=False)
+            try:
+                storage.clear_bill_enrichment_error(bill_id)
+            finally:
+                storage.close()
+
+            congress_s, bill_type, bill_number_s = bill_id.split("-", 2)
+            key = (int(congress_s), bill_type, int(bill_number_s))
+            with Client() as client:
+                stats = scrape_enrichment(
+                    client=client,
+                    bill_keys=[key],
+                    storage_dir=storage_dir,
+                    fetched_at=datetime.now(UTC),
+                )
+            load_bills.load_one(storage_dir=storage_dir, db_path=db_path, bill_id=bill_id)
+            index_bills.reindex_one(db_path=db_path, bill_id=bill_id)
+        except Exception as exc:
+            _log.warning("enrichment failed for %s: %s", bill_id, exc)
+            _record_enrichment_error(db_path, bill_id, str(exc)[:500])
+            return
+        # The scraper swallows per-section exceptions and surfaces them
+        # via section_failures; a non-zero count means some upstream
+        # sub-endpoint refused to answer. Report it so the UI shows
+        # "failed" instead of "done" — the per-section *_fetched_at
+        # columns will still be NULL for the failed sections, which the
+        # status endpoint also keys off.
+        if stats.section_failures > 0:
+            msg = f"{stats.section_failures} section(s) failed during enrichment"
+            _log.warning("enrichment for %s: %s", bill_id, msg)
+            _record_enrichment_error(db_path, bill_id, msg)
     finally:
         app.state.enrichment_in_flight.discard(bill_id)
+
+
+def _record_enrichment_error(db_path: Path, bill_id: str, message: str) -> None:
+    """Write ``last_enrichment_error`` for one bill, best-effort.
+
+    A failure to record the error must not strand the caller's in-flight
+    set discard; the outer ``finally`` in :func:`_enrich_one_bill` runs
+    regardless. We swallow exceptions here so a stale-schema or
+    permissions failure on the error column doesn't propagate.
+    """
+    from concord.storage.sqlite import SqliteStorage  # noqa: PLC0415
+
+    try:
+        storage = SqliteStorage(db_path, load_vec=False)
+        try:
+            storage.set_bill_enrichment_error(bill_id, message)
+        finally:
+            storage.close()
+    except Exception:
+        _log.exception("failed to record enrichment error for %s", bill_id)
 
 
 def _parse_optional_date(value: str | None) -> date | None:

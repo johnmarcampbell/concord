@@ -8,6 +8,7 @@ import pytest
 
 from concord.models import Article, Issue, Proceeding
 from concord.storage import SqliteStorage, Storage
+from concord.storage.sqlite import ensure_schema
 
 DEFAULT_GRANULE = "CREC-2026-05-22-pt1-PgD551-6"
 
@@ -436,3 +437,61 @@ class TestStage2EmbeddingHelpers:
                 list(storage.chunks_without_embeddings())
             with pytest.raises(RuntimeError, match="load_vec=True"):
                 storage.bulk_insert_embeddings([(1, [0.0] * 1536)])
+
+
+class TestIdempotentMigrations:
+    """Post-release column adds must apply to pre-existing tables."""
+
+    def test_alter_table_adds_last_enrichment_error_when_missing(self, tmp_path: Path) -> None:
+        """Simulate a master-era DB created before ADR 0016's column existed.
+
+        Hand-create a ``bills`` row with the *old* column set (no
+        ``last_enrichment_error``), then call :func:`ensure_schema` and
+        confirm the column shows up. Guards the regression where
+        ``CREATE TABLE IF NOT EXISTS`` silently no-ops on a pre-existing
+        table and the new column never gets added.
+        """
+        db_path = tmp_path / "stale.db"
+        # Build a "stale" bills table that predates last_enrichment_error.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bills (
+                bill_id              TEXT PRIMARY KEY,
+                congress             INTEGER NOT NULL,
+                bill_type            TEXT NOT NULL,
+                bill_number          INTEGER NOT NULL,
+                origin_chamber       TEXT NOT NULL,
+                title                TEXT NOT NULL,
+                introduced_date      TEXT,
+                policy_area          TEXT,
+                sponsor_bioguide_id  TEXT,
+                latest_action_date   TEXT,
+                latest_action_text   TEXT,
+                update_date          TEXT NOT NULL,
+                fetched_at           TEXT NOT NULL,
+                cosponsors_fetched_at TEXT,
+                actions_fetched_at    TEXT,
+                subjects_fetched_at   TEXT,
+                titles_fetched_at     TEXT,
+                summaries_fetched_at  TEXT
+            )
+            """
+        )
+        conn.commit()
+        cols_before = {row[1] for row in conn.execute("PRAGMA table_info(bills)")}
+        conn.close()
+        assert "last_enrichment_error" not in cols_before
+
+        ensure_schema(db_path)
+
+        conn = sqlite3.connect(db_path)
+        cols_after = {row[1] for row in conn.execute("PRAGMA table_info(bills)")}
+        conn.close()
+        assert "last_enrichment_error" in cols_after
+
+    def test_migration_is_idempotent(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "fresh.db"
+        ensure_schema(db_path)
+        # Running again must not raise (no "duplicate column name").
+        ensure_schema(db_path)

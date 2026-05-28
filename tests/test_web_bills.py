@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +22,11 @@ from concord.models import (
     Term,
 )
 from concord.pipeline.index_bills import index as index_bills
-from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, enrichment_jsonl_name
+from concord.scraper.bills import (
+    BILL_ENRICHMENT_SECTIONS,
+    EnrichStats,
+    enrichment_jsonl_name,
+)
 from concord.storage.sqlite import SqliteStorage
 from concord.web import app as web_app
 from concord.web.app import create_app, humanize_age
@@ -582,6 +587,24 @@ class TestEnrichmentPostRoute:
         resp = enrichment_client.post("/bills/119/xyz/1/enrichment")
         assert resp.status_code == 404
 
+    def test_post_404_for_unknown_bill_number(
+        self, enrichment_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POST refuses to enqueue a bill that isn't in the local store.
+
+        Without this gate, a hand-crafted request would pay 5 upstream
+        sub-endpoint calls only for ``load_one`` to no-op on an absent
+        parent row.
+        """
+        called: list[str] = []
+        monkeypatch.setattr(
+            web_app, "_enrich_one_bill", lambda app, bill_id: called.append(bill_id)
+        )
+        resp = enrichment_client.post("/bills/119/hr/9999/enrichment")
+        assert resp.status_code == 404
+        assert called == []
+        assert "119-hr-9999" not in enrichment_client.app.state.enrichment_in_flight
+
 
 class TestEnrichmentStatusRoute:
     def test_status_in_flight(self, enrichment_client: TestClient) -> None:
@@ -593,12 +616,36 @@ class TestEnrichmentStatusRoute:
         finally:
             enrichment_client.app.state.enrichment_in_flight.discard("119-hr-1")
 
-    def test_status_done_when_no_error_and_not_in_flight(
-        self, enrichment_client: TestClient
-    ) -> None:
+    def test_status_done_when_all_sections_populated(self, enrichment_client: TestClient) -> None:
+        db_path = enrichment_client.app.state.db_path
+        stamp = "2026-05-26T00:00:00Z"
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_actions("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_subjects("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_titles("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_summaries("119-hr-1", [], fetched_at=stamp)
         resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
         assert resp.status_code == 200
         assert "Enrichment complete" in resp.text
+
+    def test_status_partial_returns_button_for_retry(self, enrichment_client: TestClient) -> None:
+        """No error, not in-flight, but some sections still NULL → show the button.
+
+        Guards against the regression where status reported "done" while
+        the per-section fetched_at columns were all still NULL (the
+        unknown-bill / mid-job-restart path).
+        """
+        # Seeded bill 119-hr-1 has all *_fetched_at NULL out of the box.
+        resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Enrichment complete" not in body
+        assert "Request enrichment" in body
+
+    def test_status_404_for_unknown_bill(self, enrichment_client: TestClient) -> None:
+        resp = enrichment_client.get("/bills/119/hr/9999/enrichment-status")
+        assert resp.status_code == 404
 
     def test_status_failed_when_error_set(self, enrichment_client: TestClient) -> None:
         db_path = enrichment_client.app.state.db_path
@@ -649,7 +696,7 @@ class TestEnrichOneBillBackgroundTask:
             bill_keys: list[tuple[int, str, int]],
             storage_dir: Path,
             fetched_at: datetime,
-        ) -> object:
+        ) -> EnrichStats:
             storage_dir.mkdir(parents=True, exist_ok=True)
             for section in BILL_ENRICHMENT_SECTIONS:
                 payload: dict[str, object]
@@ -666,7 +713,11 @@ class TestEnrichOneBillBackgroundTask:
                     "a", encoding="utf-8"
                 ) as fh:
                     fh.write(json.dumps(envelope) + "\n")
-            return None
+            return EnrichStats(
+                bills_enriched=1,
+                snapshots_written=len(BILL_ENRICHMENT_SECTIONS),
+                section_failures=0,
+            )
 
         monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _fake_scrape)
 
@@ -701,3 +752,74 @@ class TestEnrichOneBillBackgroundTask:
             assert row["last_enrichment_error"] is not None
             assert "upstream rate limit" in row["last_enrichment_error"]
         assert "119-hr-1" not in enrichment_client.app.state.enrichment_in_flight
+
+    def test_partial_section_failures_record_error(
+        self, enrichment_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 3-of-5 (or 0-of-5) section-failure run must surface as failed, not done.
+
+        The scraper swallows per-section exceptions and reports them via
+        ``EnrichStats.section_failures``. Without inspecting that field
+        the UI would show "Enrichment complete" on a run where every
+        upstream sub-endpoint refused to answer.
+        """
+        monkeypatch.setattr("concord.api.Client", lambda *a, **kw: _StubClient())
+
+        def _partial(**kw: object) -> EnrichStats:
+            # No JSONL written; report 5/5 sections failed.
+            return EnrichStats(
+                bills_enriched=1,
+                snapshots_written=0,
+                section_failures=5,
+            )
+
+        monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _partial)
+
+        web_app._enrich_one_bill(enrichment_client.app, "119-hr-1")
+
+        db_path = enrichment_client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            row = storage.get_bill("119-hr-1")
+            assert row is not None
+            assert row["last_enrichment_error"] is not None
+            assert "5 section(s) failed" in row["last_enrichment_error"]
+        # And the status endpoint must report failed, not done.
+        resp = enrichment_client.get("/bills/119/hr/1/enrichment-status")
+        assert resp.status_code == 200
+        assert "Enrichment failed" in resp.text
+        assert "Enrichment complete" not in resp.text
+
+    def test_stale_schema_does_not_strand_inflight(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """If clear_bill_enrichment_error raises (e.g. stale column), in-flight clears anyway.
+
+        Guards the regression where a pre-migration DB caused the
+        ``UPDATE bills SET last_enrichment_error = …`` to throw before
+        the outer try/finally, stranding the bill in
+        ``enrichment_in_flight``.
+        """
+        monkeypatch.setenv("CONGRESS_API_KEY", "test-key")
+        monkeypatch.setenv("CONCORD_ENABLE_WEB_ENRICHMENT", "1")
+        db_path = tmp_path / "test.db"
+        storage = SqliteStorage(db_path)
+        _seed(storage)
+        storage.close()
+        index_bills(db_path=db_path)
+        app = create_app(db_path, embedder=Embedder(_StubOpenAI()), storage_dir=tmp_path)
+        app.state.enrichment_in_flight.add("119-hr-1")
+
+        # Make the very first storage call raise — simulates the
+        # stale-schema "no such column" failure.
+        class _BrokenStorage:
+            def __init__(self, *a: object, **kw: object) -> None:
+                raise sqlite3.OperationalError("no such column: bills.last_enrichment_error")
+
+        monkeypatch.setattr("concord.storage.sqlite.SqliteStorage", _BrokenStorage)
+
+        web_app._enrich_one_bill(app, "119-hr-1")
+
+        # Even though everything blew up, in-flight must be cleared.
+        assert "119-hr-1" not in app.state.enrichment_in_flight

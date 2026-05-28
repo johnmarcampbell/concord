@@ -594,8 +594,41 @@ def ensure_schema(db_path: Path | str) -> None:
     Idempotent: every DDL statement is ``CREATE … IF NOT EXISTS``, so this
     is safe to call against an existing DB. Used by the web layer to
     bootstrap an empty store on first boot — see ADR 0012.
+
+    Also applies idempotent column-add migrations for columns added after
+    a release shipped — ``CREATE TABLE IF NOT EXISTS`` doesn't update a
+    pre-existing table's column set, so each post-release column gets a
+    targeted ``ALTER TABLE … ADD COLUMN`` here.
     """
     SqliteStorage(db_path).close()
+
+
+#: Idempotent column-add migrations keyed by ``(table, column)``. Each
+#: entry's value is the column DDL fragment minus the leading column
+#: name. New entries here are the only contract for adding a column to
+#: an existing table without breaking pre-existing SQLite files.
+_POST_RELEASE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    # ADR 0016: bill enrichment errors. Added in v0.2.x; older DBs lack it.
+    ("bills", "last_enrichment_error", "TEXT"),
+)
+
+
+def _apply_idempotent_migrations(conn: sqlite3.Connection) -> None:
+    """Add post-release columns to existing tables if absent.
+
+    SQLite has no ``ADD COLUMN IF NOT EXISTS`` until 3.35+, and we can't
+    rely on that floor; do the existence check ourselves via
+    ``PRAGMA table_info``. A missing parent table is a no-op (a fresh
+    DB ran ``CREATE TABLE IF NOT EXISTS`` just before this call, so the
+    table is guaranteed to exist by the time we get here).
+    """
+    for table, column, ddl_fragment in _POST_RELEASE_COLUMNS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_fragment}")
 
 
 class SqliteStorage:
@@ -623,6 +656,7 @@ class SqliteStorage:
         self._conn.executescript(_BASE_SCHEMA)
         if load_vec:
             self._conn.executescript(_VEC_SCHEMA)
+        _apply_idempotent_migrations(self._conn)
         self._conn.commit()
 
     # -- Storage Protocol -------------------------------------------------
