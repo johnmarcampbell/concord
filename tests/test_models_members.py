@@ -38,10 +38,9 @@ class TestNormalization:
             ("vermont", "VT"),  # case-insensitive
             ("VT", "VT"),  # pass-through for codes
             ("Puerto Rico", "PR"),
-            (None, None),
         ],
     )
-    def test_normalize_state(self, input_: str | None, expected: str | None) -> None:
+    def test_normalize_state(self, input_: str, expected: str) -> None:
         assert normalize_state(input_) == expected
 
 
@@ -183,8 +182,11 @@ class TestTermValidation:
             bioguide_id="X000001",
             congress=119,
             chamber="House of Representatives",  # API's verbose form
+            party="Democratic",
             state="VT",
             district=1,
+            start_date="2025-01-03",
+            end_date="2027-01-03",
         )
         assert term.chamber == "house"
 
@@ -193,6 +195,9 @@ class TestTermValidation:
             bioguide_id="X000001",
             congress=119,
             chamber="senate",
+            party="Independent",
             state="Vermont",
+            start_date="2025-01-03",
+            end_date="2027-01-03",
         )
         assert term.state == "VT"

@@ -38,10 +38,13 @@ def _seed_positions(
     vote_id: str,
     rows: list[tuple[str, str, str]],
 ) -> None:
-    """Each row is (bioguide_id, position, vote_party)."""
+    """Each row is (bioguide_id, position, vote_party). State stubbed to NY."""
     storage.upsert_vote_positions(
         vote_id,
-        [VotePosition(bioguide_id=b, position=p, vote_party=pt) for b, p, pt in rows],
+        [
+            VotePosition(bioguide_id=b, position=p, vote_party=pt, vote_state="NY")
+            for b, p, pt in rows
+        ],
     )
 
 

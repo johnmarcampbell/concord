@@ -49,14 +49,15 @@ def amendment_id_from_components(
     return f"{congress}-{amendment_type.lower()}-{amendment_number}"
 
 
-def parse_vote_threshold(vote_type: str | None) -> VoteThreshold | None:
+def parse_vote_threshold(vote_type: str) -> VoteThreshold | None:
     """Map the API's free-text ``voteType`` to a normalized threshold code.
 
     Case-insensitive substring matches against the strings the spike
     found in House data: ``"2/3 Yea-And-Nay"`` → ``'two_thirds'``,
     ``"3/5"`` → ``'three_fifths'``, ``"Yea-and-Nay"`` / ``"Recorded
     Vote"`` / ``"Quorum"`` → ``'simple_majority'``. Anything else
-    returns ``None`` and the loader leaves the column NULL.
+    (including the empty string) returns ``None`` and the loader leaves
+    the column NULL.
     """
     if not vote_type:
         return None
@@ -202,8 +203,8 @@ class VotePosition(BaseModel):
 
     bioguide_id: str
     position: str
-    vote_party: str | None = None
-    vote_state: str | None = None
+    vote_party: str
+    vote_state: str
 
     @classmethod
     def from_congress_api(cls, row: dict[str, Any]) -> "VotePosition":
@@ -220,9 +221,9 @@ class VotePosition(BaseModel):
             raise ValueError(f"vote position row missing bioguide: {row!r}")
         return cls(
             bioguide_id=bioguide,
-            position=row.get("voteCast"),  # type: ignore[arg-type]  # Pydantic raises on None
-            vote_party=row.get("voteParty"),
-            vote_state=row.get("voteState"),
+            position=row["voteCast"],
+            vote_party=row["voteParty"],
+            vote_state=row["voteState"],
         )
 
 

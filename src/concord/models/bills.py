@@ -123,8 +123,8 @@ class Cosponsor(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     bioguide_id: str
-    sponsorship_date: str | None = None
-    sponsorship_withdrawn_date: str | None = None
+    sponsorship_date: str
+    sponsorship_withdrawn_date: str | None = None  # only set when withdrawn
     is_original_cosponsor: bool = False
 
     @classmethod
@@ -140,7 +140,7 @@ class Cosponsor(BaseModel):
             raise ValueError(f"cosponsor row missing bioguideId: {payload!r}")
         return cls(
             bioguide_id=bioguide,
-            sponsorship_date=payload.get("sponsorshipDate"),
+            sponsorship_date=payload["sponsorshipDate"],
             sponsorship_withdrawn_date=payload.get("sponsorshipWithdrawnDate"),
             is_original_cosponsor=payload.get("isOriginalCosponsor", False),
         )
@@ -153,8 +153,8 @@ class BillAction(BaseModel):
 
     action_date: str
     action_text: str
-    action_code: str | None = None
-    source_system: str | None = None
+    action_code: str
+    source_system: str
 
     @classmethod
     def from_congress_api(cls, payload: dict[str, Any]) -> "BillAction":
@@ -163,12 +163,11 @@ class BillAction(BaseModel):
         text = payload.get("text")
         if not action_date or not text:
             raise ValueError(f"action row missing actionDate/text: {payload!r}")
-        source_system = (payload.get("sourceSystem") or {}).get("name")
         return cls(
             action_date=action_date,
             action_text=text,
-            action_code=payload.get("actionCode"),
-            source_system=source_system,
+            action_code=payload["actionCode"],
+            source_system=payload["sourceSystem"]["name"],
         )
 
 
@@ -221,8 +220,8 @@ class BillSummary(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     version_code: str
-    action_date: str | None = None
-    action_desc: str | None = None
+    action_date: str
+    action_desc: str
     summary_text: str
 
     @classmethod
@@ -234,8 +233,8 @@ class BillSummary(BaseModel):
             raise ValueError(f"summary row missing versionCode/text: {payload!r}")
         return cls(
             version_code=version_code,
-            action_date=payload.get("actionDate"),
-            action_desc=payload.get("actionDesc"),
+            action_date=payload["actionDate"],
+            action_desc=payload["actionDesc"],
             summary_text=text,
         )
 

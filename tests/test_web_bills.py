@@ -97,6 +97,7 @@ def _seed(storage: SqliteStorage) -> None:
                 district=1,
                 party="Republican",
                 start_date="2025-01-01",
+                end_date="2027-01-03",
             ),
         ],
         fetched_at="2026-05-25T00:00:00+00:00",
@@ -274,8 +275,18 @@ class TestBillProfile:
             storage.replace_bill_actions(
                 "119-hr-1",
                 [
-                    BillAction(action_date="2026-03-30", action_text="Became Public Law"),
-                    BillAction(action_date="2025-01-09", action_text="Introduced in House"),
+                    BillAction(
+                        action_date="2026-03-30",
+                        action_text="Became Public Law",
+                        action_code="E40000",
+                        source_system="Library of Congress",
+                    ),
+                    BillAction(
+                        action_date="2025-01-09",
+                        action_text="Introduced in House",
+                        action_code="H10000",
+                        source_system="House",
+                    ),
                 ],
                 fetched_at="2026-05-26T00:00:00Z",
             )
@@ -440,7 +451,7 @@ class TestHumanizeAge:
         with SqliteStorage(db_path, load_vec=False) as storage:
             storage.replace_bill_cosponsors(
                 "119-hr-1",
-                [Cosponsor(bioguide_id="A000001")],
+                [Cosponsor(bioguide_id="A000001", sponsorship_date="2020-01-01")],
                 fetched_at="2020-01-01T00:00:00+00:00",
             )
         resp = client.get("/bills/119/hr/1")

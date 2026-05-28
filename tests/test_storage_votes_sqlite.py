@@ -107,7 +107,7 @@ class TestUpsertVote:
             storage.close()
 
 
-def _pos(bg: str, pos: str, party: str | None = None, state: str | None = None) -> VotePosition:
+def _pos(bg: str, pos: str, party: str = "R", state: str = "NY") -> VotePosition:
     return VotePosition(bioguide_id=bg, position=pos, vote_party=party, vote_state=state)
 
 

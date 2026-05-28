@@ -74,10 +74,8 @@ _STATE_NAME_TO_CODE = {
 _STATE_CODE_LEN = 2
 
 
-def normalize_state(value: str | None) -> str | None:
+def normalize_state(value: str) -> str:
     """Map the API's full state name to a two-letter code; pass through codes."""
-    if value is None:
-        return None
     stripped = value.strip()
     if len(stripped) == _STATE_CODE_LEN and stripped.isupper():
         return stripped
@@ -97,11 +95,14 @@ class Term(BaseModel):
     bioguide_id: str
     congress: int
     chamber: Chamber
-    party: str | None = None
+    party: str
     state: str  # two-letter state code (e.g. "VT")
     district: int | None = None  # NULL for senators
-    start_date: str | None = None  # ISO YYYY-MM-DD or YYYY (year-only fallback)
-    end_date: str | None = None  # None = currently serving
+    # ISO YYYY-MM-DD, always clipped to the Congress's window — for a
+    # currently-serving member, ``end_date`` is the next Congress's start
+    # date (``YYYY-01-03``), not None.
+    start_date: str
+    end_date: str
 
     @field_validator("chamber", mode="before")
     @classmethod
@@ -162,7 +163,7 @@ class Term(BaseModel):
             bioguide_id=bioguide_id,
             congress=congress,
             chamber=chamber,
-            party=payload.get("partyName"),
+            party=payload["partyName"],
             state=payload["state"],  # validator normalizes to 2-letter
             district=district,
             start_date=start_date,

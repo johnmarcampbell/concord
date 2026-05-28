@@ -321,6 +321,19 @@ def _resolve_positions(
                 p.member_full,
             )
             continue
+        # VotePosition requires party + state; the Senate XML occasionally
+        # omits them on procedural rows. Log + skip rather than carry an
+        # invalid row.
+        if p.party is None or p.state is None:
+            _log.warning(
+                "missing_party_or_state: vote_id=%s member_full=%r party=%r state=%r"
+                " — position skipped",
+                detail.vote_id,
+                p.member_full,
+                p.party,
+                p.state,
+            )
+            continue
         positions.append(
             VotePosition(
                 bioguide_id=bioguide,

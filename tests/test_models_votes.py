@@ -51,10 +51,9 @@ class TestParseVoteThreshold:
             ("3/5 Recorded Vote", "three_fifths"),
             ("Something unfamiliar", None),
             ("", None),
-            (None, None),
         ],
     )
-    def test_known_and_unknown(self, raw: str | None, expected: str | None) -> None:
+    def test_known_and_unknown(self, raw: str, expected: str | None) -> None:
         assert parse_vote_threshold(raw) == expected
 
 
@@ -157,7 +156,9 @@ class TestVoteModel:
         )
         assert v.chamber == "house"
 
-    def test_vote_position_minimal(self) -> None:
-        p = VotePosition(bioguide_id="X000001", position="Yea")
-        assert p.vote_party is None
-        assert p.vote_state is None
+    def test_vote_position_round_trip(self) -> None:
+        p = VotePosition(bioguide_id="X000001", position="Yea", vote_party="R", vote_state="AL")
+        assert p.bioguide_id == "X000001"
+        assert p.position == "Yea"
+        assert p.vote_party == "R"
+        assert p.vote_state == "AL"

@@ -47,6 +47,39 @@ def _bill(
     )
 
 
+# Tier-2 stub factories. Defaults are arbitrary-but-non-null so tests that
+# exercise storage paths don't have to recite every column.
+def _cosponsor(bioguide_id: str, **overrides: object) -> Cosponsor:
+    defaults: dict[str, object] = {
+        "bioguide_id": bioguide_id,
+        "sponsorship_date": "2025-01-09",
+    }
+    defaults.update(overrides)
+    return Cosponsor(**defaults)  # type: ignore[arg-type]
+
+
+def _action(action_date: str, action_text: str, **overrides: object) -> BillAction:
+    defaults: dict[str, object] = {
+        "action_date": action_date,
+        "action_text": action_text,
+        "action_code": "E40000",
+        "source_system": "Library of Congress",
+    }
+    defaults.update(overrides)
+    return BillAction(**defaults)  # type: ignore[arg-type]
+
+
+def _summary(version_code: str, summary_text: str, **overrides: object) -> BillSummary:
+    defaults: dict[str, object] = {
+        "version_code": version_code,
+        "summary_text": summary_text,
+        "action_date": "2025-01-09",
+        "action_desc": "Introduced in House",
+    }
+    defaults.update(overrides)
+    return BillSummary(**defaults)  # type: ignore[arg-type]
+
+
 @pytest.fixture
 def storage(tmp_path: Path) -> SqliteStorage:
     s = SqliteStorage(tmp_path / "test.db", load_vec=False)
@@ -166,7 +199,7 @@ class TestBillTier2:
 
     def test_replace_cosponsors_is_idempotent(self, storage: SqliteStorage) -> None:
         bill_id = self._seed_bill(storage)
-        cosponsors = [Cosponsor(bioguide_id="A000001")]
+        cosponsors = [_cosponsor("A000001")]
         storage.replace_bill_cosponsors(bill_id, cosponsors, fetched_at="2026-05-26T00:00:00Z")
         storage.replace_bill_cosponsors(bill_id, cosponsors, fetched_at="2026-05-27T00:00:00Z")
         rows = storage.cosponsors_for_bill(bill_id)
@@ -176,12 +209,12 @@ class TestBillTier2:
         bill_id = self._seed_bill(storage)
         storage.replace_bill_cosponsors(
             bill_id,
-            [Cosponsor(bioguide_id="A000001"), Cosponsor(bioguide_id="B000002")],
+            [_cosponsor("A000001"), _cosponsor("B000002")],
             fetched_at="2026-05-26T00:00:00Z",
         )
         storage.replace_bill_cosponsors(
             bill_id,
-            [Cosponsor(bioguide_id="A000001")],
+            [_cosponsor("A000001")],
             fetched_at="2026-05-27T00:00:00Z",
         )
         rows = storage.cosponsors_for_bill(bill_id)
@@ -192,8 +225,8 @@ class TestBillTier2:
         storage.replace_bill_actions(
             bill_id,
             [
-                BillAction(action_date="2026-03-30", action_text="Became law"),
-                BillAction(action_date="2025-01-09", action_text="Introduced"),
+                _action("2026-03-30", "Became law"),
+                _action("2025-01-09", "Introduced"),
             ],
             fetched_at="2026-05-26T00:00:00Z",
         )
@@ -210,9 +243,9 @@ class TestBillTier2:
         storage.replace_bill_actions(
             bill_id,
             [
-                BillAction(action_date="2025-06-15", action_text="middle"),
-                BillAction(action_date="2026-03-30", action_text="newest"),
-                BillAction(action_date="2025-01-09", action_text="oldest"),
+                _action("2025-06-15", "middle"),
+                _action("2026-03-30", "newest"),
+                _action("2025-01-09", "oldest"),
             ],
             fetched_at="2026-05-26T00:00:00Z",
         )
@@ -248,9 +281,9 @@ class TestBillTier2:
         storage.replace_bill_summaries(
             bill_id,
             [
-                BillSummary(version_code="00", summary_text="<p>a</p>"),
-                BillSummary(version_code="18", summary_text="<p>b</p>"),
-                BillSummary(version_code="00", summary_text="<p>a-newer</p>"),
+                _summary("00", "<p>a</p>"),
+                _summary("18", "<p>b</p>"),
+                _summary("00", "<p>a-newer</p>"),
             ],
             fetched_at="2026-05-26T00:00:00Z",
         )
@@ -274,11 +307,11 @@ class TestBillTier2:
     def test_bill_delete_cascades_to_children(self, storage: SqliteStorage) -> None:
         bill_id = self._seed_bill(storage)
         storage.replace_bill_cosponsors(
-            bill_id, [Cosponsor(bioguide_id="A000001")], fetched_at="2026-05-26T00:00:00Z"
+            bill_id, [_cosponsor("A000001")], fetched_at="2026-05-26T00:00:00Z"
         )
         storage.replace_bill_actions(
             bill_id,
-            [BillAction(action_date="2025-01-09", action_text="Introduced")],
+            [_action("2025-01-09", "Introduced")],
             fetched_at="2026-05-26T00:00:00Z",
         )
         storage.connection.execute("DELETE FROM bills WHERE bill_id = ?", (bill_id,))
@@ -292,12 +325,12 @@ class TestBillTier2:
         with storage.transaction():
             storage.replace_bill_cosponsors(
                 bill_id,
-                [Cosponsor(bioguide_id="A000001")],
+                [_cosponsor("A000001")],
                 fetched_at="2026-05-26T00:00:00Z",
             )
             storage.replace_bill_actions(
                 bill_id,
-                [BillAction(action_date="2025-01-09", action_text="Introduced")],
+                [_action("2025-01-09", "Introduced")],
                 fetched_at="2026-05-26T00:00:00Z",
             )
             storage.replace_bill_subjects(
@@ -318,7 +351,7 @@ class TestBillTier2:
             with storage.transaction():
                 storage.replace_bill_cosponsors(
                     bill_id,
-                    [Cosponsor(bioguide_id="A000001")],
+                    [_cosponsor("A000001")],
                     fetched_at="2026-05-26T00:00:00Z",
                 )
                 raise RuntimeError("boom")
@@ -343,7 +376,7 @@ class TestBillTier2:
         """Re-running tier-1 upsert must NOT reset *_fetched_at columns."""
         bill_id = self._seed_bill(storage)
         storage.replace_bill_cosponsors(
-            bill_id, [Cosponsor(bioguide_id="A000001")], fetched_at="2026-05-26T00:00:00Z"
+            bill_id, [_cosponsor("A000001")], fetched_at="2026-05-26T00:00:00Z"
         )
         # Now re-upsert the parent bill row with a new title.
         storage.upsert_bill(_bill(title="Renamed"), fetched_at="2026-06-01T00:00:00+00:00")
