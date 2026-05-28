@@ -279,12 +279,12 @@ class EnrichStats(NamedTuple):
     sections_skipped: int = 0
 
 
-_ENRICHMENT_FETCHERS: dict[str, str] = {
-    "cosponsors": "get_bill_cosponsors",
-    "actions": "get_bill_actions",
-    "subjects": "get_bill_subjects",
-    "titles": "get_bill_titles",
-    "summaries": "get_bill_summaries",
+_ENRICHMENT_FETCHERS: dict[str, Callable[[Client, int, str, int], dict[str, Any]]] = {
+    "cosponsors": Client.get_bill_cosponsors,
+    "actions": Client.get_bill_actions,
+    "subjects": Client.get_bill_subjects,
+    "titles": Client.get_bill_titles,
+    "summaries": Client.get_bill_summaries,
 }
 
 
@@ -322,9 +322,9 @@ def _enrich_one_bill(
         ):
             skipped += 1
             continue
-        method = getattr(client, _ENRICHMENT_FETCHERS[section])
+        fetcher = _ENRICHMENT_FETCHERS[section]
         try:
-            payload = method(congress, bt, bill_number)
+            payload = fetcher(client, congress, bt, bill_number)
         except Exception as exc:
             _log.warning(
                 "enrichment fetch failed for %s/%s/%s/%s: %s",

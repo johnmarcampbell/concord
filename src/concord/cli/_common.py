@@ -45,7 +45,7 @@ class Progress:
     def __init__(self, enabled: bool, *, stream: IO[str] | None = None) -> None:
         self._stream = stream if stream is not None else sys.stderr
         self._enabled = enabled
-        self._inplace = enabled and getattr(self._stream, "isatty", lambda: False)()
+        self._inplace = enabled and self._stream.isatty()
         self._open = False
 
     def update(self, msg: str) -> None:
