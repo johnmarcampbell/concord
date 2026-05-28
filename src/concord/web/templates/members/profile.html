@@ -58,7 +58,7 @@
 
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Term history</h2>
-      {% if terms %}
+      {% if term_groups %}
         <table class="w-full text-sm">
           <thead class="text-left text-xs uppercase tracking-wide text-stone-500">
             <tr>
@@ -71,16 +71,21 @@
             </tr>
           </thead>
           <tbody>
-            {% for t in terms %}
+            {% for g in term_groups %}
               <tr class="border-t border-stone-100">
-                <td class="py-1 pr-3">{{ t.congress }}</td>
-                <td class="py-1 pr-3">{{ t.chamber|capitalize }}</td>
-                <td class="py-1 pr-3">{{ t.state }}</td>
-                <td class="py-1 pr-3">{% if t.district %}{{ "%02d"|format(t.district) }}{% else %}—{% endif %}</td>
-                <td class="py-1 pr-3">{{ t.party or "—" }}</td>
+                <td class="py-1 pr-3">
+                  {%- if g.congress_min == g.congress_max -%}
+                    {{ g.congress_min }}
+                  {%- else -%}
+                    {{ g.congress_min }}&ndash;{{ g.congress_max }}
+                  {%- endif -%}
+                </td>
+                <td class="py-1 pr-3">{{ g.chamber|capitalize }}</td>
+                <td class="py-1 pr-3">{{ g.state }}</td>
+                <td class="py-1 pr-3">{% if g.district %}{{ "%02d"|format(g.district) }}{% else %}—{% endif %}</td>
+                <td class="py-1 pr-3">{{ g.party or "—" }}</td>
                 <td class="py-1 pr-3 text-stone-500">
-                  {{ t.start_date[:4] if t.start_date else "?" }} –
-                  {{ t.end_date[:4] if t.end_date else "present" }}
+                  {{ g.year_min or "?" }} &ndash; {{ g.year_max or "present" }}
                 </td>
               </tr>
             {% endfor %}
