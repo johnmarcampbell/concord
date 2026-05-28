@@ -18,12 +18,10 @@ from typing import Any
 import pytest
 
 from concord.models import (
+    Member,
     MemberSnapshot,
     Term,
     normalize_state,
-    parse_member,
-    parse_member_identity,
-    parse_member_term,
 )
 
 from ._snapshots import wrap_snapshot
@@ -50,12 +48,12 @@ class TestNormalization:
 # -- Identity (Member-row) parsing ------------------------------------------
 
 
-class TestParseMemberIdentity:
+class TestMemberFromCongressApi:
     """Identity fields don't depend on the queried Congress."""
 
     def test_parses_house_member(self, load_json_fixture: Any) -> None:
         payload = load_json_fixture("api/members/current_house.json")["members"][0]
-        member = parse_member_identity(payload)
+        member = Member.from_congress_api(payload)
         assert member.bioguide_id == "O000172"
         assert member.first_name == "Alexandria"
         assert member.last_name == "Ocasio-Cortez"
@@ -64,14 +62,14 @@ class TestParseMemberIdentity:
 
     def test_parses_senate_member_with_birth_year(self, load_json_fixture: Any) -> None:
         payload = load_json_fixture("api/members/current_senate.json")["members"][0]
-        member = parse_member_identity(payload)
+        member = Member.from_congress_api(payload)
         assert member.bioguide_id == "S000033"
         assert member.birth_year == 1941
         assert member.death_year is None
 
     def test_parses_historical_member_with_death_year(self, load_json_fixture: Any) -> None:
         payload = load_json_fixture("api/members/historical.json")["members"][0]
-        member = parse_member_identity(payload)
+        member = Member.from_congress_api(payload)
         assert member.bioguide_id == "J000301"
         assert member.middle_name == "M."
         assert member.death_year == 2014
@@ -80,18 +78,17 @@ class TestParseMemberIdentity:
 # -- Per-Congress Term parsing ----------------------------------------------
 
 
-class TestParseMemberTerm:
+class TestTermFromCongressApi:
     """The Term row depends on the queried Congress.
 
-    Each test calls :func:`parse_member_term` with a specific Congress
+    Each test calls :meth:`Term.from_congress_api` with a specific Congress
     and verifies the returned row reflects (a) the right chamber for
     that Congress's year range, (b) Congress-clipped start/end dates.
     """
 
     def test_current_house_member_in_119th(self, load_json_fixture: Any) -> None:
         payload = load_json_fixture("api/members/current_house.json")["members"][0]
-        term = parse_member_term(payload, congress=119)
-        assert term is not None
+        term = Term.from_congress_api(payload, congress=119)
         assert term.bioguide_id == "O000172"
         assert term.congress == 119
         assert term.chamber == "house"
@@ -106,18 +103,16 @@ class TestParseMemberTerm:
         """Heart of the bug — identical payloads for different Congresses
         must produce different Term rows."""
         payload = load_json_fixture("api/members/current_house.json")["members"][0]
-        terms = [parse_member_term(payload, congress=c) for c in (117, 118, 119)]
-        assert all(t is not None for t in terms)
-        assert [t.congress for t in terms] == [117, 118, 119]  # type: ignore[union-attr]
-        assert all(t.chamber == "house" for t in terms)  # type: ignore[union-attr]
+        terms = [Term.from_congress_api(payload, congress=c) for c in (117, 118, 119)]
+        assert [t.congress for t in terms] == [117, 118, 119]
+        assert all(t.chamber == "house" for t in terms)
 
     def test_senator_in_each_listed_congress(self, load_json_fixture: Any) -> None:
         """Sanders' Senate term started 2007 (110th); query each subsequent
         Congress and confirm the right chamber surfaces."""
         payload = load_json_fixture("api/members/current_senate.json")["members"][0]
         for congress in (110, 115, 118, 119):
-            term = parse_member_term(payload, congress=congress)
-            assert term is not None
+            term = Term.from_congress_api(payload, congress=congress)
             assert term.chamber == "senate"
             assert term.district is None
             assert term.congress == congress
@@ -126,52 +121,31 @@ class TestParseMemberTerm:
         """Sanders served in the House before the Senate — querying a
         Congress in his House-tenure window resolves to ``house``."""
         payload = load_json_fixture("api/members/current_senate.json")["members"][0]
-        house_term = parse_member_term(payload, congress=102)  # 1991-1993
-        assert house_term is not None
+        house_term = Term.from_congress_api(payload, congress=102)  # 1991-1993
         assert house_term.chamber == "house"
 
-    def test_returns_none_for_congress_outside_terms(self, load_json_fixture: Any) -> None:
-        """If no terms.item covers the queried Congress, return None."""
+    def test_raises_for_congress_outside_terms(self, load_json_fixture: Any) -> None:
+        """If no terms.item covers the queried Congress, raise ValueError."""
         payload = load_json_fixture("api/members/historical.json")["members"][0]
         # Jeffords left the Senate in 2007; querying Congress 116 (2019-2021)
         # finds no matching term.
-        term = parse_member_term(payload, congress=116)
-        assert term is None
+        with pytest.raises(ValueError, match=r"no terms\.item covering"):
+            Term.from_congress_api(payload, congress=116)
 
     def test_left_mid_congress_carries_end_year(self, load_json_fixture: Any) -> None:
         """Jeffords' last Senate Congress was the 109th (2005-2007). His
         endYear=2007 falls inside that Congress's window, so end_date
         reflects the actual departure year."""
         payload = load_json_fixture("api/members/historical.json")["members"][0]
-        term = parse_member_term(payload, congress=109)
-        assert term is not None
+        term = Term.from_congress_api(payload, congress=109)
         assert term.end_date == "2007-01-03"
 
     def test_top_level_state_falls_back_when_term_has_none(self, load_json_fixture: Any) -> None:
         """The list endpoint puts ``state`` at the top level, not in each
         terms.item — the parser uses the top-level fallback."""
         payload = load_json_fixture("api/members/current_senate.json")["members"][0]
-        term = parse_member_term(payload, congress=119)
-        assert term is not None
+        term = Term.from_congress_api(payload, congress=119)
         assert term.state == "VT"
-
-
-# -- Combined parse_member helper -------------------------------------------
-
-
-class TestParseMemberWrapper:
-    def test_returns_identity_and_one_term(self, load_json_fixture: Any) -> None:
-        payload = load_json_fixture("api/members/current_house.json")["members"][0]
-        member, term = parse_member(payload, congress=119)
-        assert member.bioguide_id == "O000172"
-        assert term is not None
-        assert term.congress == 119
-
-    def test_term_is_none_when_congress_outside_range(self, load_json_fixture: Any) -> None:
-        payload = load_json_fixture("api/members/historical.json")["members"][0]
-        member, term = parse_member(payload, congress=119)
-        assert member.bioguide_id == "J000301"
-        assert term is None
 
 
 # -- Snapshot envelope shape -------------------------------------------------

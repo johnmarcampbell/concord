@@ -32,7 +32,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from concord.models import Term, parse_member_identity, parse_member_term
+from pydantic import ValidationError
+
+from concord.models import Member, Term
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_members")
@@ -100,18 +102,15 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR091
     terms_by_member: dict[str, list[Term]] = {}
     for (bioguide_id, congress), (_, payload) in latest_per_cell.items():
         try:
-            term = parse_member_term(payload, congress=congress)
-        except Exception as exc:  # pragma: no cover - defensive parse guard
+            term = Term.from_congress_api(payload, congress=congress)
+        except (ValueError, ValidationError) as exc:
             malformed += 1
-            _log.warning("skipping term %s/%d after parse failure: %s", bioguide_id, congress, exc)
-            continue
-        if term is None:
-            # The payload didn't include a terms.item covering ``congress``
-            # — the API contradicted its own listing. Log + skip.
             _log.warning(
-                "no terms.item covers Congress %d in payload for %s; skipping that Term row",
-                congress,
+                "skipping term %s/%d after parse failure: %s; payload=%r",
                 bioguide_id,
+                congress,
+                exc,
+                payload,
             )
             continue
         terms_by_member.setdefault(bioguide_id, []).append(term)
@@ -123,10 +122,15 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR091
     try:
         for bioguide_id, (fetched_at, payload) in latest_per_member.items():
             try:
-                member = parse_member_identity(payload)
-            except Exception as exc:  # pragma: no cover - defensive parse guard
+                member = Member.from_congress_api(payload)
+            except (ValueError, ValidationError) as exc:
                 malformed += 1
-                _log.warning("skipping %s after parse failure: %s", bioguide_id, exc)
+                _log.warning(
+                    "skipping member %s after parse failure: %s; payload=%r",
+                    bioguide_id,
+                    exc,
+                    payload,
+                )
                 continue
             terms = terms_by_member.get(bioguide_id, [])
             storage.upsert_member(member, terms, fetched_at=fetched_at.isoformat())

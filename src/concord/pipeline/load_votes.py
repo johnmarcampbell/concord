@@ -32,12 +32,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from pydantic import ValidationError
+
 from concord.models import (
     ParsedVoteDetail,
     Vote,
     VotePosition,
-    parse_vote,
-    parse_vote_positions,
     vote_id_from_components,
 )
 from concord.scraper.votes import (
@@ -148,10 +148,10 @@ def _load_house(
     positions_written = 0
     for fetched_at, payload in latest_votes.values():
         try:
-            vote = parse_vote(payload)
-        except Exception as exc:
+            vote = Vote.from_congress_api(payload)
+        except (ValueError, ValidationError) as exc:
             malformed += 1
-            _log.warning("skipping house vote after parse failure: %s", exc)
+            _log.warning("skipping house vote after parse failure: %s; payload=%r", exc, payload)
             continue
         storage.upsert_vote(vote, fetched_at=fetched_at.isoformat())
         votes_written += 1
@@ -161,7 +161,7 @@ def _load_house(
     for key, (_fetched_at, payload) in latest_positions.items():
         chamber, congress, session, roll_number = key
         vote_id = vote_id_from_components(chamber, congress, session, roll_number)
-        positions = parse_vote_positions(payload)
+        positions = _parse_position_rows(payload, vote_id)
         count = storage.upsert_vote_positions(vote_id, positions)
         positions_written += count
 
@@ -242,6 +242,30 @@ def _load_senate(
         snapshots_read=snapshots_read,
         malformed=malformed,
     )
+
+
+def _parse_position_rows(payload: dict[str, Any], vote_id: str) -> list[VotePosition]:
+    """Project a ``/.../members`` payload's ``results`` array into VotePositions.
+
+    Each row goes through :meth:`VotePosition.from_congress_api`; a row that
+    fails validation is logged with its payload and skipped (the API has
+    occasionally emitted placeholders for vacant seats). Duplicates by
+    Bioguide are deduped, keeping the last row.
+    """
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return []
+    by_bioguide: dict[str, VotePosition] = {}
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        try:
+            position = VotePosition.from_congress_api(row)
+        except (ValueError, ValidationError) as exc:
+            _log.warning("skipping position row for %s: %s; payload=%r", vote_id, exc, row)
+            continue
+        by_bioguide[position.bioguide_id] = position
+    return list(by_bioguide.values())
 
 
 def _vote_from_parsed_detail(detail: ParsedVoteDetail) -> Vote:
