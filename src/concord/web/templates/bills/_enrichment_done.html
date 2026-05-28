@@ -1,0 +1,10 @@
+<div
+  id="enrichment-status"
+  hx-get="/bills/{{ bill.congress }}/{{ bill.bill_type }}/{{ bill.bill_number }}"
+  hx-trigger="load"
+  hx-target="body"
+  hx-swap="outerHTML"
+  class="border border-emerald-200 bg-emerald-50 text-emerald-800 rounded p-3 text-sm"
+>
+  Enrichment complete. Refreshing…
+</div>

@@ -1,0 +1,16 @@
+<div
+  id="enrichment-status"
+  class="border border-amber-300 bg-amber-50 text-amber-800 rounded p-3 text-sm flex items-center justify-between gap-3"
+>
+  <div>
+    <div class="font-medium">⚠ Enrichment failed</div>
+    <div class="text-xs mt-1 text-amber-700">{{ enrichment_error|e }}</div>
+  </div>
+  <button
+    type="button"
+    hx-post="/bills/{{ bill.congress }}/{{ bill.bill_type }}/{{ bill.bill_number }}/enrichment"
+    hx-target="#enrichment-status"
+    hx-swap="outerHTML"
+    class="px-3 py-1 rounded bg-amber-800 text-white text-sm hover:bg-amber-700"
+  >Try again</button>
+</div>

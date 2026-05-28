@@ -44,6 +44,12 @@
       <h1 class="text-2xl font-serif font-semibold leading-snug">{{ bill.title }}</h1>
     </header>
 
+    {% if enrichment_enabled and enrichment_state %}
+      <section>
+        {% include "bills/" + enrichment_state + ".html" %}
+      </section>
+    {% endif %}
+
     {% if bill.latest_action_date or bill.latest_action_text %}
       <section>
         <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Latest action</h2>

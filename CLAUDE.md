@@ -59,6 +59,7 @@ Stage commands accept `--progress / --no-progress`; the data dir defaults to `./
 
 - `CONGRESS_API_KEY` is an api.data.gov key (free signup at https://api.data.gov/signup/, 5,000 req/hr). For ad-hoc one-off queries you can use the literal value `DEMO_KEY` — api.data.gov accepts it without registration but rate-limits it hard (**30 req/hr, 50 req/day per IP**), so it's only useful for a quick smoke test, not anything resembling a real scrape. Do not use it in CI or fixtures.
 - `OPENAI_API_KEY` has no equivalent demo path; you need a real key for `index proceedings` and `serve`.
+- `CONCORD_ENABLE_WEB_ENRICHMENT=1` is an opt-in toggle that, *in addition* to `CONGRESS_API_KEY` being set, surfaces a "Request enrichment" button on the Bill profile page (ADR 0016). The button POSTs to a route that runs `scrape_enrichment` → `load_one` → `reindex_one` for that one Bill via `fastapi.BackgroundTasks`. Off by default; rate limiting is a follow-up.
 - A `.env` file at the repo root is the convention for storing these locally — **not committed, not auto-loaded** (no `python-dotenv` dependency, and `.env` isn't in `.gitignore` yet, so be careful). The code reads `os.environ` directly. To use one, source it before running: `set -a; source .env; set +a; uv run concord …`. Don't add a dotenv autoload — it would change the env-var contract that `concord.api` and the CLI gate keys on.
 
 ## Architecture at a glance

@@ -23,7 +23,7 @@ caller can pass ``load_vec=False`` to skip the extension entirely.
 """
 
 import sqlite3
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS bills (
     subjects_fetched_at   TEXT,
     titles_fetched_at     TEXT,
     summaries_fetched_at  TEXT,
+    last_enrichment_error TEXT,
     UNIQUE (congress, bill_type, bill_number)
 );
 
@@ -590,11 +591,69 @@ _VEC_INSERT_SQL = "INSERT OR REPLACE INTO chunks_vec(rowid, embedding) VALUES (?
 def ensure_schema(db_path: Path | str) -> None:
     """Create the SQLite file (and parent dir) and apply the full schema.
 
-    Idempotent: every DDL statement is ``CREATE … IF NOT EXISTS``, so this
-    is safe to call against an existing DB. Used by the web layer to
-    bootstrap an empty store on first boot — see ADR 0012.
+    Idempotent: every DDL statement in ``_BASE_SCHEMA`` and ``_VEC_SCHEMA``
+    is ``CREATE … IF NOT EXISTS``, and post-release schema changes are
+    applied via the versioned migration runner (``_migrate``) keyed on
+    ``PRAGMA user_version`` — see ADR 0017. Safe to call against a fresh
+    DB, an older DB, or a DB already at HEAD; in all three cases the
+    file converges on the current schema with ``user_version = _HEAD``.
+
+    Used by the web layer to bootstrap an empty store on first boot —
+    see ADR 0012.
     """
     SqliteStorage(db_path).close()
+
+
+def _m001_add_bill_last_enrichment_error(conn: sqlite3.Connection) -> None:
+    """ADR 0016: ``bills.last_enrichment_error TEXT NULL``.
+
+    Idempotent against DBs whose ``_BASE_SCHEMA`` already declares the
+    column (fresh installs after ADR 0017 landed) and against DBs that
+    were touched by the pre-ADR-0017 ``_POST_RELEASE_COLUMNS`` code
+    path (any 0.2.x boot prior to 0017). ``PRAGMA table_info`` reports
+    the existing column set; if the column is present we skip the
+    ALTER and the runner still bumps ``user_version``.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(bills)")}
+    if "last_enrichment_error" not in existing:
+        conn.execute("ALTER TABLE bills ADD COLUMN last_enrichment_error TEXT")
+
+
+#: Ordered, append-only schema migrations. Each entry is
+#: ``(version, callable)``; the callable receives a connection and
+#: mutates it to bring the DB from version N-1 to version N. The
+#: runner (``_migrate``) wraps each call in a transaction and bumps
+#: ``PRAGMA user_version`` on success. See ADR 0017.
+#:
+#: NEVER reorder, renumber, or edit a landed entry. The fix for a
+#: buggy migration is a *new* migration with a higher version.
+_MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
+    (1, _m001_add_bill_last_enrichment_error),
+)
+_HEAD: int = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply every pending migration in order; bump ``user_version``.
+
+    Reads ``PRAGMA user_version`` (defaults to ``0`` on any DB that has
+    never set it, which is every DB created before ADR 0017). Raises if
+    the DB reports a version higher than ``_HEAD`` — downgrade is not
+    supported. Each migration runs inside its own transaction; a
+    failure leaves the DB at the previous version. See ADR 0017.
+    """
+    current: int = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current > _HEAD:
+        raise RuntimeError(
+            f"SQLite user_version={current} exceeds this build's _HEAD={_HEAD}. "
+            "Downgrade is not supported; reinstall a newer Concord build."
+        )
+    for version, fn in _MIGRATIONS:
+        if version <= current:
+            continue
+        with conn:
+            fn(conn)
+            conn.execute(f"PRAGMA user_version = {version}")
 
 
 class SqliteStorage:
@@ -622,6 +681,7 @@ class SqliteStorage:
         self._conn.executescript(_BASE_SCHEMA)
         if load_vec:
             self._conn.executescript(_VEC_SCHEMA)
+        _migrate(self._conn)
         self._conn.commit()
 
     # -- Storage Protocol -------------------------------------------------
@@ -979,6 +1039,22 @@ class SqliteStorage:
             self._conn.execute(
                 "UPDATE bills SET summaries_fetched_at = ? WHERE bill_id = ?",
                 (fetched_at, bill_id),
+            )
+
+    def set_bill_enrichment_error(self, bill_id: str, error: str) -> None:
+        """Record an enrichment-attempt error on the bills row."""
+        with self._maybe_transaction():
+            self._conn.execute(
+                "UPDATE bills SET last_enrichment_error = ? WHERE bill_id = ?",
+                (error, bill_id),
+            )
+
+    def clear_bill_enrichment_error(self, bill_id: str) -> None:
+        """Clear any previously-recorded enrichment-attempt error."""
+        with self._maybe_transaction():
+            self._conn.execute(
+                "UPDATE bills SET last_enrichment_error = NULL WHERE bill_id = ?",
+                (bill_id,),
             )
 
     def cosponsors_for_bill(self, bill_id: str) -> list[sqlite3.Row]:

@@ -354,3 +354,41 @@ class TestBillTier2:
         assert row["title"] == "Renamed"
         # The tier-2 stamp must still be set.
         assert row["cosponsors_fetched_at"] == "2026-05-26T00:00:00Z"
+
+
+class TestEnrichmentError:
+    """Web-initiated enrichment helpers (ADR 0016)."""
+
+    def _seed_bill(self, storage: SqliteStorage) -> str:
+        bill = _bill()
+        storage.upsert_bill(bill, fetched_at="2026-05-25T00:00:00+00:00")
+        return bill.bill_id
+
+    def test_set_then_read(self, storage: SqliteStorage) -> None:
+        bill_id = self._seed_bill(storage)
+        storage.set_bill_enrichment_error(bill_id, "rate limited by api.congress.gov")
+        row = storage.get_bill(bill_id)
+        assert row is not None
+        assert row["last_enrichment_error"] == "rate limited by api.congress.gov"
+
+    def test_clear_resets_to_null(self, storage: SqliteStorage) -> None:
+        bill_id = self._seed_bill(storage)
+        storage.set_bill_enrichment_error(bill_id, "boom")
+        storage.clear_bill_enrichment_error(bill_id)
+        row = storage.get_bill(bill_id)
+        assert row is not None
+        assert row["last_enrichment_error"] is None
+
+    def test_set_overwrites_previous(self, storage: SqliteStorage) -> None:
+        bill_id = self._seed_bill(storage)
+        storage.set_bill_enrichment_error(bill_id, "first")
+        storage.set_bill_enrichment_error(bill_id, "second")
+        row = storage.get_bill(bill_id)
+        assert row is not None
+        assert row["last_enrichment_error"] == "second"
+
+    def test_default_is_null(self, storage: SqliteStorage) -> None:
+        bill_id = self._seed_bill(storage)
+        row = storage.get_bill(bill_id)
+        assert row is not None
+        assert row["last_enrichment_error"] is None
