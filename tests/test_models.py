@@ -72,10 +72,12 @@ class TestIssue:
             "url": "https://api.congress.gov/v3/daily-congressional-record/172/88?format=json",
             "volumeNumber": 172,
         }
-        # The factory normalizes the API's "2026-05-22T04:00:00Z" datetime
-        # string into a date and projects camelCase keys to snake_case fields.
+        # The factory passes the API's datetime through verbatim — issue_date
+        # is a datetime on the wire shape (per the OpenAPI schema), even
+        # though the app only uses the date part downstream. The conversion
+        # to date happens in Proceeding.build.
         issue = Issue.from_congress_api(payload)
-        assert issue.issue_date == date(2026, 5, 22)
+        assert issue.issue_date == datetime(2026, 5, 22, 4, 0, 0, tzinfo=UTC)
         assert issue.issue_number == 88
         assert issue.session == 2
         assert issue.update_date == datetime(2026, 5, 23, 6, 44, 22, tzinfo=UTC)
@@ -104,6 +106,9 @@ class TestIssue:
         assert "issue_number" in str(exc.value)
 
     def test_accepts_plain_date_string(self) -> None:
+        # Pydantic's datetime field accepts a date-only ISO string and
+        # parses it as midnight (naive). Useful for test fixtures that
+        # don't care about the time portion.
         issue = Issue(
             issue_date="2026-05-22",
             congress=119,
@@ -112,7 +117,7 @@ class TestIssue:
             issue_number=88,
             update_date="2026-05-23T06:44:22Z",
         )
-        assert issue.issue_date == date(2026, 5, 22)
+        assert issue.issue_date == datetime(2026, 5, 22, 0, 0, 0)
 
 
 # -- Article ------------------------------------------------------------------

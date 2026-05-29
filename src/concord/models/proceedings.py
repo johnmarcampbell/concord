@@ -3,6 +3,15 @@
 - :class:`Issue` — one daily Congressional Record issue (metadata only).
 - :class:`Article` — one article within an issue, including its text URL.
 - :class:`Proceeding` — the final output record: an issue + article + text.
+
+:class:`Issue` is a wire shape — its fields mirror the API contract,
+including ``issue_date: datetime`` (congress.gov delivers
+``"2026-05-22T04:00:00Z"`` even for a date-only field, and the OpenAPI
+schema types it as a datetime). :class:`Proceeding` is the domain shape
+written to storage; its ``issue_date`` is a plain ``date`` because the
+app only uses the day part. The conversion lives in
+:meth:`Proceeding.build` — exactly the wire-to-domain projection ADR 0018
+sanctions.
 """
 
 import re
@@ -35,12 +44,16 @@ class Issue(BaseModel):
     """One daily Congressional Record issue.
 
     Wire shape of one row from ``/v3/daily-congressional-record/`` list
-    responses. Constructed via :meth:`from_congress_api`.
+    responses. Field types mirror the congress.gov OpenAPI schema —
+    notably ``issue_date`` is a ``datetime``, since the API delivers
+    ``"2026-05-22T04:00:00Z"`` rather than a plain ``"2026-05-22"``.
+    The conversion to a domain-level ``date`` happens in
+    :meth:`Proceeding.build`, not here.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    issue_date: date
+    issue_date: datetime
     congress: int
     session: SessionNumber
     volume: int
@@ -51,16 +64,12 @@ class Issue(BaseModel):
     def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project one ``/daily-congressional-record`` row into an :class:`Issue`.
 
-        Strips the Z-suffixed time portion from ``issueDate`` (the API
-        delivers it as ``"2026-05-22T04:00:00Z"`` even though it's a
-        date-only field). Per ADR 0018 Rule 3, that normalization lives
-        in this factory body rather than in a ``@field_validator``.
+        All field-shape parsing is Pydantic-native; this factory only
+        renames the API's camelCase keys to our snake_case fields and
+        passes values through verbatim.
         """
-        raw_date = payload["issueDate"]
-        if isinstance(raw_date, str) and "T" in raw_date:
-            raw_date = raw_date.split("T", 1)[0]
         return cls(
-            issue_date=raw_date,
+            issue_date=payload["issueDate"],
             congress=payload["congress"],
             session=payload["sessionNumber"],
             volume=payload["volumeNumber"],
@@ -186,9 +195,16 @@ class Proceeding(BaseModel):
 
     @classmethod
     def build(cls, *, issue: Issue, article: Article, text: str, fetched_at: datetime) -> Self:
-        """Combine an issue, an article, and fetched text into a Proceeding."""
+        """Combine an issue, an article, and fetched text into a Proceeding.
+
+        Projects the Issue's ``issue_date: datetime`` (wire shape, per the
+        API contract) down to a ``date`` for the domain row — this is the
+        wire-to-domain canonicalization step ADR 0018 sanctions.
+        """
+        issue_data = issue.model_dump()
+        issue_data["issue_date"] = issue.issue_date.date()
         return cls(
-            **issue.model_dump(),
+            **issue_data,
             **article.model_dump(),
             text=text,
             fetched_at=fetched_at,

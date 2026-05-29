@@ -135,7 +135,9 @@ def pull(  # noqa: C901 — pipeline orchestrator
     while True:
         issues, next_offset = client.list_issues(limit=LIST_PAGE_SIZE, offset=offset)
         for issue in issues:
-            if not (start <= issue.issue_date <= end):
+            # Issue.issue_date is a wire-shape datetime (per the API contract);
+            # the date range filter compares against the calendar date.
+            if not (start <= issue.issue_date.date() <= end):
                 continue
 
             issue_written = 0
