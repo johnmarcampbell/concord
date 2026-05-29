@@ -46,7 +46,7 @@ from concord.scraper.votes import (
     SENATE_ROSTER_JSONL_NAME,
     SENATE_VOTES_JSONL_NAME,
 )
-from concord.senate_xml import parse_senate_roster, parse_vote_detail
+from concord.senate_xml import parse_senate_roster
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_votes")
@@ -220,7 +220,7 @@ def _load_senate(
     conn = storage.connection
     for fetched_at, xml_payload in latest_votes.values():
         try:
-            detail = parse_vote_detail(xml_payload.encode("utf-8"))
+            detail = SenateVoteDetail.from_senate_xml(xml_payload.encode("utf-8"))
         except Exception as exc:
             malformed += 1
             _log.warning("skipping senate vote after parse failure: %s", exc)

@@ -18,12 +18,20 @@ for House positions JSONL, ``Snapshot[SenateVoteDetail]`` for Senate
 detail JSONL.
 """
 
+import logging
+import xml.etree.ElementTree as ET
+from collections.abc import Iterator
+from datetime import datetime
 from typing import Any, Literal, Self
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from concord.models._common import Chamber, SessionNumber, normalize_chamber
 from concord.models.bills import bill_id_from_components
+from concord.senate_xml import SenateXmlError
+
+_log = logging.getLogger("concord.models.votes")
 
 VoteKind = Literal["standard", "election"]
 VoteThreshold = Literal["simple_majority", "two_thirds", "three_fifths"]
@@ -299,15 +307,18 @@ class SenateVoteDetail(BaseModel):
     """Wire shape of one senate.gov LIS per-roll detail XML file.
 
     URL: ``https://www.senate.gov/legislative/LIS/roll_call_votes/.../vote_{c}_{s}_{roll5}.xml``.
-    Constructed by :meth:`from_senate_xml` (defined in :mod:`concord.senate_xml`
-    to keep the lxml-flavored parser logic local; the model declares the
-    schema and the classmethod stub here, the parser implements it).
+    Constructed by :meth:`from_senate_xml`, which owns the XML walk and
+    field projection in one place per ADR 0018 Rule 2.
 
     Mirrors :class:`Vote`'s shape but carries an unresolved ``positions``
     list (each entry keyed by ``member_full``, not ``bioguide_id``). The
     loader iterates ``positions`` and resolves each entry to a Bioguide
     ID before persisting. Per ADR 0018 Rule 3, this is the wire-shape
     model that projects to the canonical :class:`Vote` domain model.
+
+    ``chamber`` is always ``"senate"`` — the class only parses senate.gov
+    XML, so no normalization shim is needed (and none is allowed on a
+    wire-shape model per ADR 0018 Rule 3).
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -333,24 +344,268 @@ class SenateVoteDetail(BaseModel):
     amendment_id: str | None = None
     positions: list[SenateVotePosition]
 
-    @field_validator("chamber", mode="before")
-    @classmethod
-    def _coerce_chamber(cls, value: Any) -> Any:
-        return normalize_chamber(value)
-
     @classmethod
     def from_senate_xml(cls, xml_bytes: bytes) -> Self:
         """Parse one senate.gov LIS detail XML into a :class:`SenateVoteDetail`.
 
-        Defers to :func:`concord.senate_xml.parse_vote_detail` for the
-        actual XML walking (where the parser utilities live). Kept as a
-        classmethod stub here so the wire-shape model owns its
-        constructor's name and signature per ADR 0018 Rule 2.
-        """
-        # Local import to break the otherwise-circular models ↔ senate_xml dep.
-        from concord.senate_xml import parse_vote_detail  # noqa: PLC0415
+        Implements the subject-branching documented in
+        ``docs/plans/phase-3b-votes-senate.md`` — amendment votes precede
+        bill votes; document types outside the known bill-type set
+        (``"PN"`` for nominations, treaty types) drop both FK columns.
 
-        return parse_vote_detail(xml_bytes)  # type: ignore[return-value]
+        En-bloc detection: when ``<en_bloc>`` is present and ``<question>``
+        is empty, the row's ``vote_question`` is taken from
+        ``<vote_title>`` and both subject FKs are NULL. The per-matter
+        ``<en_bloc><matter>`` breakdown is preserved in the raw XML payload
+        but not surfaced on the SQLite row in this phase.
+
+        Raises :exc:`concord.senate_xml.SenateXmlError` for malformed XML
+        or missing required date fields; raises ``pydantic.ValidationError``
+        for any field that doesn't match the model's schema.
+        """
+        try:
+            root = ET.fromstring(xml_bytes)  # noqa: S314 — senate.gov XML is trusted (no DTD, no external entities)
+        except ET.ParseError as exc:
+            raise SenateXmlError(f"malformed XML: {exc}") from exc
+
+        congress = int((root.findtext("congress") or "0").strip())
+        session = int((root.findtext("session") or "0").strip())
+        roll_number = int((root.findtext("vote_number") or "0").strip())
+
+        start_date = _parse_senate_date(root.findtext("vote_date"))
+        update_date = _parse_senate_date(root.findtext("modify_date")) or start_date
+        if not start_date or not update_date:
+            raise SenateXmlError(
+                f"detail XML missing vote_date/modify_date for {congress}/{session}/{roll_number}"
+            )
+
+        vote_question = (root.findtext("vote_question_text") or "").strip()
+        vote_type = (root.findtext("question") or "").strip()
+        vote_title = (root.findtext("vote_title") or "").strip()
+        result = (root.findtext("vote_result") or "").strip()
+        majority_req = (root.findtext("majority_requirement") or "").strip()
+        threshold = _SENATE_THRESHOLD_MAP.get(majority_req)
+        if majority_req and threshold is None:
+            _log.warning(
+                "unknown majority_requirement %r at %d/%d/%d",
+                majority_req,
+                congress,
+                session,
+                roll_number,
+            )
+
+        yea_count = _xml_text_to_int(root.findtext("count/yeas"))
+        nay_count = _xml_text_to_int(root.findtext("count/nays"))
+        present_count = _xml_text_to_int(root.findtext("count/present"))
+        not_voting_count = _xml_text_to_int(root.findtext("count/absent"))
+
+        is_en_bloc = root.find("en_bloc") is not None and not vote_type
+        bill_id, amendment_id = _resolve_senate_subject(root, congress, is_en_bloc)
+
+        # When the vote's subject doesn't land on a Bill or Amendment row,
+        # ``vote_title`` carries the only human-readable identity in the
+        # XML (nominee name, treaty title, en-bloc batch label). Prefer it
+        # over the short ``vote_question_text`` so the profile page renders
+        # something meaningful instead of "Procedural — no bill or
+        # amendment subject."
+        if bill_id is None and amendment_id is None and vote_title:
+            vote_question = vote_title
+
+        positions = list(_iter_senate_positions(root))
+
+        return cls(
+            vote_id=vote_id_from_components("senate", congress, session, roll_number),
+            chamber="senate",
+            congress=congress,
+            session=session,  # type: ignore[arg-type]
+            roll_number=roll_number,
+            vote_kind="standard",
+            start_date=start_date,
+            update_date=update_date,
+            vote_question=vote_question,
+            vote_type=vote_type,
+            vote_title=vote_title,
+            threshold=threshold,  # type: ignore[arg-type]
+            result=result,
+            yea_count=yea_count,
+            nay_count=nay_count,
+            present_count=present_count,
+            not_voting_count=not_voting_count,
+            bill_id=bill_id,
+            amendment_id=amendment_id,
+            positions=positions,
+        )
+
+
+# ---------------------------------------------------------------------------
+# senate.gov LIS detail-XML helpers — collocated with SenateVoteDetail per
+# ADR 0018 Rule 2 so the factory method owns the parsing logic in one place.
+# ---------------------------------------------------------------------------
+
+#: Senate timestamps are wall-clock ET (no offset in the XML).
+_ET_ZONE = ZoneInfo("America/New_York")
+
+#: Senate detail XML's ``majority_requirement`` text → Concord threshold code.
+_SENATE_THRESHOLD_MAP: dict[str, str] = {
+    "1/2": "simple_majority",
+    "3/5": "three_fifths",
+    "2/3": "two_thirds",
+}
+
+#: senate.gov XML ``document_type`` strings → Concord ``bill_type`` codes.
+_SENATE_BILL_TYPE_MAP: dict[str, str] = {
+    "S.": "s",
+    "S.J.Res.": "sjres",
+    "S.Res.": "sres",
+    "S.Con.Res.": "sconres",
+    "H.R.": "hr",
+    "H.J.Res.": "hjres",
+    "H.Res.": "hres",
+    "H.Con.Res.": "hconres",
+}
+
+
+def _xml_text_to_int(text: str | None) -> int | None:
+    """Best-effort int conversion for XML element text; ``None`` on miss."""
+    if text is None:
+        return None
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_senate_date(text: str | None) -> str | None:
+    """Parse Senate wall-clock ET timestamps into ISO 8601 with offset.
+
+    Senate timestamps look like ``"January 20, 2025,  06:12 PM"`` — note
+    the double space before the time. Returns ``None`` for missing /
+    unparseable input rather than raising; callers detect missing
+    ``start_date`` separately.
+    """
+    if text is None:
+        return None
+    raw = text.strip()
+    if not raw:
+        return None
+    # Collapse repeated whitespace introduced by senate.gov's templating.
+    normalized = " ".join(raw.split())
+    try:
+        naive = datetime.strptime(normalized, "%B %d, %Y, %I:%M %p")
+    except ValueError as exc:
+        _log.warning("could not parse senate timestamp %r: %s", raw, exc)
+        return None
+    aware = naive.replace(tzinfo=_ET_ZONE)
+    return aware.isoformat()
+
+
+def _resolve_senate_subject(
+    root: ET.Element,
+    congress: int,
+    is_en_bloc: bool,
+) -> tuple[str | None, str | None]:
+    """Apply subject branching for the senate detail XML.
+
+    Returns ``(bill_id, amendment_id)``. En-bloc rolls always return
+    ``(None, None)`` — their identity lives in ``vote_title``.
+    """
+    if is_en_bloc:
+        return None, None
+
+    amendment_number_raw = (root.findtext("amendment/amendment_number") or "").strip()
+    if amendment_number_raw:
+        amendment_id = _build_senate_amendment_id(congress, amendment_number_raw)
+        bill_id = _build_senate_bill_id_from_amendment_target(
+            congress,
+            (root.findtext("amendment/amendment_to_document_number") or "").strip(),
+        )
+        return bill_id, amendment_id
+
+    doc_type = (root.findtext("document/document_type") or "").strip()
+    doc_number = (root.findtext("document/document_number") or "").strip()
+    bill_id = _build_senate_bill_id(congress, doc_type, doc_number)
+    return bill_id, None
+
+
+def _iter_senate_positions(root: ET.Element) -> Iterator[SenateVotePosition]:
+    for member in root.iterfind("members/member"):
+        member_full = (member.findtext("member_full") or "").strip()
+        vote_cast = (member.findtext("vote_cast") or "").strip()
+        if not member_full or not vote_cast:
+            continue
+        yield SenateVotePosition(
+            member_full=member_full,
+            last_name=(member.findtext("last_name") or "").strip() or None,
+            first_name=(member.findtext("first_name") or "").strip() or None,
+            party=(member.findtext("party") or "").strip() or None,
+            state=(member.findtext("state") or "").strip() or None,
+            vote_cast=vote_cast,
+            lis_member_id=(member.findtext("lis_member_id") or "").strip() or None,
+        )
+
+
+def _build_senate_amendment_id(congress: int, amendment_number_text: str) -> str | None:
+    """Parse the XML form ``"S.Amdt. 14"`` → ``"119-samdt-14"``."""
+    parts = amendment_number_text.replace(".", "").split()
+    if len(parts) < 2:  # noqa: PLR2004 — splits "S.Amdt. 14" into type + number
+        _log.warning("could not parse amendment number %r", amendment_number_text)
+        return None
+    amendment_type_raw = parts[0].lower()
+    if amendment_type_raw.startswith("s") and "amdt" in amendment_type_raw:
+        amendment_type = "samdt"
+    elif amendment_type_raw.startswith("h") and "amdt" in amendment_type_raw:
+        amendment_type = "hamdt"
+    else:
+        amendment_type = amendment_type_raw
+    try:
+        number = int(parts[-1])
+    except ValueError:
+        _log.warning("could not parse amendment number int from %r", amendment_number_text)
+        return None
+    return amendment_id_from_components(congress, amendment_type, number)
+
+
+def _build_senate_bill_id(
+    congress: int,
+    document_type: str,
+    document_number: str,
+) -> str | None:
+    """Canonicalize the senate.gov XML ``document_type`` to a Concord bill_id.
+
+    Returns ``None`` for ``PN`` (Presidential Nominations), treaty codes,
+    or any other type not in :data:`_SENATE_BILL_TYPE_MAP`.
+    """
+    if not document_type or not document_number:
+        return None
+    bill_type = _SENATE_BILL_TYPE_MAP.get(document_type.strip())
+    if bill_type is None:
+        return None
+    try:
+        number = int(document_number.strip())
+    except ValueError:
+        return None
+    return bill_id_from_components(congress, bill_type, number)
+
+
+def _build_senate_bill_id_from_amendment_target(
+    congress: int,
+    target_text: str,
+) -> str | None:
+    """Parse the amendment's ``amendment_to_document_number`` (e.g. ``"S. 5"``).
+
+    The senate.gov amendment block uses a single combined "type + number"
+    string for the underlying bill rather than two separate fields. This
+    helper splits on whitespace and routes through :func:`_build_senate_bill_id`.
+    """
+    if not target_text:
+        return None
+    tokens = target_text.strip().split()
+    if len(tokens) < 2:  # noqa: PLR2004 — split form is "<type> <number>"
+        return None
+    return _build_senate_bill_id(congress, tokens[0], tokens[-1])
 
 
 def _extract_vote_party_totals(payload: dict[str, Any]) -> list[dict[str, Any]]:
