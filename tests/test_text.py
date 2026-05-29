@@ -6,7 +6,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from concord.text import MAX_BACKOFF, TextFetchError, fetch_text
+from concord.text import (
+    MAX_BACKOFF,
+    AdaptiveThrottle,
+    TextFetchError,
+    fetch_text,
+)
 
 
 def _client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.Client:
@@ -156,8 +161,9 @@ class TestFetchTextRateLimit:
         with _client(lambda r: next(responses)) as client:
             text = fetch_text(SAMPLE_URL, client, sleep=slept.append)
         assert text == "after backoff"
-        # Two 429s -> two sleeps before the success.
-        assert len(slept) == 2
+        # Two 429s -> two sleeps, and the backoff *escalates* (1s, then 2s)
+        # rather than sitting at a flat 1s — the bug this fix exists for.
+        assert slept == [1.0, 2.0]
 
     def test_429_honors_retry_after_header(self) -> None:
         responses = iter(
@@ -204,7 +210,9 @@ class TestFetchTextRateLimit:
         with _client(lambda r: next(responses)) as client:
             text = fetch_text(SAMPLE_URL, client, sleep=slept.append)
         assert text == "after 403 backoff"
-        assert len(slept) == 2
+        # 403s escalate identically to 429s (1s, then 2s) — congress.gov's 403
+        # carries no Retry-After, so our own escalating backoff is all we have.
+        assert slept == [1.0, 2.0]
 
     def test_403_honors_retry_after_header(self) -> None:
         responses = iter(
@@ -225,6 +233,80 @@ class TestFetchTextRateLimit:
         with _client(lambda r: next(responses)) as client:
             text = fetch_text(SAMPLE_URL, client, sleep=lambda _s: None)
         assert text == "finally"
+
+
+class TestAdaptiveThrottle:
+    """The client-level backoff that persists across URLs in a run."""
+
+    def test_escalates_and_recovers(self) -> None:
+        slept: list[float] = []
+        throttle = AdaptiveThrottle(sleep=slept.append)
+
+        # Healthy: pacing is a no-op.
+        throttle.pace()
+        assert slept == []
+        assert throttle.level == 0
+
+        # Each throttle hit escalates the backoff and the level.
+        assert throttle.penalize(None) == 1.0
+        assert throttle.penalize(None) == 2.0
+        assert throttle.penalize(None) == 4.0
+        assert throttle.level == 3
+
+        # A Retry-After header overrides the schedule but still escalates level.
+        assert throttle.penalize(30.0) == 30.0
+        assert throttle.level == 4
+        assert slept == [1.0, 2.0, 4.0, 30.0]
+
+        # Clean fetches relax one level only after _DECAY_AFTER_SUCCESSES of them,
+        # so a single success can't cancel a throttle.
+        throttle.recover()
+        throttle.recover()
+        assert throttle.level == 4
+        throttle.recover()
+        assert throttle.level == 3
+
+    def test_level_and_delay_are_capped(self) -> None:
+        slept: list[float] = []
+        throttle = AdaptiveThrottle(sleep=slept.append)
+        for _ in range(20):
+            throttle.penalize(None)
+        # Level saturates and the per-wait delay never exceeds MAX_BACKOFF.
+        assert throttle.level == 7
+        assert throttle.penalize(None) == MAX_BACKOFF
+        assert max(slept) == MAX_BACKOFF
+
+    def test_backoff_persists_across_urls(self) -> None:
+        # A shared throttle threaded through two fetches: the first URL's 403s
+        # leave the level raised, so the second URL is *paced* before its very
+        # first request — even though that request would have succeeded.
+        responses = iter(
+            [
+                httpx.Response(403),
+                httpx.Response(403),
+                _ok("<pre>first</pre>"),
+                _ok("<pre>second</pre>"),
+            ]
+        )
+        slept: list[float] = []
+        throttle = AdaptiveThrottle(sleep=slept.append)
+        with _client(lambda r: next(responses)) as client:
+            first = fetch_text(SAMPLE_URL, client, throttle=throttle)
+            second = fetch_text(SAMPLE_URL, client, throttle=throttle)
+        assert (first, second) == ("first", "second")
+        # URL 1: penalize 1s, 2s (climbs to level 2). URL 2: pace 2s up front.
+        assert slept == [1.0, 2.0, 2.0]
+        assert throttle.level == 2
+
+    def test_per_call_throttle_does_not_leak_state(self) -> None:
+        # Omitting `throttle` gives each call a fresh one — no cross-call pacing.
+        responses = iter([httpx.Response(403), _ok("<pre>a</pre>"), _ok("<pre>b</pre>")])
+        slept: list[float] = []
+        with _client(lambda r: next(responses)) as client:
+            fetch_text(SAMPLE_URL, client, sleep=slept.append)
+            fetch_text(SAMPLE_URL, client, sleep=slept.append)
+        # Only the first call's single 403 slept; the second starts fresh (no pace).
+        assert slept == [1.0]
 
 
 # -- redirect handling --------------------------------------------------------

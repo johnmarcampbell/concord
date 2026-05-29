@@ -34,7 +34,7 @@ from . import __version__
 
 _log = logging.getLogger("concord.senate_xml")
 
-USER_AGENT = f"concord/{__version__} (+https://github.com/johnmarcampbell/concord)"
+USER_AGENT = f"concord/{__version__}"
 
 #: Base URL for senate.gov roll-call LIS feeds.
 SENATE_LIS_BASE = "https://www.senate.gov/legislative/LIS"

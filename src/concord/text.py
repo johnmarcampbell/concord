@@ -13,17 +13,29 @@ Retry policy
 ------------
 
 The ``www.congress.gov`` HTML tier is a separate service from
-``api.congress.gov`` and has its own (undocumented) rate limit — bulk pulls
-of many articles can trip 429s or 403s. Retries mirror :mod:`concord.api`:
+``api.congress.gov``: it sits behind Cloudflare and has its own (undocumented)
+rate limit. A bulk pull of many articles trips two distinct Cloudflare signals,
+and the limit is enforced **per client across every URL**, not per request —
+so the backoff state lives on a single :class:`AdaptiveThrottle` shared by all
+fetches in a run, not inside one URL's retry loop (see ADR 0002's "JSONL is
+canonical, re-runs are cheap" — being throttled is a wait, never a data loss):
 
-* HTTP 403: congress.gov uses 403 as a rate-limit signal in addition to 429.
-  Treated identically to 429: retry **indefinitely** with exponential backoff.
-* HTTP 429: retry **indefinitely**, honoring ``Retry-After`` and otherwise
-  backing off exponentially capped at :data:`MAX_BACKOFF`.
-* HTTP 5xx and transport errors (DNS, timeout, connection reset): retry up
-  to :data:`MAX_5XX_RETRIES` times before surfacing a :class:`TextFetchError`.
+* HTTP 429 (Cloudflare rate-limit rule): typically carries a ``Retry-After``;
+  we honor it. Retry **indefinitely**.
+* HTTP 403 (Cloudflare bot/WAF block): a block page with **no** ``Retry-After``,
+  so there is no server hint to honor. Treated as the same throttle signal as
+  429 and retried **indefinitely**, but the wait comes from our own adaptive
+  backoff. This is the case a flat retry handles badly, which is why the
+  throttle escalates and persists across URLs rather than resetting per fetch.
+* HTTP 5xx and transport errors (DNS, timeout, connection reset): genuine
+  faults — retry up to :data:`MAX_5XX_RETRIES` times with exponential backoff
+  before surfacing a :class:`TextFetchError`. These are tracked per fetch and
+  are kept separate from throttling, which never counts against that budget.
 
-Retry decisions are logged via :mod:`logging` (logger ``concord.text``).
+Both throttle signals escalate one :class:`AdaptiveThrottle` level per hit and
+relax one level per :data:`_DECAY_AFTER_SUCCESSES` clean fetches, so a steady
+drip of "one 403 per URL" ratchets the backoff up instead of oscillating at the
+floor. Retry decisions are logged via :mod:`logging` (logger ``concord.text``).
 """
 
 import logging
@@ -97,19 +109,100 @@ class _PreExtractor(HTMLParser):
         return "".join(self._chunks).strip()
 
 
+#: Consecutive clean fetches required to relax the throttle one level. Decay is
+#: deliberately slower than the one-level-per-throttle climb so a steady drip of
+#: "one 403 per URL" still ratchets the backoff up rather than oscillating at the
+#: 1s floor (a single success would otherwise cancel a single 403).
+_DECAY_AFTER_SUCCESSES = 3
+
+#: Cap on the throttle level. At this level the exponential backoff has already
+#: saturated :data:`MAX_BACKOFF`; capping bounds how long recovery takes after a
+#: sustained block (``_MAX_THROTTLE_LEVEL * _DECAY_AFTER_SUCCESSES`` clean
+#: fetches to fully relax).
+_MAX_THROTTLE_LEVEL = 7
+
+
+class AdaptiveThrottle:
+    """Client-level adaptive backoff shared across every article fetch in a run.
+
+    congress.gov enforces its limit per client, not per request, so a single
+    instance is threaded through all :func:`fetch_text` calls: the level climbs
+    one step per 403/429 and relaxes one step per :data:`_DECAY_AFTER_SUCCESSES`
+    clean fetches. :meth:`pace` proactively slows the *next* request once the
+    level is raised (so a recovered fetch doesn't immediately re-trip the
+    limit); :meth:`penalize` performs the post-throttle retry wait, honoring a
+    server ``Retry-After`` when present and otherwise backing off exponentially.
+
+    Throttle waits never count against the 5xx fault budget — being blocked is a
+    wait condition, not a fault. ``sleep`` is injectable so tests don't pay real
+    wall time.
+    """
+
+    def __init__(self, *, sleep: Callable[[float], None] = time.sleep) -> None:
+        self._sleep = sleep
+        self._level = 0
+        self._ok_streak = 0
+
+    @property
+    def level(self) -> int:
+        """Current throttle level (0 when healthy). Exposed for tests/logging."""
+        return self._level
+
+    def pace(self) -> None:
+        """Wait the current throttle delay before a request (no-op when healthy)."""
+        if self._level > 0:
+            self._sleep(self._delay())
+
+    def penalize(self, retry_after: float | None) -> float:
+        """Record a throttle response, sleep the retry wait, return the delay used.
+
+        Honors ``retry_after`` when the server supplied one (Cloudflare 429s do);
+        otherwise falls back to the exponential schedule for the newly raised
+        level (Cloudflare 403s don't).
+        """
+        self._level = min(self._level + 1, _MAX_THROTTLE_LEVEL)
+        self._ok_streak = 0
+        delay = retry_after if retry_after is not None else self._delay()
+        self._sleep(delay)
+        return delay
+
+    def recover(self) -> None:
+        """Note a clean fetch; relax one level after enough consecutive successes."""
+        if self._level == 0:
+            return
+        self._ok_streak += 1
+        if self._ok_streak >= _DECAY_AFTER_SUCCESSES:
+            self._level -= 1
+            self._ok_streak = 0
+
+    def _delay(self) -> float:
+        """Exponential backoff for the current level, capped at :data:`MAX_BACKOFF`.
+
+        Level 1 → 1s, 2 → 2s, 3 → 4s, … saturating at the cap.
+        """
+        return min(_BACKOFF_BASE ** (self._level - 1), MAX_BACKOFF)
+
+
 def fetch_text(
     url: str,
     client: httpx.Client,
     *,
+    throttle: AdaptiveThrottle | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
     """Fetch an article URL and return its plain text.
 
     The caller owns the :class:`httpx.Client` (so connection pooling, custom
     transports, and timeout policy are external concerns). Redirects are
-    followed automatically. Transient failures (429, 5xx, transport errors)
-    are retried per the module-level policy; ``sleep`` is injectable so tests
-    don't pay real wall time.
+    followed automatically. Transient failures (429, 403, 5xx, transport
+    errors) are retried per the module-level policy.
+
+    ``throttle`` is the shared :class:`AdaptiveThrottle` carrying rate-limit
+    state across every fetch in a run; pass one instance for a whole pull so
+    throttling congress.gov slows *subsequent* URLs too. When omitted, a fresh
+    per-call throttle is used (fine for one-off fetches and tests). ``sleep`` is
+    injectable so tests don't pay real wall time; it also seeds the default
+    throttle's clock.
 
     Raises :class:`TextFetchError` on:
 
@@ -117,7 +210,7 @@ def fetch_text(
     - transport-level failures after retries are exhausted (``status_code`` is ``None``)
     - HTML that contains no ``<pre>`` block (``status_code`` is ``None``)
     """
-    response = _get_with_retry(url, client, sleep)
+    response = _get_with_retry(url, client, throttle or AdaptiveThrottle(sleep=sleep), sleep)
 
     extractor = _PreExtractor()
     extractor.feed(response.text)
@@ -130,8 +223,13 @@ def fetch_text(
 def _get_with_retry(
     url: str,
     client: httpx.Client,
+    throttle: AdaptiveThrottle,
     sleep: Callable[[float], None],
 ) -> httpx.Response:
+    # Proactively wait out any backoff carried over from earlier URLs before the
+    # first attempt — congress.gov rate-limits per client, so hammering the next
+    # URL immediately after a throttle just re-trips the limit.
+    throttle.pace()
     transient_attempts = 0
     while True:
         try:
@@ -150,23 +248,20 @@ def _get_with_retry(
 
         status = response.status_code
 
-        if status == HTTP_FORBIDDEN:
-            # congress.gov returns 403 instead of 429 when rate-limiting bulk
-            # fetches. Treat it the same as 429: back off and retry indefinitely
-            # rather than surfacing a permanent failure. Retries do not count
-            # against transient_attempts — being throttled is a wait condition,
-            # not a fault.
-            delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
-            _log.warning("403 from %s (rate-limited?); backing off %.1fs before retry", url, delay)
-            sleep(delay)
-            continue
-
-        if status == HTTP_TOO_MANY_REQUESTS:
-            delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
-            _log.warning("429 from %s; backing off %.1fs before retry", url, delay)
-            sleep(delay)
-            # 429 retries do not increment transient_attempts — rate-limited
-            # is a wait condition, not a fault.
+        if status in (HTTP_FORBIDDEN, HTTP_TOO_MANY_REQUESTS):
+            # Both are Cloudflare throttle signals on this tier (403 = bot/WAF
+            # block, no Retry-After; 429 = rate-limit rule, usually with one).
+            # Escalate the shared throttle and retry indefinitely. Throttle waits
+            # do not increment transient_attempts — being blocked is a wait
+            # condition, not a fault, and must not burn the 5xx budget.
+            delay = throttle.penalize(_retry_after_seconds(response))
+            _log.warning(
+                "%d from %s (rate-limited?); backing off %.1fs before retry (level %d)",
+                status,
+                url,
+                delay,
+                throttle.level,
+            )
             continue
 
         if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
@@ -195,6 +290,7 @@ def _get_with_retry(
                 status_code=status,
             )
 
+        throttle.recover()
         return response
 
 
