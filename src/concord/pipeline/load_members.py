@@ -26,7 +26,6 @@ Re-running over a JSONL that gained new snapshots converges the SQL
 state to the latest-snapshot projection.
 """
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +33,7 @@ from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
-from concord.models import Member, Term
+from concord.models import Member, Snapshot, Term
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_members")
@@ -49,7 +48,7 @@ class LoadStats(NamedTuple):
     malformed: int
 
 
-def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR0915 — pipeline orchestrator
+def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
     """Load the JSONL snapshot stream into SQLite.
 
     Returns the count of Members and Terms written plus diagnostics.
@@ -70,33 +69,25 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:  # noqa: C901, PLR091
                 continue
             snapshots_read += 1
             try:
-                envelope = json.loads(line)
-            except json.JSONDecodeError as exc:
-                malformed += 1
-                _log.warning("skipping malformed line %d: %s", line_no, exc)
-                continue
-            try:
-                key = envelope["key"]
-                bioguide_id = key["bioguide_id"]
-                congress = int(key["congress"])
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-            except (KeyError, TypeError, ValueError) as exc:
+                snap = Snapshot[dict[str, Any]].model_validate_json(line)
+                bioguide_id = str(snap.key["bioguide_id"])
+                congress = int(snap.key["congress"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 # Envelopes from before the composite-key migration lack
                 # ``congress`` and aren't loadable here — they need a
                 # re-scrape to restore the queried-Congress signal.
                 malformed += 1
-                _log.warning("skipping line %d with bad envelope: %s", line_no, exc)
+                _log.warning("skipping malformed line %d: %s", line_no, exc)
                 continue
 
             cell = (bioguide_id, congress)
             current_cell = latest_per_cell.get(cell)
-            if current_cell is None or fetched_at > current_cell[0]:
-                latest_per_cell[cell] = (fetched_at, payload)
+            if current_cell is None or snap.fetched_at > current_cell[0]:
+                latest_per_cell[cell] = (snap.fetched_at, snap.payload)
 
             current_member = latest_per_member.get(bioguide_id)
-            if current_member is None or fetched_at > current_member[0]:
-                latest_per_member[bioguide_id] = (fetched_at, payload)
+            if current_member is None or snap.fetched_at > current_member[0]:
+                latest_per_member[bioguide_id] = (snap.fetched_at, snap.payload)
 
     # Project each (bioguide_id, congress) snapshot into one Term row.
     terms_by_member: dict[str, list[Term]] = {}

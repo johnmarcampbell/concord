@@ -24,7 +24,6 @@ skipped; the parent vote row still loads. Re-running over unchanged
 JSONL is a no-op for both chambers.
 """
 
-import json
 import logging
 import re
 import sqlite3
@@ -35,7 +34,8 @@ from typing import Any, NamedTuple
 from pydantic import ValidationError
 
 from concord.models import (
-    ParsedVoteDetail,
+    SenateVoteDetail,
+    Snapshot,
     Vote,
     VotePosition,
     vote_id_from_components,
@@ -225,7 +225,7 @@ def _load_senate(
             malformed += 1
             _log.warning("skipping senate vote after parse failure: %s", exc)
             continue
-        vote = _vote_from_parsed_detail(detail)
+        vote = _vote_from_senate_detail(detail)
         storage.upsert_vote(vote, fetched_at=fetched_at.isoformat())
         votes_written += 1
 
@@ -272,8 +272,8 @@ def _parse_position_rows(payload: dict[str, Any], vote_id: str) -> list[VotePosi
     return list(by_bioguide.values())
 
 
-def _vote_from_parsed_detail(detail: ParsedVoteDetail) -> Vote:
-    """Project a Senate ``ParsedVoteDetail`` into the canonical ``Vote`` model."""
+def _vote_from_senate_detail(detail: SenateVoteDetail) -> Vote:
+    """Project a Senate ``SenateVoteDetail`` into the canonical ``Vote`` model."""
     return Vote(
         vote_id=detail.vote_id,
         chamber=detail.chamber,
@@ -298,7 +298,7 @@ def _vote_from_parsed_detail(detail: ParsedVoteDetail) -> Vote:
 
 
 def _resolve_positions(
-    detail: ParsedVoteDetail,
+    detail: SenateVoteDetail,
     bridge: dict[str, str],
     conn: sqlite3.Connection,
 ) -> list[VotePosition]:
@@ -398,7 +398,13 @@ def _ingest_envelopes(
     path: Path,
     latest_per_key: dict[VoteKey, tuple[datetime, dict[str, Any]]],
 ) -> tuple[int, int]:
-    """Read one JSONL file with dict payloads, populate ``latest_per_key`` in place."""
+    """Read one JSONL file with dict payloads, populate ``latest_per_key`` in place.
+
+    Validates each line through ``Snapshot[dict[str, Any]]`` — envelope shape
+    (fetched_at, key, payload) is enforced at the read boundary per ADR 0018.
+    The payload stays as a raw dict; the wire-shape parse (Vote.from_congress_api)
+    happens on dedup winners only, avoiding wasted work on losers.
+    """
     snapshots_read = 0
     malformed = 0
     with path.open("r", encoding="utf-8") as fh:
@@ -408,22 +414,19 @@ def _ingest_envelopes(
                 continue
             snapshots_read += 1
             try:
-                envelope = json.loads(line)
-                key_raw = envelope["key"]
-                chamber = str(key_raw["chamber"]).lower()
-                congress = int(key_raw["congress"])
-                session = int(key_raw["session"])
-                roll_number = int(key_raw["roll_number"])
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                snap = Snapshot[dict[str, Any]].model_validate_json(line)
+                chamber = str(snap.key["chamber"]).lower()
+                congress = int(snap.key["congress"])
+                session = int(snap.key["session"])
+                roll_number = int(snap.key["roll_number"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping malformed %s line %d: %s", path.name, line_no, exc)
                 continue
             key: VoteKey = (chamber, congress, session, roll_number)
             current = latest_per_key.get(key)
-            if current is None or fetched_at > current[0]:
-                latest_per_key[key] = (fetched_at, payload)
+            if current is None or snap.fetched_at > current[0]:
+                latest_per_key[key] = (snap.fetched_at, snap.payload)
     return snapshots_read, malformed
 
 
@@ -431,7 +434,12 @@ def _ingest_string_envelopes(
     path: Path,
     latest_per_key: dict[VoteKey, tuple[datetime, str]],
 ) -> tuple[int, int]:
-    """Same as ``_ingest_envelopes`` but ``payload`` is a string (raw XML)."""
+    """Same as ``_ingest_envelopes`` but ``payload`` is a string (raw XML).
+
+    Senate detail JSONL carries the raw XML string in ``payload`` (not a
+    JSON object); ``Snapshot[str]`` validates the envelope and the payload
+    type in one pass.
+    """
     snapshots_read = 0
     malformed = 0
     with path.open("r", encoding="utf-8") as fh:
@@ -441,24 +449,19 @@ def _ingest_string_envelopes(
                 continue
             snapshots_read += 1
             try:
-                envelope = json.loads(line)
-                key_raw = envelope["key"]
-                chamber = str(key_raw["chamber"]).lower()
-                congress = int(key_raw["congress"])
-                session = int(key_raw["session"])
-                roll_number = int(key_raw["roll_number"])
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-                if not isinstance(payload, str):
-                    raise TypeError("senate payload must be a string")  # noqa: TRY301
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                snap = Snapshot[str].model_validate_json(line)
+                chamber = str(snap.key["chamber"]).lower()
+                congress = int(snap.key["congress"])
+                session = int(snap.key["session"])
+                roll_number = int(snap.key["roll_number"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping malformed %s line %d: %s", path.name, line_no, exc)
                 continue
             key: VoteKey = (chamber, congress, session, roll_number)
             current = latest_per_key.get(key)
-            if current is None or fetched_at > current[0]:
-                latest_per_key[key] = (fetched_at, payload)
+            if current is None or snap.fetched_at > current[0]:
+                latest_per_key[key] = (snap.fetched_at, snap.payload)
     return snapshots_read, malformed
 
 
@@ -467,7 +470,8 @@ def _latest_string_payload(path: Path) -> str | None:
 
     Used for the senate_roster.jsonl file where the key shape is
     ``{"source": "senators_cfm"}`` — there's no per-roll key to group
-    by, just "latest snapshot wins".
+    by, just "latest snapshot wins". Validates envelopes through
+    ``Snapshot[str]`` per ADR 0018.
     """
     latest_at: datetime | None = None
     latest_payload: str | None = None
@@ -477,16 +481,12 @@ def _latest_string_payload(path: Path) -> str | None:
             if not line:
                 continue
             try:
-                envelope = json.loads(line)
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-                if not isinstance(payload, str):
-                    continue
-            except (KeyError, ValueError, json.JSONDecodeError):
+                snap = Snapshot[str].model_validate_json(line)
+            except (ValueError, ValidationError):
                 continue
-            if latest_at is None or fetched_at > latest_at:
-                latest_at = fetched_at
-                latest_payload = payload
+            if latest_at is None or snap.fetched_at > latest_at:
+                latest_at = snap.fetched_at
+                latest_payload = snap.payload
     return latest_payload
 
 

@@ -1,15 +1,24 @@
 """Vote-related models (Phase 3a).
 
-- :class:`Vote` — the canonical row written to the ``votes`` SQLite table.
+- :class:`Vote` — the canonical (domain) row written to the ``votes`` SQLite
+  table. House parses straight into this; Senate projects to it from
+  :class:`SenateVoteDetail` (ADR 0018 Rule 3, wire-shape-projects-to-domain).
 - :class:`VotePosition` — one Member's recorded position on one Vote.
-- :class:`VoteSnapshot` / :class:`VotePositionsSnapshot` — ADR 0006 envelopes.
-- :class:`ParsedVotePosition` / :class:`ParsedVoteDetail` — Senate XML
-  intermediates carried by :mod:`concord.senate_xml` until the loader
-  resolves their ``member_full`` bridge strings to Bioguide IDs.
+  House wire shape coincides with domain shape; Senate projects to it
+  from :class:`SenateVotePosition` after Bioguide resolution.
+- :class:`HouseVoteMembers` — wire shape of the
+  ``/v3/house-vote/{c}/{s}/{r}/members`` response wrapper.
+- :class:`SenateVoteDetail` / :class:`SenateVotePosition` — wire shapes
+  parsed from senate.gov LIS detail XML. Carry an unresolved
+  ``member_full`` bridge string until the loader resolves to Bioguide ID.
+
+Persistence envelopes are ``Snapshot[T]`` per ADR 0006 / ADR 0018:
+``Snapshot[Vote]`` for House detail JSONL, ``Snapshot[HouseVoteMembers]``
+for House positions JSONL, ``Snapshot[SenateVoteDetail]`` for Senate
+detail JSONL.
 """
 
-from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -72,12 +81,17 @@ def parse_vote_threshold(vote_type: str) -> VoteThreshold | None:
 
 
 class Vote(BaseModel):
-    """One recorded roll-call decision in a chamber.
+    """One recorded roll-call decision in a chamber (domain model).
 
     Identified by ``(chamber, congress, session, roll_number)``; the
     flattened ``vote_id`` is the SQL primary key. ``bill_id`` and
     ``amendment_id`` are bare TEXT references (no FK) so ingest is
     robust to gaps in the Bills / Amendments tables.
+
+    House wire shape and domain shape coincide — ``from_congress_api``
+    parses the House JSON directly into this class. Senate's wire shape
+    (:class:`SenateVoteDetail`) projects into ``Vote`` at load time via
+    ``pipeline.load_votes._vote_from_senate_detail``.
 
     ``is_party_unity`` defaults to False; the indexer (Stage 2)
     populates it across all rows.
@@ -115,7 +129,7 @@ class Vote(BaseModel):
         return normalize_chamber(value)
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any], *, chamber: str) -> "Vote":
+    def from_congress_api(cls, payload: dict[str, Any], *, chamber: str) -> Self:
         """Project a ``/v3/house-vote/{c}/{s}/{roll}`` detail payload into a :class:`Vote`.
 
         ``chamber`` is supplied by the caller because the API leaves it
@@ -192,7 +206,7 @@ class Vote(BaseModel):
 
 
 class VotePosition(BaseModel):
-    """One Member's recorded position on one Vote.
+    """One Member's recorded position on one Vote (domain model).
 
     ``position`` is free-text rather than an enum: for standard votes
     it's ``"Yea"`` / ``"Nay"`` / ``"Present"`` / ``"Not Voting"``; for
@@ -201,6 +215,11 @@ class VotePosition(BaseModel):
 
     ``vote_party`` and ``vote_state`` are denormalized off the API
     payload so party-unity computation doesn't have to join `terms`.
+
+    House wire shape coincides with domain shape — ``from_congress_api``
+    parses House JSON rows directly. Senate's wire shape
+    (:class:`SenateVotePosition`) projects into ``VotePosition`` at load
+    time after the ``member_full`` → Bioguide bridge resolves.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -211,7 +230,7 @@ class VotePosition(BaseModel):
     vote_state: str
 
     @classmethod
-    def from_congress_api(cls, row: dict[str, Any]) -> "VotePosition":
+    def from_congress_api(cls, row: dict[str, Any]) -> Self:
         """Project one ``/.../members`` ``results`` row into a :class:`VotePosition`.
 
         Tolerates the API's casing slop (``bioguideID`` vs ``bioguideId``).
@@ -231,44 +250,38 @@ class VotePosition(BaseModel):
         )
 
 
-class VoteSnapshot(BaseModel):
-    """ADR 0006 envelope wrapping one ``/house-vote/{c}/{s}/{roll}`` response.
+class HouseVoteMembers(BaseModel):
+    """Wire shape of the ``/v3/house-vote/{c}/{s}/{r}/members`` response wrapper.
 
-    Stage 0 appends one of these per detail fetch to
-    ``data/house_votes.jsonl``. The Stage 1 loader groups by
-    ``(chamber, congress, session, roll_number)`` and keeps the latest
-    ``fetched_at`` per key.
+    The endpoint returns ``{"results": [<row>, ...]}`` (plus paging
+    metadata the loader ignores). Per-row parsing happens in the loader
+    via :meth:`VotePosition.from_congress_api` so per-vote logging context
+    (``vote_id``) is preserved when a row is malformed — eager validation
+    of every row at envelope-parse time would lose that context.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    fetched_at: datetime
-    key: dict[str, str | int]
-    payload: dict[str, Any]
+    results: list[dict[str, Any]]
+
+    @classmethod
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
+        """Validate the response-wrapper shape; defer per-row parsing to the loader."""
+        results = payload.get("results")
+        if not isinstance(results, list):
+            raise TypeError(f"house-vote members payload missing 'results' list: {payload!r}")
+        return cls(results=results)
 
 
-class VotePositionsSnapshot(BaseModel):
-    """ADR 0006 envelope wrapping one ``/.../members`` response.
-
-    Stage 0 appends one of these per members fetch to
-    ``data/house_vote_positions.jsonl``. Same `key` shape as
-    :class:`VoteSnapshot` so the loader joins them by key.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    fetched_at: datetime
-    key: dict[str, str | int]
-    payload: dict[str, Any]
-
-
-class ParsedVotePosition(BaseModel):
-    """One Senate-detail-XML ``<member>`` row, ready for the loader.
+class SenateVotePosition(BaseModel):
+    """Wire shape of one ``<member>`` row in senate.gov LIS detail XML.
 
     Carries ``member_full`` (the bridge string) and ``lis_member_id``
     instead of ``bioguide_id`` — the Senate XML keys positions by LIS
     member ID, and the load step resolves to a Bioguide ID via the
-    senators_cfm roster + Phase 1 ``members`` table.
+    senators_cfm roster + Phase 1 ``members`` table. Constructed by
+    :meth:`SenateVoteDetail.from_senate_xml`; projects to
+    :class:`VotePosition` once bridged.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -282,17 +295,19 @@ class ParsedVotePosition(BaseModel):
     lis_member_id: str | None = None
 
 
-class ParsedVoteDetail(BaseModel):
-    """One Senate-detail-XML payload, parsed into typed loader input.
+class SenateVoteDetail(BaseModel):
+    """Wire shape of one senate.gov LIS per-roll detail XML file.
 
-    Mirrors :class:`Vote`'s shape but carries an unresolved
-    ``positions`` list (each entry keyed by ``member_full``, not
-    ``bioguide_id``). The loader iterates ``positions`` and resolves
-    each entry to a Bioguide ID before persisting.
+    URL: ``https://www.senate.gov/legislative/LIS/roll_call_votes/.../vote_{c}_{s}_{roll5}.xml``.
+    Constructed by :meth:`from_senate_xml` (defined in :mod:`concord.senate_xml`
+    to keep the lxml-flavored parser logic local; the model declares the
+    schema and the classmethod stub here, the parser implements it).
 
-    Distinct from :class:`Vote` because the bridge resolution happens
-    at load time, not parse time — the parser doesn't have access to
-    the SQLite ``members`` table or the senators_cfm roster.
+    Mirrors :class:`Vote`'s shape but carries an unresolved ``positions``
+    list (each entry keyed by ``member_full``, not ``bioguide_id``). The
+    loader iterates ``positions`` and resolves each entry to a Bioguide
+    ID before persisting. Per ADR 0018 Rule 3, this is the wire-shape
+    model that projects to the canonical :class:`Vote` domain model.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -316,12 +331,26 @@ class ParsedVoteDetail(BaseModel):
     not_voting_count: int | None = None
     bill_id: str | None = None
     amendment_id: str | None = None
-    positions: list[ParsedVotePosition]
+    positions: list[SenateVotePosition]
 
     @field_validator("chamber", mode="before")
     @classmethod
     def _coerce_chamber(cls, value: Any) -> Any:
         return normalize_chamber(value)
+
+    @classmethod
+    def from_senate_xml(cls, xml_bytes: bytes) -> Self:
+        """Parse one senate.gov LIS detail XML into a :class:`SenateVoteDetail`.
+
+        Defers to :func:`concord.senate_xml.parse_vote_detail` for the
+        actual XML walking (where the parser utilities live). Kept as a
+        classmethod stub here so the wire-shape model owns its
+        constructor's name and signature per ADR 0018 Rule 2.
+        """
+        # Local import to break the otherwise-circular models ↔ senate_xml dep.
+        from concord.senate_xml import parse_vote_detail  # noqa: PLC0415
+
+        return parse_vote_detail(xml_bytes)  # type: ignore[return-value]
 
 
 def _extract_vote_party_totals(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -343,13 +372,12 @@ def _is_election_vote(party_totals: list[dict[str, Any]]) -> bool:
 
 
 __all__ = [
-    "ParsedVoteDetail",
-    "ParsedVotePosition",
+    "HouseVoteMembers",
+    "SenateVoteDetail",
+    "SenateVotePosition",
     "Vote",
     "VoteKind",
     "VotePosition",
-    "VotePositionsSnapshot",
-    "VoteSnapshot",
     "VoteThreshold",
     "amendment_id_from_components",
     "parse_vote_threshold",

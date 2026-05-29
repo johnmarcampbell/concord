@@ -1,13 +1,15 @@
 """Bill and tier-2 entity models (Phase 2a/b).
 
-The :class:`Bill` row carries identity fields only; the political-graph
+The :class:`BillDetail` row carries identity fields only; the political-graph
 data (cosponsors, actions, subjects, titles, summaries) lives in the
 five tier-2 models below, one per :doc:`ADR 0009 </adr/0009>` JSONL
-sibling file.
+sibling file. Naming follows the endpoint that produced each model per
+:doc:`ADR 0018 </adr/0018>`: ``BillDetail`` from ``/v3/bill/{c}/{t}/{n}``,
+``BillCosponsor`` from ``/cosponsors``, etc. The unqualified "Bill" is
+the aggregate domain concept and is not bound to any class.
 """
 
-from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -22,13 +24,15 @@ def bill_id_from_components(congress: int, bill_type: str, bill_number: int) -> 
     return f"{congress}-{bill_type.lower()}-{bill_number}"
 
 
-class Bill(BaseModel):
-    """A piece of legislation introduced in either chamber.
+class BillDetail(BaseModel):
+    """Wire shape of ``/v3/bill/{c}/{t}/{n}`` — a Bill's identity record.
 
-    Identity record only — the mutable political-graph data (cosponsors,
-    actions, subjects, titles, summaries) lives in child tables added in
-    Phase 2b. Fields here are exactly what the loader writes to the
-    ``bills`` SQLite table.
+    The detail endpoint nests sponsors / policyArea / latestAction one
+    level deep; :meth:`from_congress_api` flattens them into the columns
+    the loader writes. Doubles as the domain model since the wire shape
+    already aligns with what the ``bills`` table needs (ADR 0018 Rule 3).
+    Mutable political-graph data (cosponsors, actions, subjects, titles,
+    summaries) lives in the sibling tier-2 models below.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -54,8 +58,8 @@ class Bill(BaseModel):
         return value
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "Bill":
-        """Project a ``/v3/bill/{c}/{t}/{n}`` detail payload into a :class:`Bill`.
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
+        """Project a ``/v3/bill/{c}/{t}/{n}`` detail payload into a :class:`BillDetail`.
 
         The detail endpoint nests sponsors / policyArea / latestAction one
         level deep; this helper flattens them into the columns the loader
@@ -97,27 +101,14 @@ class Bill(BaseModel):
         )
 
 
-class BillSnapshot(BaseModel):
-    """ADR 0006 envelope wrapping one raw ``/bill`` detail API response.
+class BillCosponsor(BaseModel):
+    """Wire shape of one row from ``/v3/bill/{c}/{t}/{n}/cosponsors``.
 
-    Each Stage 0 fetch appends one of these to ``data/bills.jsonl``. The
-    Stage 1 loader groups by ``(key["congress"], key["bill_type"],
-    key["bill_number"])`` and keeps the latest ``fetched_at`` per key.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    fetched_at: datetime
-    key: dict[str, str | int]
-    payload: dict[str, Any]
-
-
-class Cosponsor(BaseModel):
-    """One Member's M:N edge to a Bill, as recorded on the Bill's cosponsors list.
-
-    ``sponsorship_withdrawn_date`` is non-NULL for Members who removed
-    their name after signing on. ``is_original_cosponsor`` is True for
-    cosponsors recorded on the day of introduction.
+    Models a Member's M:N edge to a Bill. ``sponsorship_withdrawn_date``
+    is non-NULL for Members who removed their name after signing on.
+    ``is_original_cosponsor`` is True for cosponsors recorded on the day
+    of introduction. The bare domain term "Cosponsor" stays in CONTEXT.md;
+    the class follows the endpoint-naming rule (ADR 0018 Rule 4).
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -128,8 +119,8 @@ class Cosponsor(BaseModel):
     is_original_cosponsor: bool
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "Cosponsor":
-        """Project one ``/cosponsors`` row into a :class:`Cosponsor`.
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
+        """Project one ``/cosponsors`` row into a :class:`BillCosponsor`.
 
         Raises ``ValueError`` if the row lacks a ``bioguideId`` — the API
         has been known to emit placeholder entries for unfilled vacancies,
@@ -147,7 +138,8 @@ class Cosponsor(BaseModel):
 
 
 class BillAction(BaseModel):
-    """One event in a Bill's legislative history."""
+    """Wire shape of one row from ``/v3/bill/{c}/{t}/{n}/actions`` —
+    one event in a Bill's legislative history."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -157,7 +149,7 @@ class BillAction(BaseModel):
     source_system: str
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "BillAction":
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project one ``/actions`` row into a :class:`BillAction`."""
         action_date = payload.get("actionDate")
         text = payload.get("text")
@@ -172,7 +164,8 @@ class BillAction(BaseModel):
 
 
 class BillSubject(BaseModel):
-    """One CRS-assigned legislative subject for a Bill.
+    """Wire shape of one row from ``/v3/bill/{c}/{t}/{n}/subjects`` —
+    one CRS-assigned legislative subject for a Bill.
 
     A thin wrapper around a single string — modeled so the loader and
     storage layer can speak the same noun for the row.
@@ -183,7 +176,7 @@ class BillSubject(BaseModel):
     name: str
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "BillSubject":
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project one ``legislativeSubjects`` row into a :class:`BillSubject`."""
         name = payload.get("name")
         if not name:
@@ -192,7 +185,8 @@ class BillSubject(BaseModel):
 
 
 class BillTitle(BaseModel):
-    """One title variant for a Bill (display, official, short, popular)."""
+    """Wire shape of one row from ``/v3/bill/{c}/{t}/{n}/titles`` —
+    one title variant for a Bill (display, official, short, popular)."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -201,7 +195,7 @@ class BillTitle(BaseModel):
     chamber: str | None = None
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "BillTitle":
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project one ``/titles`` row into a :class:`BillTitle`."""
         title_type = payload.get("titleType")
         title_text = payload.get("title")
@@ -215,7 +209,8 @@ class BillTitle(BaseModel):
 
 
 class BillSummary(BaseModel):
-    """One CRS-written summary version for a Bill."""
+    """Wire shape of one row from ``/v3/bill/{c}/{t}/{n}/summaries`` —
+    one CRS-written summary version for a Bill."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -225,7 +220,7 @@ class BillSummary(BaseModel):
     summary_text: str
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "BillSummary":
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project one ``/summaries`` row into a :class:`BillSummary`."""
         version_code = payload.get("versionCode")
         text = payload.get("text")
@@ -240,12 +235,11 @@ class BillSummary(BaseModel):
 
 
 __all__ = [
-    "Bill",
     "BillAction",
-    "BillSnapshot",
+    "BillCosponsor",
+    "BillDetail",
     "BillSubject",
     "BillSummary",
     "BillTitle",
-    "Cosponsor",
     "bill_id_from_components",
 ]

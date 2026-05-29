@@ -15,7 +15,7 @@ distinct URLs:
 This module owns the HTTP client (:class:`SenateClient`) and the
 parsing helpers (:func:`parse_vote_menu`, :func:`parse_vote_detail`,
 :func:`parse_senate_roster`). The parsers return typed pydantic models
-(:class:`ParsedVoteDetail`, :class:`ParsedVotePosition`) — see
+(:class:`SenateVoteDetail`, :class:`SenateVotePosition`) — see
 :mod:`concord.models`.
 
 Senate timestamps in the detail XML are wall-clock ET without a
@@ -36,8 +36,8 @@ import httpx
 
 from . import __version__
 from .models import (
-    ParsedVoteDetail,
-    ParsedVotePosition,
+    SenateVoteDetail,
+    SenateVotePosition,
     amendment_id_from_components,
     bill_id_from_components,
     vote_id_from_components,
@@ -269,8 +269,8 @@ def parse_senate_roster(xml_bytes: bytes) -> dict[str, str]:
     return bridge
 
 
-def parse_vote_detail(xml_bytes: bytes) -> ParsedVoteDetail:
-    """Parse one detail XML file into a typed :class:`ParsedVoteDetail`.
+def parse_vote_detail(xml_bytes: bytes) -> SenateVoteDetail:
+    """Parse one detail XML file into a typed :class:`SenateVoteDetail`.
 
     Implements the subject-branching documented in
     ``docs/plans/phase-3b-votes-senate.md`` — amendment votes precede
@@ -330,7 +330,7 @@ def parse_vote_detail(xml_bytes: bytes) -> ParsedVoteDetail:
 
     positions = list(_iter_positions(root))
 
-    return ParsedVoteDetail(
+    return SenateVoteDetail(
         vote_id=vote_id_from_components("senate", congress, session, roll_number),
         chamber="senate",
         congress=congress,
@@ -382,13 +382,13 @@ def _resolve_subject(
     return bill_id, None
 
 
-def _iter_positions(root: ET.Element) -> Iterator[ParsedVotePosition]:
+def _iter_positions(root: ET.Element) -> Iterator[SenateVotePosition]:
     for member in root.iterfind("members/member"):
         member_full = (member.findtext("member_full") or "").strip()
         vote_cast = (member.findtext("vote_cast") or "").strip()
         if not member_full or not vote_cast:
             continue
-        yield ParsedVotePosition(
+        yield SenateVotePosition(
             member_full=member_full,
             last_name=(member.findtext("last_name") or "").strip() or None,
             first_name=(member.findtext("first_name") or "").strip() or None,

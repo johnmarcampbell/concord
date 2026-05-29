@@ -16,7 +16,6 @@ over a JSONL that gained new snapshots converges the SQL projection to
 the latest-snapshot view.
 """
 
-import json
 import logging
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -26,12 +25,13 @@ from typing import Any, NamedTuple
 from pydantic import ValidationError
 
 from concord.models import (
-    Bill,
     BillAction,
+    BillCosponsor,
+    BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Cosponsor,
+    Snapshot,
 )
 from concord.scraper.bills import (
     BILL_ENRICHMENT_SECTIONS,
@@ -81,7 +81,7 @@ def load(
     try:
         for (_c, _t, _n), (fetched_at, payload) in latest_per_key.items():
             try:
-                bill = Bill.from_congress_api(payload)
+                bill = BillDetail.from_congress_api(payload)
             except (KeyError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
@@ -157,7 +157,7 @@ def load_one(
         if latest is not None:
             fetched_at, payload = latest
             try:
-                bill = Bill.from_congress_api(payload)
+                bill = BillDetail.from_congress_api(payload)
                 storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
                 bills_written = 1
             except (KeyError, ValueError, ValidationError) as exc:
@@ -206,27 +206,19 @@ def _scan_tier1_for_key(
             if not line:
                 continue
             try:
-                envelope = json.loads(line)
-                key = envelope["key"]
-                congress = int(key["congress"])
-                bill_type = str(key["bill_type"]).lower()
-                bill_number = int(key["bill_number"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                snap = Snapshot[dict[str, Any]].model_validate_json(line)
+                congress = int(snap.key["congress"])
+                bill_type = str(snap.key["bill_type"]).lower()
+                bill_number = int(snap.key["bill_number"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping malformed bills.jsonl line %d: %s", line_no, exc)
                 continue
             if (congress, bill_type, bill_number) != target_key:
                 continue
             snapshots_read += 1
-            try:
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-            except (KeyError, TypeError, ValueError) as exc:
-                malformed += 1
-                _log.warning("skipping bills.jsonl line %d with bad envelope: %s", line_no, exc)
-                continue
-            if latest is None or fetched_at > latest[0]:
-                latest = (fetched_at, payload)
+            if latest is None or snap.fetched_at > latest[0]:
+                latest = (snap.fetched_at, snap.payload)
     return latest, snapshots_read, malformed
 
 
@@ -254,27 +246,19 @@ def _load_tier2_section_for_bill(
             if not line:
                 continue
             try:
-                envelope = json.loads(line)
-                key = envelope["key"]
-                congress = int(key["congress"])
-                bill_type = str(key["bill_type"]).lower()
-                bill_number = int(key["bill_number"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                snap = Snapshot[dict[str, Any]].model_validate_json(line)
+                congress = int(snap.key["congress"])
+                bill_type = str(snap.key["bill_type"]).lower()
+                bill_number = int(snap.key["bill_number"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 counters["malformed"] += 1
                 _log.warning("skipping malformed %s line %d: %s", path.name, line_no, exc)
                 continue
             if f"{congress}-{bill_type}-{bill_number}" != bill_id:
                 continue
             counters["snapshots_read"] += 1
-            try:
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-            except (KeyError, TypeError, ValueError) as exc:
-                counters["malformed"] += 1
-                _log.warning("skipping %s line %d with bad envelope: %s", path.name, line_no, exc)
-                continue
-            if latest is None or fetched_at > latest[0]:
-                latest = (fetched_at, payload)
+            if latest is None or snap.fetched_at > latest[0]:
+                latest = (snap.fetched_at, snap.payload)
 
     if latest is None:
         return counters
@@ -306,26 +290,18 @@ def _ingest_tier1(
                 continue
             snapshots_read += 1
             try:
-                envelope = json.loads(line)
-            except json.JSONDecodeError as exc:
+                snap = Snapshot[dict[str, Any]].model_validate_json(line)
+                congress = int(snap.key["congress"])
+                bill_type = str(snap.key["bill_type"]).lower()
+                bill_number = int(snap.key["bill_number"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 malformed += 1
                 _log.warning("skipping malformed line %d: %s", line_no, exc)
                 continue
-            try:
-                key = envelope["key"]
-                congress = int(key["congress"])
-                bill_type = str(key["bill_type"]).lower()
-                bill_number = int(key["bill_number"])
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-            except (KeyError, TypeError, ValueError) as exc:
-                malformed += 1
-                _log.warning("skipping line %d with bad envelope: %s", line_no, exc)
-                continue
             cell = (congress, bill_type, bill_number)
             current = latest_per_key.get(cell)
-            if current is None or fetched_at > current[0]:
-                latest_per_key[cell] = (fetched_at, payload)
+            if current is None or snap.fetched_at > current[0]:
+                latest_per_key[cell] = (snap.fetched_at, snap.payload)
     return snapshots_read, malformed
 
 
@@ -357,21 +333,18 @@ def _load_tier2_section(
                 continue
             counters["snapshots_read"] += 1
             try:
-                envelope = json.loads(line)
-                key = envelope["key"]
-                congress = int(key["congress"])
-                bill_type = str(key["bill_type"]).lower()
-                bill_number = int(key["bill_number"])
-                fetched_at = datetime.fromisoformat(envelope["fetched_at"])
-                payload = envelope["payload"]
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                snap = Snapshot[dict[str, Any]].model_validate_json(line)
+                congress = int(snap.key["congress"])
+                bill_type = str(snap.key["bill_type"]).lower()
+                bill_number = int(snap.key["bill_number"])
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
                 counters["malformed"] += 1
                 _log.warning("skipping malformed %s line %d: %s", path.name, line_no, exc)
                 continue
             bill_id = f"{congress}-{bill_type}-{bill_number}"
             current = latest.get(bill_id)
-            if current is None or fetched_at > current[0]:
-                latest[bill_id] = (fetched_at, payload)
+            if current is None or snap.fetched_at > current[0]:
+                latest[bill_id] = (snap.fetched_at, snap.payload)
 
     # One IN-list query instead of N point-lookups: at full-Congress
     # scale the orphan check used to dominate the loader.
@@ -423,10 +396,10 @@ def _parsed_rows[T](
 def _project_cosponsors(
     storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
 ) -> None:
-    cosponsors: list[Cosponsor] = []
+    cosponsors: list[BillCosponsor] = []
     seen_bioguides: set[str] = set()
     for parsed in _parsed_rows(
-        payload.get("cosponsors") or [], Cosponsor.from_congress_api, bill_id, "cosponsor"
+        payload.get("cosponsors") or [], BillCosponsor.from_congress_api, bill_id, "cosponsor"
     ):
         if parsed.bioguide_id in seen_bioguides:
             continue

@@ -1,4 +1,4 @@
-"""Tests for Member / Term / MemberSnapshot models.
+"""Tests for Member / Term models plus the Snapshot envelope round-trip.
 
 Covers (1) parsing the identity half of a real API payload, (2) the
 per-Congress Term projection that takes the queried Congress as input,
@@ -19,7 +19,7 @@ import pytest
 
 from concord.models import (
     Member,
-    MemberSnapshot,
+    Snapshot,
     Term,
     normalize_state,
 )
@@ -158,7 +158,7 @@ class TestSnapshotEnvelope:
             fetched_at=FIXED_FETCHED_AT,
             key={"bioguide_id": "X000001", "congress": 119},
         )
-        snapshot = MemberSnapshot.model_validate(envelope)
+        snapshot = Snapshot[dict].model_validate(envelope)
         assert snapshot.fetched_at == FIXED_FETCHED_AT
         assert snapshot.key == {"bioguide_id": "X000001", "congress": 119}
         assert snapshot.payload == payload
