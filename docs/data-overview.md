@@ -9,6 +9,153 @@ It is deliberately a *reference*, not a spec. The authoritative definitions live
 - [src/concord/storage/sqlite.py](../src/concord/storage/sqlite.py) — the SQL DDL for the derived store.
 - [docs/adr/](adr/) — the non-obvious decisions referenced throughout.
 
+## Pipeline at a glance
+
+Data flows left-to-right through three stages: **Stage 0** scrapes canonical data sources into JSONL (the source of truth, [ADR 0002](adr/0002-jsonl-as-canonical-raw-store.md)); **Stage 1** loads those JSONL files into the SQLite mirror tables; **Stage 2** indexes the mirror into derived tables (chunks, FTS5, vectors, party-unity). Shape encodes the entity category — **rounded** = canonical data source, **slanted** = JSONL file, **cylinder** = SQLite table — and edge colour tracks the stage that produced it (blue scrape → amber load → green index). The OpenAI embeddings API is the one source that feeds a derived table directly rather than through JSONL.
+
+```mermaid
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontSize": "15px",
+    "lineColor": "#94a3b8",
+    "clusterBkg": "transparent"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "nodeSpacing": 45,
+    "rankSpacing": 90,
+    "padding": 14,
+    "htmlLabels": true,
+    "useMaxWidth": true
+  }
+}}%%
+flowchart LR
+    %% ---- ① Canonical data sources (stadium shape) ----
+    subgraph SRC["&nbsp; ① Canonical data sources &nbsp;"]
+        direction TB
+        DCR(["api.congress.gov<br/><b>/daily-congressional-record</b>"])
+        TXT(["congress.gov<br/><b>Formatted Text URLs</b>"])
+        MEM(["api.congress.gov<br/><b>/member</b>"])
+        BIL(["api.congress.gov<br/><b>/bill + sub-endpoints</b>"])
+        HV(["api.congress.gov<br/><b>/house-vote</b>"])
+        SV(["senate.gov<br/><b>LIS XML feeds</b>"])
+        OAI(["OpenAI<br/><b>embeddings API</b>"])
+    end
+
+    %% ---- ② JSONL canonical raw store · Stage 0 (document shape) ----
+    subgraph JSONL["&nbsp; ② JSONL — canonical raw store · Stage 0 scrape &nbsp;"]
+        direction TB
+        J_proc[/"proceedings.jsonl"/]
+        J_mem[/"members.jsonl"/]
+        J_bill[/"bills.jsonl"/]
+        J_cos[/"bill_cosponsors.jsonl"/]
+        J_act[/"bill_actions.jsonl"/]
+        J_subj[/"bill_subjects.jsonl"/]
+        J_tit[/"bill_titles.jsonl"/]
+        J_sum[/"bill_summaries.jsonl"/]
+        J_hv[/"house_votes.jsonl"/]
+        J_hvp[/"house_vote_positions.jsonl"/]
+        J_sv[/"senate_votes.jsonl"/]
+        J_sr[/"senate_roster.jsonl"/]
+    end
+
+    %% ---- ③ SQLite mirror · Stage 1 (cylinder shape) ----
+    subgraph MIRROR["&nbsp; ③ SQLite mirror · Stage 1 load &nbsp;"]
+        direction TB
+        T_proc[("proceedings")]
+        T_mem[("members")]
+        T_term[("member_terms")]
+        T_bill[("bills")]
+        T_cos[("bill_cosponsors")]
+        T_act[("bill_actions")]
+        T_subj[("bill_subjects")]
+        T_tit[("bill_titles")]
+        T_sum[("bill_summaries")]
+        T_votes[("votes")]
+        T_vp[("vote_positions")]
+    end
+
+    %% ---- ③ SQLite derived indexes · Stage 2 (cylinder shape) ----
+    subgraph DERIVED["&nbsp; ③ SQLite derived indexes · Stage 2 index &nbsp;"]
+        direction TB
+        D_chunks[("chunks")]
+        D_cstat[("chunking_status")]
+        D_cfts[("chunks_fts")]
+        D_cvec[("chunks_vec")]
+        D_mfts[("members_fts")]
+        D_bfts[("bills_fts")]
+        D_pu[("member_party_unity")]
+    end
+
+    %% Stage 0 — scrape: sources -> JSONL (edges 0-12)
+    DCR --> J_proc
+    TXT --> J_proc
+    MEM --> J_mem
+    BIL --> J_bill
+    BIL --> J_cos
+    BIL --> J_act
+    BIL --> J_subj
+    BIL --> J_tit
+    BIL --> J_sum
+    HV --> J_hv
+    HV --> J_hvp
+    SV --> J_sv
+    SV --> J_sr
+
+    %% Stage 1 — load: JSONL -> mirror tables (edges 13-26)
+    J_proc --> T_proc
+    J_mem --> T_mem
+    J_mem --> T_term
+    J_bill --> T_bill
+    J_cos --> T_cos
+    J_act --> T_act
+    J_subj --> T_subj
+    J_tit --> T_tit
+    J_sum --> T_sum
+    J_hv --> T_votes
+    J_hvp --> T_vp
+    J_sv --> T_votes
+    J_sv --> T_vp
+    J_sr -.->|"LIS&nbsp;→&nbsp;Bioguide bridge"| T_vp
+
+    %% Stage 2 — index: mirror -> derived (edges 27-37)
+    T_proc --> D_chunks
+    T_proc --> D_cstat
+    D_chunks --> D_cfts
+    D_chunks --> D_cvec
+    OAI -->|"embeddings"| D_cvec
+    T_mem --> D_mfts
+    T_bill --> D_bfts
+    T_tit --> D_bfts
+    T_subj --> D_bfts
+    T_votes --> D_pu
+    T_vp --> D_pu
+
+    %% ---- node styling: one colour per entity category ----
+    classDef src fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f213f;
+    classDef jsonl fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#3d2a06;
+    classDef sqlite fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#06281c;
+
+    class DCR,TXT,MEM,BIL,HV,SV,OAI src;
+    class J_proc,J_mem,J_bill,J_cos,J_act,J_subj,J_tit,J_sum,J_hv,J_hvp,J_sv,J_sr jsonl;
+    class T_proc,T_mem,T_term,T_bill,T_cos,T_act,T_subj,T_tit,T_sum,T_votes,T_vp,D_chunks,D_cstat,D_cfts,D_cvec,D_mfts,D_bfts,D_pu sqlite;
+
+    %% ---- subgraph borders tinted to their category ----
+    style SRC stroke:#2563eb,stroke-width:1.5px,rx:8,ry:8;
+    style JSONL stroke:#d97706,stroke-width:1.5px,rx:8,ry:8;
+    style MIRROR stroke:#059669,stroke-width:1.5px,rx:8,ry:8;
+    style DERIVED stroke:#059669,stroke-width:1.5px,rx:8,ry:8;
+
+    %% ---- edges coloured by stage ----
+    linkStyle 0,1,2,3,4,5,6,7,8,9,10,11,12 stroke:#3b82f6,stroke-width:2px;
+    linkStyle 13,14,15,16,17,18,19,20,21,22,23,24,25 stroke:#f59e0b,stroke-width:2px;
+    linkStyle 26 stroke:#a855f7,stroke-width:2px;
+    linkStyle 27,28,29,30,31,32,33,34,35,36,37 stroke:#10b981,stroke-width:2px;
+```
+
+Two flows are worth calling out: `members.jsonl` fans out into both `members` (identity) and `member_terms` (per-term party/state), and `senate_votes.jsonl` lands in both `votes` and `vote_positions`, with `senate_roster.jsonl` (the `senators_cfm.xml` snapshot) supplying the LIS-member-ID → Bioguide bridge that resolves Senate positions at load time ([ADR 0010](adr/0010-votes-phased-by-chamber.md)).
+
 ## Data sources
 
 URL path placeholders used below: **`{c}`** = Congress number (e.g. `119`), **`{t}`** = Bill type code (e.g. `hr`), **`{n}`** = Bill number, **`{s}`** = session number (`1` or `2`), **`{roll}`** = roll-call number.
@@ -63,6 +210,7 @@ data/
   house_votes.jsonl                  # snapshot envelope — Vote metadata
   house_vote_positions.jsonl         # snapshot envelope — Vote positions
   senate_votes.jsonl                 # Senate detail XML, snapshot envelope
+  senate_roster.jsonl                # senators_cfm.xml snapshot; LIS→Bioguide bridge
 ```
 
 ## Data dictionary
