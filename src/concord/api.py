@@ -34,7 +34,7 @@ from . import __version__
 from .models import Article, Issue
 
 API_BASE = "https://api.congress.gov/v3"
-USER_AGENT = f"concord/{__version__} (+https://github.com/johnmarcampbell/concord)"
+USER_AGENT = f"concord/{__version__}"
 ENV_API_KEY = "CONGRESS_API_KEY"
 
 #: Per-page size when walking the ``/articles`` endpoint. The API maxes out

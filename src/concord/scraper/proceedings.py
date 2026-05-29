@@ -13,10 +13,10 @@ from datetime import date
 import httpx
 import typer
 
-from concord.api import ApiError, Client
+from concord.api import USER_AGENT, ApiError, Client
 from concord.pipeline.load_proceedings import ProgressEvent, PullResult, pull
 from concord.storage.base import Storage
-from concord.text import fetch_text
+from concord.text import AdaptiveThrottle, fetch_text
 
 #: Per-request timeout (seconds) for fetching article text from congress.gov.
 #: The default httpx timeout (5s) is too aggressive for occasional slow
@@ -51,7 +51,15 @@ def scrape(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    http_client = httpx.Client(timeout=TEXT_FETCH_TIMEOUT)
+    # Identify ourselves honestly: the default httpx UA ("python-httpx/…") is a
+    # known trigger for the Cloudflare bot management in front of congress.gov,
+    # which surfaces as the 403s that the AdaptiveThrottle then has to absorb.
+    # Matching the UA the api/senate clients already send cuts those at source.
+    http_client = httpx.Client(timeout=TEXT_FETCH_TIMEOUT, headers={"User-Agent": USER_AGENT})
+
+    # One throttle for the whole pull: congress.gov rate-limits per client across
+    # every URL, so backoff state must persist across fetches, not reset per URL.
+    throttle = AdaptiveThrottle()
 
     try:
         with api_client:
@@ -59,7 +67,7 @@ def scrape(
                 start,
                 end,
                 client=api_client,
-                fetch=lambda url: fetch_text(url, http_client),
+                fetch=lambda url: fetch_text(url, http_client, throttle=throttle),
                 storage=storage,
                 limit=limit,
                 progress=progress,
