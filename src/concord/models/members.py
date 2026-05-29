@@ -10,7 +10,7 @@ The persistence envelope is ``Snapshot[Member]`` (see ADR 0018, ADR 0006).
 
 from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from concord.models._common import Chamber, normalize_chamber
 
@@ -106,16 +106,6 @@ class Term(BaseModel):
     start_date: str
     end_date: str
 
-    @field_validator("chamber", mode="before")
-    @classmethod
-    def _coerce_chamber(cls, value: Any) -> Any:
-        return normalize_chamber(value)
-
-    @field_validator("state", mode="before")
-    @classmethod
-    def _coerce_state(cls, value: Any) -> Any:
-        return normalize_state(value) if isinstance(value, str) else value
-
     @classmethod
     def from_congress_api(cls, payload: dict[str, Any], *, congress: int) -> Self:
         """Project a raw ``/member`` payload + queried Congress into one :class:`Term`.
@@ -166,7 +156,9 @@ class Term(BaseModel):
             congress=congress,
             chamber=chamber,
             party=payload["partyName"],
-            state=payload["state"],  # validator normalizes to 2-letter
+            # Canonicalize state inline (per ADR 0018 Rule 3 — no
+            # @field_validator semantic shims on the wire-shape model).
+            state=normalize_state(payload["state"]),
             district=district,
             start_date=start_date,
             end_date=end_date,

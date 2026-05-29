@@ -146,19 +146,13 @@ class TestVotePositionFromCongressApi:
 
 
 class TestVoteModel:
-    def test_lowercases_chamber(self) -> None:
-        v = Vote(
-            vote_id="house-119-1-1",
-            chamber="House",  # type: ignore[arg-type]
-            congress=119,
-            session=1,
-            roll_number=1,
-            vote_kind="standard",
-            start_date="2026-01-01T00:00:00Z",
-            vote_question="Q",
-            vote_type="Yea-and-Nay",
-            result="Passed",
-            update_date="2026-01-01",
+    def test_factory_normalizes_chamber(self) -> None:
+        # The factory canonicalizes the API's "House" → "house" before
+        # constructing the model (per ADR 0018 Rule 3, no @field_validator
+        # semantic shims on the wire-shape model).
+        v = Vote.from_congress_api(
+            _detail("detail_house_119_1_240.json"),
+            chamber="House",  # API delivers verbose form on some payloads
         )
         assert v.chamber == "house"
 

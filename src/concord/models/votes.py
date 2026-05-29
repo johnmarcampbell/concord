@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Literal, Self
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from concord.models._common import Chamber, SessionNumber, normalize_chamber
 from concord.models.bills import bill_id_from_components
@@ -131,11 +131,6 @@ class Vote(BaseModel):
     is_party_unity: bool = False
     update_date: str
 
-    @field_validator("chamber", mode="before")
-    @classmethod
-    def _coerce_chamber(cls, value: Any) -> Any:
-        return normalize_chamber(value)
-
     @classmethod
     def from_congress_api(cls, payload: dict[str, Any], *, chamber: str) -> Self:
         """Project a ``/v3/house-vote/{c}/{s}/{roll}`` detail payload into a :class:`Vote`.
@@ -165,6 +160,9 @@ class Vote(BaseModel):
         congress = payload["congress"]
         session = payload["sessionNumber"]
         roll_number = payload["rollCallNumber"]
+        # Canonicalize chamber inline (per ADR 0018 Rule 3 — no
+        # @field_validator semantic shims on the wire-shape model).
+        chamber_canonical = normalize_chamber(chamber)
 
         party_totals = _extract_vote_party_totals(payload)
         is_election = _is_election_vote(party_totals)
@@ -191,8 +189,8 @@ class Vote(BaseModel):
             not_voting = sum(entry["notVotingTotal"] for entry in party_totals)
 
         return cls(
-            vote_id=vote_id_from_components(chamber, congress, session, roll_number),
-            chamber=chamber,  # type: ignore[arg-type]  # validator normalizes "House" → "house"
+            vote_id=vote_id_from_components(chamber_canonical, congress, session, roll_number),
+            chamber=chamber_canonical,
             congress=congress,
             session=session,
             roll_number=roll_number,

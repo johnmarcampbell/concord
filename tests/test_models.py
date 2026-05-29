@@ -72,15 +72,9 @@ class TestIssue:
             "url": "https://api.congress.gov/v3/daily-congressional-record/172/88?format=json",
             "volumeNumber": 172,
         }
-        # The API uses camelCase; show that callers map to snake_case explicitly.
-        issue = Issue(
-            issue_date=payload["issueDate"],
-            congress=payload["congress"],
-            session=payload["sessionNumber"],
-            volume=payload["volumeNumber"],
-            issue_number=payload["issueNumber"],
-            update_date=payload["updateDate"],
-        )
+        # The factory normalizes the API's "2026-05-22T04:00:00Z" datetime
+        # string into a date and projects camelCase keys to snake_case fields.
+        issue = Issue.from_congress_api(payload)
         assert issue.issue_date == date(2026, 5, 22)
         assert issue.issue_number == 88
         assert issue.session == 2

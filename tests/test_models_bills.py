@@ -32,15 +32,18 @@ class TestBillIdFromComponents:
 
 
 class TestBillDetailModel:
-    def test_validator_lowercases_bill_type(self) -> None:
-        bill = BillDetail(
-            bill_id="119-hr-1",
-            congress=119,
-            bill_type="HR",  # type: ignore[arg-type]
-            bill_number=1,
-            origin_chamber="House",
-            title="Lower Energy Costs Act",
-            update_date="2026-04-01",
+    def test_factory_lowercases_bill_type(self) -> None:
+        # The API delivers ``type`` uppercase ("HR"); the factory
+        # canonicalizes to lowercase before constructing the model.
+        bill = BillDetail.from_congress_api(
+            {
+                "congress": 119,
+                "type": "HR",
+                "number": "1",
+                "originChamber": "House",
+                "title": "Lower Energy Costs Act",
+                "updateDate": "2026-04-01",
+            }
         )
         assert bill.bill_type == "hr"
 

@@ -23,6 +23,7 @@ from concord.models import (
     Term,
     normalize_state,
 )
+from concord.models._common import normalize_chamber
 
 from ._snapshots import wrap_snapshot
 
@@ -42,6 +43,18 @@ class TestNormalization:
     )
     def test_normalize_state(self, input_: str, expected: str) -> None:
         assert normalize_state(input_) == expected
+
+    @pytest.mark.parametrize(
+        ("input_", "expected"),
+        [
+            ("House", "house"),
+            ("Senate", "senate"),
+            ("House of Representatives", "house"),  # API's verbose form
+            ("house", "house"),  # pass-through for canonical
+        ],
+    )
+    def test_normalize_chamber(self, input_: str, expected: str) -> None:
+        assert normalize_chamber(input_) == expected
 
 
 # -- Identity (Member-row) parsing ------------------------------------------
@@ -173,31 +186,9 @@ class TestSnapshotEnvelope:
         assert envelope["key"] == {"bioguide_id": "Y000001", "congress": 118}
 
 
-# -- Term model validators ---------------------------------------------------
-
-
-class TestTermValidation:
-    def test_chamber_normalizes_long_form(self) -> None:
-        term = Term(
-            bioguide_id="X000001",
-            congress=119,
-            chamber="House of Representatives",  # API's verbose form
-            party="Democratic",
-            state="VT",
-            district=1,
-            start_date="2025-01-03",
-            end_date="2027-01-03",
-        )
-        assert term.chamber == "house"
-
-    def test_state_normalizes_full_name(self) -> None:
-        term = Term(
-            bioguide_id="X000001",
-            congress=119,
-            chamber="senate",
-            party="Independent",
-            state="Vermont",
-            start_date="2025-01-03",
-            end_date="2027-01-03",
-        )
-        assert term.state == "VT"
+# Term-level chamber/state normalization is exercised through
+# Term.from_congress_api in TestTermFromCongressApi above; the underlying
+# normalize_chamber / normalize_state helpers are unit-tested under
+# TestNormalization. Direct Term(chamber="House of Representatives", ...)
+# no longer auto-normalizes — per ADR 0018 Rule 3 the wire-shape model
+# carries no @field_validator semantic shims; the factory does the work.

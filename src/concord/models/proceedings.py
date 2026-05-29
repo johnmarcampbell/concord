@@ -7,9 +7,9 @@
 
 import re
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, HttpUrl, model_validator
 
 from concord.models._common import SessionNumber
 
@@ -34,8 +34,8 @@ def parse_granule_id(url: str) -> str:
 class Issue(BaseModel):
     """One daily Congressional Record issue.
 
-    Field naming matches the API's camelCase via aliases so an API payload
-    can be passed straight to ``Issue.model_validate``.
+    Wire shape of one row from ``/v3/daily-congressional-record/`` list
+    responses. Constructed via :meth:`from_congress_api`.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -47,26 +47,39 @@ class Issue(BaseModel):
     issue_number: int
     update_date: datetime
 
-    @field_validator("issue_date", mode="before")
     @classmethod
-    def _coerce_issue_date(cls, value: Any) -> Any:
-        """Accept the API's ``"2026-05-22T04:00:00Z"`` datetime strings as dates.
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
+        """Project one ``/daily-congressional-record`` row into an :class:`Issue`.
 
-        Pydantic's ``date`` parser does not strip the time portion off a
-        Z-suffixed datetime string, so we do it here.
+        Strips the Z-suffixed time portion from ``issueDate`` (the API
+        delivers it as ``"2026-05-22T04:00:00Z"`` even though it's a
+        date-only field). Per ADR 0018 Rule 3, that normalization lives
+        in this factory body rather than in a ``@field_validator``.
         """
-        if isinstance(value, str) and "T" in value:
-            return value.split("T", 1)[0]
-        return value
+        raw_date = payload["issueDate"]
+        if isinstance(raw_date, str) and "T" in raw_date:
+            raw_date = raw_date.split("T", 1)[0]
+        return cls(
+            issue_date=raw_date,
+            congress=payload["congress"],
+            session=payload["sessionNumber"],
+            volume=payload["volumeNumber"],
+            issue_number=payload["issueNumber"],
+            update_date=payload["updateDate"],
+        )
 
 
 class Article(BaseModel):
     """One article (proceeding) within a daily issue.
 
-    ``granule_id`` is derived from ``text_url`` if not supplied, and verified
-    against ``pdf_url`` when both are present. This means the API's flat
-    ``text`` array (a list of ``{type, url}`` objects) can be flattened by
-    callers and the model still keeps everything consistent.
+    Wire shape of one item from the ``/v3/daily-congressional-record/.../articles``
+    response. Constructed via :meth:`from_congress_api`, which flattens
+    the API's nested ``text: [{type, url}, ...]`` array into the
+    ``text_url`` / ``pdf_url`` columns. ``granule_id`` is auto-derived
+    from ``text_url`` in the factory and cross-checked against ``pdf_url``
+    via the ``@model_validator`` below — the validator is an *invariant
+    assertion* (cross-field consistency), not a semantic shim, so it
+    stays on the wire-shape model per ADR 0018 Rule 3.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -81,16 +94,52 @@ class Article(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _derive_granule_id(cls, data: Any) -> Any:
+    def _default_granule_id(cls, data: Any) -> Any:
+        """Default ``granule_id`` from ``text_url`` when callers omit it.
+
+        Not a Rule 3 normalization shim — Pydantic field-level ``default``
+        cannot reference other fields, and this is the idiomatic
+        cross-field default. ``from_congress_api`` passes ``granule_id``
+        explicitly; this validator only kicks in for direct ``Article(...)``
+        construction (mostly test fixtures).
+        """
         if not isinstance(data, dict):
             return data
-        # Derive from text_url if caller didn't pass an explicit granule_id.
         if "granule_id" not in data and "text_url" in data:
             data = {**data, "granule_id": parse_granule_id(str(data["text_url"]))}
         return data
 
+    @classmethod
+    def from_congress_api(cls, payload: dict[str, Any], *, section: str) -> Self:
+        """Project one ``articles`` row into an :class:`Article`.
+
+        ``section`` is supplied by the caller because the API's response
+        groups articles under a per-section key; the section name itself
+        isn't repeated inside each article record. Raises :exc:`ValueError`
+        if the article's ``text`` array doesn't carry both ``"Formatted Text"``
+        and ``"PDF"`` entries.
+        """
+        urls = {t["type"]: t["url"] for t in payload.get("text", [])}
+        try:
+            text_url = urls["Formatted Text"]
+            pdf_url = urls["PDF"]
+        except KeyError as exc:
+            raise ValueError(
+                f"article {payload.get('title', '?')!r} missing text format {exc.args[0]!r}"
+            ) from exc
+        granule_id = parse_granule_id(str(text_url))
+        return cls(
+            section=section,
+            title=payload["title"],
+            start_page=payload["startPage"],
+            end_page=payload["endPage"],
+            text_url=text_url,
+            pdf_url=pdf_url,
+            granule_id=granule_id,
+        )
+
     @model_validator(mode="after")
-    def _check_granule_id_matches_urls(self) -> "Article":
+    def _check_granule_id_matches_urls(self) -> Self:
         from_text = parse_granule_id(str(self.text_url))
         if from_text != self.granule_id:
             raise ValueError(
@@ -136,9 +185,7 @@ class Proceeding(BaseModel):
     fetched_at: datetime
 
     @classmethod
-    def build(
-        cls, *, issue: Issue, article: Article, text: str, fetched_at: datetime
-    ) -> "Proceeding":
+    def build(cls, *, issue: Issue, article: Article, text: str, fetched_at: datetime) -> Self:
         """Combine an issue, an article, and fetched text into a Proceeding."""
         return cls(
             **issue.model_dump(),

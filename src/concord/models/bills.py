@@ -11,7 +11,7 @@ the aggregate domain concept and is not bound to any class.
 
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 
 def bill_id_from_components(congress: int, bill_type: str, bill_number: int) -> str:
@@ -50,13 +50,6 @@ class BillDetail(BaseModel):
     latest_action_text: str | None = None
     update_date: str
 
-    @field_validator("bill_type", mode="before")
-    @classmethod
-    def _coerce_bill_type(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            return value.lower()
-        return value
-
     @classmethod
     def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project a ``/v3/bill/{c}/{t}/{n}`` detail payload into a :class:`BillDetail`.
@@ -85,10 +78,14 @@ class BillDetail(BaseModel):
         if not update_date:
             raise ValueError(f"bill payload missing updateDate: {payload!r}")
 
+        # Canonicalize bill_type inline (per ADR 0018 Rule 3 — no
+        # @field_validator semantic shims on the wire-shape model).
+        bill_type = payload["type"].lower() if isinstance(payload["type"], str) else payload["type"]
+
         return cls(
-            bill_id=bill_id_from_components(payload["congress"], payload["type"], bill_number),
+            bill_id=bill_id_from_components(payload["congress"], bill_type, bill_number),
             congress=payload["congress"],
-            bill_type=payload["type"],  # validator lowercases
+            bill_type=bill_type,  # type: ignore[arg-type]  # Pydantic validates against Literal at construction
             bill_number=bill_number,
             origin_chamber=payload["originChamber"],
             title=payload["title"],
