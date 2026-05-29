@@ -6,9 +6,15 @@ to ``data/members.jsonl`` per Member returned. The Stage 1 loader is
 responsible for deduplicating by Bioguide ID — a Member who served in
 several Congresses will appear in each Congress's listing and produce
 one snapshot per appearance.
+
+Per ADR 0018, the scraper does not schema-validate the payload — that's
+the loader's job. The only legitimate skip is "I cannot construct the
+envelope key," and every such skip emits a WARN log naming the source
+endpoint and the missing field.
 """
 
 import json
+import logging
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +26,8 @@ from concord.scraper._common import (
     load_freshness_map,
     parse_signal_timestamp,
 )
+
+_log = logging.getLogger("concord.scraper.members")
 
 
 class ScrapeProgressEvent(NamedTuple):
@@ -81,8 +89,20 @@ def scrape(
             for payload in client.list_members(congress, on_total=_capture_total):
                 bioguide_id = payload.get("bioguideId")
                 if not bioguide_id:
-                    # Defensive: a Member without a bioguide_id can't be
-                    # keyed; skip rather than write an un-loadable line.
+                    # ADR 0018: skip only when the envelope key cannot be
+                    # constructed; log loudly so the dropout is visible.
+                    _log.warning(
+                        "scraper.skip.missing_key",
+                        extra={
+                            "source": "congress.gov/v3/member/congress",
+                            "congress": congress,
+                            "missing": "bioguideId",
+                            "fragment": {
+                                "name": payload.get("name"),
+                                "state": payload.get("state"),
+                            },
+                        },
+                    )
                     continue
                 if skip_unchanged and is_stub_unchanged(
                     freshness=freshness,

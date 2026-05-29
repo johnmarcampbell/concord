@@ -131,6 +131,22 @@ def _scrape_basic_pair(  # noqa: PLR0913 — per-pair worker, all kwargs are sta
         pair_seen += 1
         bill_number = _parse_bill_number(stub)
         if bill_number is None:
+            # ADR 0018: skip only when the envelope key cannot be
+            # constructed; without a bill number we don't even know
+            # which detail URL to fetch.
+            _log.warning(
+                "scraper.skip.missing_key",
+                extra={
+                    "source": "congress.gov/v3/bill",
+                    "congress": congress,
+                    "bill_type": bt,
+                    "missing": "number",
+                    "fragment": {
+                        "title": stub.get("title"),
+                        "updateDate": stub.get("updateDate"),
+                    },
+                },
+            )
             continue
         if skip_unchanged and is_stub_unchanged(
             freshness=freshness,
