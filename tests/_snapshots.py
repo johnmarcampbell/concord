@@ -18,7 +18,7 @@ def wrap_snapshot(
     """Build one ADR-0006-shaped snapshot envelope around ``payload``.
 
     Returns a dict whose keys are exactly ``fetched_at``, ``key``,
-    ``payload`` — matching :class:`concord.models.MemberSnapshot` and the
+    ``payload`` — matching :class:`concord.models.Snapshot` and the
     JSONL row shape the scraper appends.
     """
     return {

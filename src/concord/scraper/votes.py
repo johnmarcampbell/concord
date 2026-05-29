@@ -205,6 +205,21 @@ def _scrape_pair(  # noqa: PLR0913 — pair worker forwards state from scrape_ho
         seen += 1
         roll_number = _parse_roll_number(stub)
         if roll_number is None:
+            # ADR 0018: skip only when the envelope key cannot be
+            # constructed; without a roll number we cannot fetch detail.
+            _log.warning(
+                "scraper.skip.missing_key",
+                extra={
+                    "source": "congress.gov/v3/house-vote",
+                    "congress": congress,
+                    "session": session,
+                    "missing": "rollCallNumber",
+                    "fragment": {
+                        "voteQuestion": stub.get("voteQuestion"),
+                        "updateDate": stub.get("updateDate"),
+                    },
+                },
+            )
             continue
         roll_key: tuple[Any, ...] = ("house", congress, session, roll_number)
         signal = parse_signal_timestamp(stub.get("updateDate")) if skip_unchanged else None

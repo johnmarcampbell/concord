@@ -11,17 +11,14 @@ from pathlib import Path
 import httpx
 import pytest
 
+from concord.models import SenateVoteDetail
 from concord.senate_xml import (
     DETAIL_URL,
     MENU_URL,
     ROSTER_URL,
     SenateClient,
     SenateXmlError,
-    _build_amendment_id_from_xml,
-    _build_bill_id_from_amendment_target,
-    _parse_senate_date,
     parse_senate_roster,
-    parse_vote_detail,
     parse_vote_menu,
 )
 
@@ -84,14 +81,14 @@ class TestParseSenateRoster:
 
 
 # ---------------------------------------------------------------------------
-# parse_vote_detail
+# SenateVoteDetail.from_senate_xml (end-to-end parsing of real fixtures)
 # ---------------------------------------------------------------------------
 
 
-class TestParseVoteDetail:
+class TestSenateVoteDetailFromSenateXml:
     def test_bill_vote(self) -> None:
         xml_bytes = (FIXTURES / "detail_119_1_00007_bill.xml").read_bytes()
-        detail = parse_vote_detail(xml_bytes)
+        detail = SenateVoteDetail.from_senate_xml(xml_bytes)
 
         assert detail.bill_id == "119-s-5"
         assert detail.amendment_id is None
@@ -114,7 +111,7 @@ class TestParseVoteDetail:
 
     def test_amendment_vote(self) -> None:
         xml_bytes = (FIXTURES / "detail_119_1_00003_amendment.xml").read_bytes()
-        detail = parse_vote_detail(xml_bytes)
+        detail = SenateVoteDetail.from_senate_xml(xml_bytes)
 
         assert detail.amendment_id == "119-samdt-14"
         assert detail.bill_id == "119-s-5"
@@ -125,7 +122,7 @@ class TestParseVoteDetail:
 
     def test_nomination_vote(self) -> None:
         xml_bytes = (FIXTURES / "detail_119_1_00008_nomination.xml").read_bytes()
-        detail = parse_vote_detail(xml_bytes)
+        detail = SenateVoteDetail.from_senate_xml(xml_bytes)
 
         assert detail.bill_id is None
         assert detail.amendment_id is None
@@ -140,7 +137,7 @@ class TestParseVoteDetail:
 
     def test_cloture_vote(self) -> None:
         xml_bytes = (FIXTURES / "detail_119_1_00001_cloture.xml").read_bytes()
-        detail = parse_vote_detail(xml_bytes)
+        detail = SenateVoteDetail.from_senate_xml(xml_bytes)
 
         assert detail.threshold == "three_fifths"
         assert detail.bill_id == "119-s-5"
@@ -149,48 +146,11 @@ class TestParseVoteDetail:
 
     def test_motion_vote(self) -> None:
         xml_bytes = (FIXTURES / "detail_119_1_00002_motion.xml").read_bytes()
-        detail = parse_vote_detail(xml_bytes)
+        detail = SenateVoteDetail.from_senate_xml(xml_bytes)
 
         assert detail.bill_id == "119-s-5"
         assert detail.amendment_id is None
         assert detail.threshold == "simple_majority"
-
-
-# ---------------------------------------------------------------------------
-# Date / id helpers
-# ---------------------------------------------------------------------------
-
-
-class TestParseSenateDate:
-    def test_double_space_format(self) -> None:
-        assert _parse_senate_date("January 20, 2025,  06:12 PM") == "2025-01-20T18:12:00-05:00"
-
-    def test_single_space_format(self) -> None:
-        assert _parse_senate_date("January 20, 2025, 06:12 PM") == "2025-01-20T18:12:00-05:00"
-
-    def test_empty_returns_none(self) -> None:
-        assert _parse_senate_date(None) is None
-        assert _parse_senate_date("") is None
-
-    def test_malformed_returns_none(self) -> None:
-        assert _parse_senate_date("not a date") is None
-
-
-class TestBuildIds:
-    def test_amendment_id_strips_dots(self) -> None:
-        assert _build_amendment_id_from_xml(119, "S.Amdt. 14") == "119-samdt-14"
-        assert _build_amendment_id_from_xml(119, "H.Amdt. 27") == "119-hamdt-27"
-
-    def test_amendment_id_returns_none_for_unparseable(self) -> None:
-        assert _build_amendment_id_from_xml(119, "") is None
-        assert _build_amendment_id_from_xml(119, "S.Amdt.") is None
-
-    def test_bill_id_from_amendment_target(self) -> None:
-        assert _build_bill_id_from_amendment_target(119, "S. 5") == "119-s-5"
-        assert _build_bill_id_from_amendment_target(119, "H.R. 1234") == "119-hr-1234"
-
-    def test_bill_id_from_amendment_target_unknown_type(self) -> None:
-        assert _build_bill_id_from_amendment_target(119, "PN 11") is None
 
 
 # ---------------------------------------------------------------------------

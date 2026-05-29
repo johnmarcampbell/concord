@@ -1,4 +1,4 @@
-"""Tests for Bill and BillSnapshot models (Phase 2a)."""
+"""Tests for BillDetail and the tier-2 child models (Phase 2a)."""
 
 import json
 from datetime import UTC, datetime
@@ -8,13 +8,13 @@ import pytest
 from pydantic import ValidationError
 
 from concord.models import (
-    Bill,
     BillAction,
-    BillSnapshot,
+    BillCosponsor,
+    BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Cosponsor,
+    Snapshot,
     bill_id_from_components,
 )
 
@@ -31,22 +31,25 @@ class TestBillIdFromComponents:
         assert bill_id_from_components(118, "HRES", 5) == "118-hres-5"
 
 
-class TestBillModel:
-    def test_validator_lowercases_bill_type(self) -> None:
-        bill = Bill(
-            bill_id="119-hr-1",
-            congress=119,
-            bill_type="HR",  # type: ignore[arg-type]
-            bill_number=1,
-            origin_chamber="House",
-            title="Lower Energy Costs Act",
-            update_date="2026-04-01",
+class TestBillDetailModel:
+    def test_factory_lowercases_bill_type(self) -> None:
+        # The API delivers ``type`` uppercase ("HR"); the factory
+        # canonicalizes to lowercase before constructing the model.
+        bill = BillDetail.from_congress_api(
+            {
+                "congress": 119,
+                "type": "HR",
+                "number": "1",
+                "originChamber": "House",
+                "title": "Lower Energy Costs Act",
+                "updateDate": "2026-04-01",
+            }
         )
         assert bill.bill_type == "hr"
 
     def test_rejects_unknown_bill_type(self) -> None:
         with pytest.raises(ValidationError):
-            Bill(
+            BillDetail(
                 bill_id="119-xxx-1",
                 congress=119,
                 bill_type="xxx",  # type: ignore[arg-type]
@@ -58,7 +61,7 @@ class TestBillModel:
 
     def test_rejects_unknown_origin_chamber(self) -> None:
         with pytest.raises(ValidationError):
-            Bill(
+            BillDetail(
                 bill_id="119-hr-1",
                 congress=119,
                 bill_type="hr",
@@ -69,10 +72,10 @@ class TestBillModel:
             )
 
 
-class TestBillFromCongressApi:
+class TestBillDetailFromCongressApi:
     def test_parses_hr_1_fixture(self, fixtures_dir: Path) -> None:
         payload = json.loads((fixtures_dir / "api/bills/detail_119_hr_1.json").read_text())
-        bill = Bill.from_congress_api(payload["bill"])
+        bill = BillDetail.from_congress_api(payload["bill"])
         assert bill.bill_id == "119-hr-1"
         assert bill.congress == 119
         assert bill.bill_type == "hr"
@@ -89,7 +92,7 @@ class TestBillFromCongressApi:
 
     def test_parses_hr_22_fixture(self, fixtures_dir: Path) -> None:
         payload = json.loads((fixtures_dir / "api/bills/detail_119_hr_22.json").read_text())
-        bill = Bill.from_congress_api(payload["bill"])
+        bill = BillDetail.from_congress_api(payload["bill"])
         assert bill.bill_id == "119-hr-22"
         assert bill.sponsor_bioguide_id == "R000614"
         assert bill.policy_area == "Government Operations and Politics"
@@ -103,16 +106,16 @@ class TestBillFromCongressApi:
             "title": "Sponsorless Bill Act",
             "updateDate": "2026-04-01",
         }
-        bill = Bill.from_congress_api(payload)
+        bill = BillDetail.from_congress_api(payload)
         assert bill.sponsor_bioguide_id is None
         assert bill.policy_area is None
         assert bill.latest_action_date is None
 
 
-class TestCosponsorFromCongressApi:
+class TestBillCosponsorFromCongressApi:
     def test_parses_cosponsor_fixture(self, fixtures_dir: Path) -> None:
         payload = json.loads((fixtures_dir / "api/bills/cosponsors_119_hr_22.json").read_text())
-        rows = [Cosponsor.from_congress_api(p) for p in payload["cosponsors"]]
+        rows = [BillCosponsor.from_congress_api(p) for p in payload["cosponsors"]]
         first = rows[0]
         assert first.bioguide_id == "B001302"
         assert first.is_original_cosponsor is True
@@ -122,14 +125,14 @@ class TestCosponsorFromCongressApi:
         payload = json.loads(
             (fixtures_dir / "api/bills/cosponsors_119_hr_22_withdrawn.json").read_text()
         )
-        rows = [Cosponsor.from_congress_api(p) for p in payload["cosponsors"]]
+        rows = [BillCosponsor.from_congress_api(p) for p in payload["cosponsors"]]
         withdrawn = next(r for r in rows if r.sponsorship_withdrawn_date)
         assert withdrawn.sponsorship_withdrawn_date == "2025-04-02"
         assert withdrawn.is_original_cosponsor is False
 
     def test_raises_for_row_without_bioguide(self) -> None:
         with pytest.raises(ValueError, match="bioguideId"):
-            Cosponsor.from_congress_api({"sponsorshipDate": "2025-01-09"})
+            BillCosponsor.from_congress_api({"sponsorshipDate": "2025-01-09"})
 
 
 class TestBillActionFromCongressApi:
@@ -178,7 +181,7 @@ class TestBillSummaryFromCongressApi:
         assert "<p>" in first.summary_text
 
 
-class TestBillSnapshot:
+class TestSnapshotEnvelope:
     def test_envelope_round_trip(self) -> None:
         env = wrap_snapshot(
             {"congress": 119, "type": "HR", "number": "1"},
@@ -187,7 +190,7 @@ class TestBillSnapshot:
         )
         # Round-trip through JSON to mirror how the loader reads it.
         raw = json.dumps(env)
-        snap = BillSnapshot.model_validate(json.loads(raw))
+        snap = Snapshot[dict].model_validate_json(raw)
         assert snap.key == {"congress": 119, "bill_type": "hr", "bill_number": 1}
         assert snap.payload["number"] == "1"
         assert snap.fetched_at == FIXED_FETCHED_AT

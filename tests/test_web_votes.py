@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Bill, Member, Term, Vote, VotePosition
+from concord.models import BillDetail, Member, Term, Vote, VotePosition
 from concord.pipeline.index_votes import index as index_votes
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app
@@ -72,7 +72,7 @@ def _vote(
 def _seed(storage: SqliteStorage) -> None:
     # Bill the vote points at.
     storage.upsert_bill(
-        Bill(
+        BillDetail(
             bill_id="119-hr-3424",
             congress=119,
             bill_type="hr",

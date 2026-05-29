@@ -13,6 +13,11 @@ from concord.models import (
     parse_vote_threshold,
     vote_id_from_components,
 )
+from concord.models.votes import (
+    _build_senate_amendment_id,
+    _build_senate_bill_id_from_amendment_target,
+    _parse_senate_date,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "api" / "votes"
 
@@ -141,19 +146,13 @@ class TestVotePositionFromCongressApi:
 
 
 class TestVoteModel:
-    def test_lowercases_chamber(self) -> None:
-        v = Vote(
-            vote_id="house-119-1-1",
-            chamber="House",  # type: ignore[arg-type]
-            congress=119,
-            session=1,
-            roll_number=1,
-            vote_kind="standard",
-            start_date="2026-01-01T00:00:00Z",
-            vote_question="Q",
-            vote_type="Yea-and-Nay",
-            result="Passed",
-            update_date="2026-01-01",
+    def test_factory_normalizes_chamber(self) -> None:
+        # The factory canonicalizes the API's "House" → "house" before
+        # constructing the model (per ADR 0018 Rule 3, no @field_validator
+        # semantic shims on the wire-shape model).
+        v = Vote.from_congress_api(
+            _detail("detail_house_119_1_240.json"),
+            chamber="House",  # API delivers verbose form on some payloads
         )
         assert v.chamber == "house"
 
@@ -163,3 +162,42 @@ class TestVoteModel:
         assert p.position == "Yea"
         assert p.vote_party == "R"
         assert p.vote_state == "AL"
+
+
+# ---------------------------------------------------------------------------
+# SenateVoteDetail private parsing helpers (collocated with the classmethod
+# per ADR 0018; end-to-end tests live in tests/test_senate_xml.py against
+# real senate.gov XML fixtures)
+# ---------------------------------------------------------------------------
+
+
+class TestParseSenateDate:
+    def test_double_space_format(self) -> None:
+        assert _parse_senate_date("January 20, 2025,  06:12 PM") == "2025-01-20T18:12:00-05:00"
+
+    def test_single_space_format(self) -> None:
+        assert _parse_senate_date("January 20, 2025, 06:12 PM") == "2025-01-20T18:12:00-05:00"
+
+    def test_empty_returns_none(self) -> None:
+        assert _parse_senate_date(None) is None
+        assert _parse_senate_date("") is None
+
+    def test_malformed_returns_none(self) -> None:
+        assert _parse_senate_date("not a date") is None
+
+
+class TestBuildSenateIds:
+    def test_amendment_id_strips_dots(self) -> None:
+        assert _build_senate_amendment_id(119, "S.Amdt. 14") == "119-samdt-14"
+        assert _build_senate_amendment_id(119, "H.Amdt. 27") == "119-hamdt-27"
+
+    def test_amendment_id_returns_none_for_unparseable(self) -> None:
+        assert _build_senate_amendment_id(119, "") is None
+        assert _build_senate_amendment_id(119, "S.Amdt.") is None
+
+    def test_bill_id_from_amendment_target(self) -> None:
+        assert _build_senate_bill_id_from_amendment_target(119, "S. 5") == "119-s-5"
+        assert _build_senate_bill_id_from_amendment_target(119, "H.R. 1234") == "119-hr-1234"
+
+    def test_bill_id_from_amendment_target_unknown_type(self) -> None:
+        assert _build_senate_bill_id_from_amendment_target(119, "PN 11") is None

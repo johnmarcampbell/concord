@@ -163,7 +163,7 @@ class Client:
             params={"limit": limit, "offset": offset},
         )
         rows = payload.get("dailyCongressionalRecord", [])
-        issues = [_parse_issue(row) for row in rows]
+        issues = [Issue.from_congress_api(row) for row in rows]
         has_next = "next" in payload.get("pagination", {})
         next_offset = offset + limit if has_next else None
         return issues, next_offset
@@ -187,7 +187,10 @@ class Client:
             for section in payload.get("articles", []):
                 section_name = section["name"]
                 for art in section.get("sectionArticles", []):
-                    out.append(_parse_article(section_name, art))
+                    try:
+                        out.append(Article.from_congress_api(art, section=section_name))
+                    except ValueError as exc:
+                        raise ApiError(str(exc)) from exc
                     page_count += 1
             if "next" not in payload.get("pagination", {}):
                 break
@@ -590,36 +593,3 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     except ValueError:
         return None
     return min(max(seconds, 0.0), MAX_BACKOFF)
-
-
-# -- payload -> model -------------------------------------------------------
-
-
-def _parse_issue(row: dict[str, Any]) -> Issue:
-    return Issue(
-        issue_date=row["issueDate"],
-        congress=row["congress"],
-        session=row["sessionNumber"],
-        volume=row["volumeNumber"],
-        issue_number=row["issueNumber"],
-        update_date=row["updateDate"],
-    )
-
-
-def _parse_article(section_name: str, art: dict[str, Any]) -> Article:
-    urls = {t["type"]: t["url"] for t in art.get("text", [])}
-    try:
-        text_url = urls["Formatted Text"]
-        pdf_url = urls["PDF"]
-    except KeyError as exc:
-        raise ApiError(
-            f"article {art.get('title', '?')!r} missing text format {exc.args[0]!r}"
-        ) from exc
-    return Article(
-        section=section_name,
-        title=art["title"],
-        start_page=art["startPage"],
-        end_page=art["endPage"],
-        text_url=text_url,
-        pdf_url=pdf_url,
-    )  # type: ignore[call-arg]

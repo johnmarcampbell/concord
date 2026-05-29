@@ -32,12 +32,12 @@ from typing import Any
 import sqlite_vec  # type: ignore[import-untyped]
 
 from concord.models import (
-    Bill,
     BillAction,
+    BillCosponsor,
+    BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Cosponsor,
     Member,
     Proceeding,
     Term,
@@ -841,7 +841,7 @@ class SqliteStorage:
 
     # -- Bills (Phase 2a) -------------------------------------------------
 
-    def upsert_bill(self, bill: Bill, *, fetched_at: str) -> None:
+    def upsert_bill(self, bill: BillDetail, *, fetched_at: str) -> None:
         """UPSERT one Bill row keyed on ``bill_id``.
 
         Latest snapshot wins per ADR 0006; the loader is responsible for
@@ -887,7 +887,7 @@ class SqliteStorage:
     def replace_bill_cosponsors(
         self,
         bill_id: str,
-        cosponsors: Sequence[Cosponsor],
+        cosponsors: Sequence[BillCosponsor],
         *,
         fetched_at: str,
     ) -> None:
@@ -1308,8 +1308,8 @@ def _row_from_term(term: Term) -> tuple[Any, ...]:
     return tuple(dumped[col] for col in _TERM_COLUMNS)
 
 
-def _row_from_bill(bill: Bill, *, fetched_at: str) -> tuple[Any, ...]:
-    """Project a :class:`Bill` into the column tuple expected by SQL."""
+def _row_from_bill(bill: BillDetail, *, fetched_at: str) -> tuple[Any, ...]:
+    """Project a :class:`BillDetail` into the column tuple expected by SQL."""
     dumped: dict[str, Any] = bill.model_dump(mode="json")
     dumped["fetched_at"] = fetched_at
     return tuple(dumped[col] for col in _BILL_COLUMNS)

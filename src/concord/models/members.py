@@ -1,14 +1,16 @@
-"""Member, Term, and MemberSnapshot models (Phase 1).
+"""Member and Term models (Phase 1).
 
 The list endpoint ``/v3/member/congress/{n}`` returns the **same** payload
 regardless of which Congress was queried, so the projection from payload
-to :class:`Term` always requires the queried-Congress context.
+to :class:`Term` always requires the queried-Congress context. Both
+classes follow ADR 0018's wire-shape-doubles-as-domain pattern — Member
+has effectively one primary wire shape so the bare name is unambiguous.
+The persistence envelope is ``Snapshot[Member]`` (see ADR 0018, ADR 0006).
 """
 
-from datetime import datetime
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from concord.models._common import Chamber, normalize_chamber
 
@@ -104,18 +106,8 @@ class Term(BaseModel):
     start_date: str
     end_date: str
 
-    @field_validator("chamber", mode="before")
     @classmethod
-    def _coerce_chamber(cls, value: Any) -> Any:
-        return normalize_chamber(value)
-
-    @field_validator("state", mode="before")
-    @classmethod
-    def _coerce_state(cls, value: Any) -> Any:
-        return normalize_state(value) if isinstance(value, str) else value
-
-    @classmethod
-    def from_congress_api(cls, payload: dict[str, Any], *, congress: int) -> "Term":
+    def from_congress_api(cls, payload: dict[str, Any], *, congress: int) -> Self:
         """Project a raw ``/member`` payload + queried Congress into one :class:`Term`.
 
         The list endpoint omits ``congress`` from each ``terms.item`` and
@@ -164,7 +156,9 @@ class Term(BaseModel):
             congress=congress,
             chamber=chamber,
             party=payload["partyName"],
-            state=payload["state"],  # validator normalizes to 2-letter
+            # Canonicalize state inline (per ADR 0018 Rule 3 — no
+            # @field_validator semantic shims on the wire-shape model).
+            state=normalize_state(payload["state"]),
             district=district,
             start_date=start_date,
             end_date=end_date,
@@ -192,7 +186,7 @@ class Member(BaseModel):
     biography: str | None = None
 
     @classmethod
-    def from_congress_api(cls, payload: dict[str, Any]) -> "Member":
+    def from_congress_api(cls, payload: dict[str, Any]) -> Self:
         """Project a raw ``/member`` payload into the identity-only Member row.
 
         Identity fields (name, birth year, photo) are the same regardless of
@@ -213,21 +207,6 @@ class Member(BaseModel):
             photo_url=depiction.get("imageUrl"),
             biography=payload.get("biography"),
         )
-
-
-class MemberSnapshot(BaseModel):
-    """ADR 0006 envelope wrapping one raw ``/member`` API response.
-
-    Each Stage 0 fetch appends one of these to ``data/members.jsonl``. The
-    Stage 1 loader groups by ``key["bioguide_id"]`` and keeps the latest
-    ``fetched_at`` per key.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    fetched_at: datetime
-    key: dict[str, str | int]
-    payload: dict[str, Any]
 
 
 def _extract_term_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -265,4 +244,4 @@ def _term_item_for_congress(items: list[dict[str, Any]], congress: int) -> dict[
     return match
 
 
-__all__ = ["Member", "MemberSnapshot", "Term", "normalize_state"]
+__all__ = ["Member", "Term", "normalize_state"]

@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 
 from concord.models import (
-    Bill,
     BillAction,
+    BillCosponsor,
+    BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Cosponsor,
 )
 from concord.storage.sqlite import SqliteStorage
 
@@ -30,8 +30,8 @@ def _bill(
     latest_action_text: str | None = "Became Public Law No: 119-1.",
     introduced_date: str | None = "2025-01-09",
     update_date: str = "2026-04-01T12:34:56Z",
-) -> Bill:
-    return Bill(
+) -> BillDetail:
+    return BillDetail(
         bill_id=bill_id,
         congress=congress,
         bill_type=bill_type,  # type: ignore[arg-type]
@@ -49,14 +49,14 @@ def _bill(
 
 # Tier-2 stub factories. Defaults are arbitrary-but-non-null so tests that
 # exercise storage paths don't have to recite every column.
-def _cosponsor(bioguide_id: str, **overrides: object) -> Cosponsor:
+def _cosponsor(bioguide_id: str, **overrides: object) -> BillCosponsor:
     defaults: dict[str, object] = {
         "bioguide_id": bioguide_id,
         "sponsorship_date": "2025-01-09",
         "is_original_cosponsor": False,
     }
     defaults.update(overrides)
-    return Cosponsor(**defaults)  # type: ignore[arg-type]
+    return BillCosponsor(**defaults)  # type: ignore[arg-type]
 
 
 def _action(action_date: str, action_text: str, **overrides: object) -> BillAction:
@@ -178,10 +178,10 @@ class TestBillTier2:
         storage.replace_bill_cosponsors(
             bill_id,
             [
-                Cosponsor(
+                BillCosponsor(
                     bioguide_id="A000001", sponsorship_date="2025-01-09", is_original_cosponsor=True
                 ),
-                Cosponsor(
+                BillCosponsor(
                     bioguide_id="B000002",
                     sponsorship_date="2025-02-04",
                     is_original_cosponsor=False,

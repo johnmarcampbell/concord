@@ -10,12 +10,12 @@ from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
 from concord.models import (
-    Bill,
     BillAction,
+    BillCosponsor,
+    BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Cosponsor,
     Member,
     Term,
 )
@@ -62,8 +62,8 @@ def _bill(
     introduced_date: str | None = "2025-01-09",
     latest_action_date: str | None = "2026-03-30",
     latest_action_text: str | None = "Became Public Law.",
-) -> Bill:
-    return Bill(
+) -> BillDetail:
+    return BillDetail(
         bill_id=bill_id,
         congress=congress,
         bill_type=bill_type,  # type: ignore[arg-type]
@@ -259,12 +259,12 @@ class TestBillProfile:
             storage.replace_bill_cosponsors(
                 "119-hr-1",
                 [
-                    Cosponsor(
+                    BillCosponsor(
                         bioguide_id="S001176",
                         sponsorship_date="2025-01-09",
                         is_original_cosponsor=True,
                     ),
-                    Cosponsor(
+                    BillCosponsor(
                         bioguide_id="Z999999",
                         sponsorship_date="2025-02-01",
                         sponsorship_withdrawn_date="2025-03-15",
@@ -389,7 +389,7 @@ class TestMemberProfileCosponsoredEnriched:
             storage.replace_bill_cosponsors(
                 "119-hr-22",
                 [
-                    Cosponsor(
+                    BillCosponsor(
                         bioguide_id="S001176",
                         sponsorship_date="2025-02-04",
                         is_original_cosponsor=False,
@@ -453,7 +453,7 @@ class TestHumanizeAge:
             storage.replace_bill_cosponsors(
                 "119-hr-1",
                 [
-                    Cosponsor(
+                    BillCosponsor(
                         bioguide_id="A000001",
                         sponsorship_date="2020-01-01",
                         is_original_cosponsor=True,

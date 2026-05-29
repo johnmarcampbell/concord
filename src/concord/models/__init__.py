@@ -2,45 +2,51 @@
 
 Every value that flows between the API client, text fetcher, and storage
 layer is one of these types. API JSON is parsed *into* these models at the
-network boundary via the ``from_congress_api`` classmethod on each model;
-storage writes serialize *from* these models. Nothing in the pipeline
-handles untyped dicts.
+load boundary (Stage 1) via the ``from_congress_api`` classmethod on each
+wire-shape model; senate.gov XML uses ``from_senate_xml`` analogously.
+Storage writes serialize *from* these models. See ADR 0018 for the
+wire-shape / domain model split and the load-boundary validation rule.
 
 When a payload violates the expected contract, ``from_congress_api`` raises
 ``pydantic.ValidationError`` (for field-shape failures) or ``ValueError``
 (for our own pre-projection guards). Callers should catch the failure, log
 the offending payload, and continue — never silently drop.
 
+Persistence envelopes are :class:`Snapshot[T]` (ADR 0006 / ADR 0018);
+the snapshot validates the envelope shape, the wire-shape model's
+``from_congress_api`` validates the payload.
+
 Sub-modules:
 
-- :mod:`._common` — shared ``Chamber`` / ``SessionNumber`` types + helpers.
-- :mod:`.proceedings` — Issue, Article, Proceeding.
-- :mod:`.members` — Member, Term, MemberSnapshot.
-- :mod:`.bills` — Bill, BillSnapshot, and the five tier-2 child models.
-- :mod:`.votes` — Vote, VotePosition, and the Senate-XML intermediates.
+- :mod:`._common` — shared ``Chamber`` / ``SessionNumber`` types, helpers,
+  and the :class:`Snapshot` envelope generic.
+- :mod:`.proceedings` — Issue, Article, Proceeding (predates the envelope
+  per ADR 0006; persists flat).
+- :mod:`.members` — Member, Term.
+- :mod:`.bills` — BillDetail and the five tier-2 child models.
+- :mod:`.votes` — Vote, VotePosition (domain models for House);
+  HouseVoteMembers, SenateVoteDetail, SenateVotePosition (wire shapes).
 """
 
-from concord.models._common import Chamber, SessionNumber
+from concord.models._common import Chamber, SessionNumber, Snapshot
 from concord.models.bills import (
-    Bill,
     BillAction,
-    BillSnapshot,
+    BillCosponsor,
+    BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Cosponsor,
     bill_id_from_components,
 )
-from concord.models.members import Member, MemberSnapshot, Term, normalize_state
+from concord.models.members import Member, Term, normalize_state
 from concord.models.proceedings import Article, Issue, Proceeding, parse_granule_id
 from concord.models.votes import (
-    ParsedVoteDetail,
-    ParsedVotePosition,
+    HouseVoteMembers,
+    SenateVoteDetail,
+    SenateVotePosition,
     Vote,
     VoteKind,
     VotePosition,
-    VotePositionsSnapshot,
-    VoteSnapshot,
     VoteThreshold,
     amendment_id_from_components,
     parse_vote_threshold,
@@ -49,27 +55,25 @@ from concord.models.votes import (
 
 __all__ = [
     "Article",
-    "Bill",
     "BillAction",
-    "BillSnapshot",
+    "BillCosponsor",
+    "BillDetail",
     "BillSubject",
     "BillSummary",
     "BillTitle",
     "Chamber",
-    "Cosponsor",
+    "HouseVoteMembers",
     "Issue",
     "Member",
-    "MemberSnapshot",
-    "ParsedVoteDetail",
-    "ParsedVotePosition",
     "Proceeding",
+    "SenateVoteDetail",
+    "SenateVotePosition",
     "SessionNumber",
+    "Snapshot",
     "Term",
     "Vote",
     "VoteKind",
     "VotePosition",
-    "VotePositionsSnapshot",
-    "VoteSnapshot",
     "VoteThreshold",
     "amendment_id_from_components",
     "bill_id_from_components",
