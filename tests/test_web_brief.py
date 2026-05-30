@@ -244,6 +244,28 @@ class TestBriefGeneration:
         # Apostrophe in "Couldn't" is HTML-escaped; assert an escape-free part.
         assert "generate a brief right now" in resp.text
 
+    def test_failed_regenerate_falls_back_to_cached(self, tmp_path: Path) -> None:
+        # A brief already exists, but generation now fails: the user must
+        # still see the older (stale) brief rather than an empty box.
+        client, _ = _make_client(tmp_path, error=RuntimeError("boom"))
+        db_path = client.app.state.db_path
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.upsert_bill_brief(
+                bill_id="119-hr-1",
+                lens="",
+                executive_summary="Older cached summary.",
+                facts_hash="stale-hash",  # won't match current facts → cache miss
+                model="gpt-4o-mini",
+                prompt_version=1,
+                generated_at="2026-05-30T00:00:00+00:00",
+            )
+        resp = client.post("/bills/119/hr/1/brief", data={"lens": ""})
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Older cached summary." in body  # cached brief still shown
+        assert "generate a brief right now" in body  # error surfaced
+        assert "underlying data changed" in body  # flagged stale
+
     def test_post_unknown_bill_404(self, tmp_path: Path) -> None:
         client, _ = _make_client(tmp_path)
         assert client.post("/bills/119/hr/9999/brief", data={"lens": ""}).status_code == 404

@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -88,6 +89,23 @@ class GeneratedBrief(BaseModel):
     """
 
     executive_summary: str
+
+
+@dataclass(frozen=True)
+class BriefView:
+    """A rendered Bill Brief as the template consumes it.
+
+    The single shape both the profile GET (cached, possibly stale) and the
+    generate POST (freshly produced or cache-hit) hand to the template, so
+    the view contract lives in one place. ``stale`` is set when the
+    underlying fact pack has moved since the brief was written.
+    """
+
+    executive_summary: str
+    lens: str
+    generated_at: str
+    model: str
+    stale: bool
 
 
 def build_facts(
@@ -347,6 +365,7 @@ __all__ = [
     "DEFAULT_BRIEF_MODEL",
     "BriefError",
     "BriefFacts",
+    "BriefView",
     "Briefer",
     "GeneratedBrief",
     "build_facts",

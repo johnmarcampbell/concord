@@ -267,12 +267,21 @@ def _seed_bill(storage: SqliteStorage) -> None:
     )
 
 
+def _read_brief(storage: SqliteStorage, lens: str) -> dict[str, Any] | None:
+    """Read a bill_briefs row back through the connection (no storage read method)."""
+    row = storage.connection.execute(
+        "SELECT * FROM bill_briefs WHERE bill_id = ? AND lens = ?",
+        ("119-hr-1", lens),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
 class TestBillBriefStorage:
     def test_round_trip_and_upsert(self, tmp_path: Path) -> None:
         db_path = tmp_path / "test.db"
         with SqliteStorage(db_path, load_vec=False) as storage:
             _seed_bill(storage)
-            assert storage.get_bill_brief("119-hr-1", "") is None
+            assert _read_brief(storage, "") is None
             storage.upsert_bill_brief(
                 bill_id="119-hr-1",
                 lens="",
@@ -282,7 +291,7 @@ class TestBillBriefStorage:
                 prompt_version=BRIEF_PROMPT_VERSION,
                 generated_at="2026-05-30T00:00:00+00:00",
             )
-            row = storage.get_bill_brief("119-hr-1", "")
+            row = _read_brief(storage, "")
             assert row is not None
             assert row["executive_summary"] == "First summary."
             # Re-upsert on the same (bill_id, lens) replaces in place.
@@ -295,7 +304,7 @@ class TestBillBriefStorage:
                 prompt_version=BRIEF_PROMPT_VERSION,
                 generated_at="2026-05-30T01:00:00+00:00",
             )
-            row2 = storage.get_bill_brief("119-hr-1", "")
+            row2 = _read_brief(storage, "")
             assert row2 is not None
             assert row2["executive_summary"] == "Second summary."
             assert row2["facts_hash"] == "hash-2"
@@ -322,8 +331,8 @@ class TestBillBriefStorage:
                 prompt_version=1,
                 generated_at="t",
             )
-            neutral = storage.get_bill_brief("119-hr-1", "")
-            tailored = storage.get_bill_brief("119-hr-1", "for a fiscal-conservative audience")
+            neutral = _read_brief(storage, "")
+            tailored = _read_brief(storage, "for a fiscal-conservative audience")
             assert neutral is not None
             assert neutral["executive_summary"] == "Neutral."
             assert tailored is not None

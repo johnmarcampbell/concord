@@ -1170,15 +1170,6 @@ class SqliteStorage:
 
     # -- Bill Briefs (record table — ADR 0019 / 0020) ---------------------
 
-    def get_bill_brief(self, bill_id: str, lens: str = "") -> sqlite3.Row | None:
-        """Fetch a cached brief for ``(bill_id, lens)``; ``lens=''`` is neutral."""
-        cursor = self._conn.execute(
-            "SELECT * FROM bill_briefs WHERE bill_id = ? AND lens = ?",
-            (bill_id, lens),
-        )
-        row: sqlite3.Row | None = cursor.fetchone()
-        return row
-
     def upsert_bill_brief(
         self,
         *,
