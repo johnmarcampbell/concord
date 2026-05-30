@@ -129,6 +129,19 @@ def _seed(storage: SqliteStorage) -> None:
         ],
         fetched_at="2026-05-26T00:00:00Z",
     )
+    # One cosponsor (party-indexed) so the fact pack's coalition/party split
+    # path is exercised in the rendered brief.
+    storage.replace_bill_cosponsors(
+        "119-hr-1",
+        [
+            BillCosponsor(
+                bioguide_id="S001176",
+                sponsorship_date="2025-01-09",
+                is_original_cosponsor=True,
+            ),
+        ],
+        fetched_at="2026-05-26T00:00:00Z",
+    )
 
 
 def _make_client(
@@ -167,14 +180,34 @@ class TestBriefGating:
 
 
 class TestBriefProfile:
-    def test_form_shown_when_no_brief(self, tmp_path: Path) -> None:
+    def test_fact_pack_shown_before_generation(self, tmp_path: Path) -> None:
+        """The brief is self-contained: the deterministic fact pack renders
+        even before any executive summary has been generated (ADR 0020)."""
         client, _ = _make_client(tmp_path)
         resp = client.get("/bills/119/hr/1")
         assert resp.status_code == 200
         body = resp.text
         assert "Generate brief" in body
-        # The CRS grounding note names the stage of the latest summary.
-        assert "Introduced in House" in body
+        # No summary yet, but the fact pack is all there.
+        assert "Executive summary" in body
+        assert "No executive summary yet" in body
+        assert "Coalition" in body
+        assert "1 cosponsor" in body
+        assert "Became Public Law." in body  # status (latest action)
+        assert "recorded vote" in body
+        # The latest CRS summary is shown verbatim with its stage label.
+        assert "Latest CRS summary — Introduced in House" in body
+        assert "Requires steps to lower energy costs." in body
+
+    def test_fact_pack_still_shown_after_generation(self, tmp_path: Path) -> None:
+        client, _ = _make_client(tmp_path)
+        resp = client.post("/bills/119/hr/1/brief", data={"lens": ""})
+        assert resp.status_code == 200
+        body = resp.text
+        # Both the generated summary AND the fact pack are present.
+        assert "Stub exec summary about energy policy." in body
+        assert "Coalition" in body
+        assert "Latest CRS summary — Introduced in House" in body
 
 
 class TestBriefGeneration:

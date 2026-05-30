@@ -45,7 +45,7 @@ from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
 from concord.storage.sqlite import ensure_schema
 from concord.web._deps import VALID_BILL_TYPES as _VALID_BILL_TYPES
 from concord.web._deps import db_connection as _db_for_status
-from concord.web.brief import load_brief_view, register_brief_routes
+from concord.web.brief import assemble_facts, cached_view, register_brief_routes
 from concord.web.top_bills import CURATED_TOP_BILLS
 
 from . import search as search_mod
@@ -539,19 +539,22 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         vote_history = search_mod.vote_history_for_bill(db, bill_id)
         enrichment_state, enrichment_error = _compute_enrichment_state(request.app, bill, bill_id)
         brief_enabled = request.app.state.brief_enabled
-        latest_summary = summaries[-1] if summaries else None
+        brief_facts = None
         brief_view = None
         if brief_enabled:
-            brief_view = load_brief_view(
+            # Assemble the fact pack unconditionally: it's the deterministic
+            # body of the self-contained brief card, shown whether or not an
+            # executive summary has been generated yet (ADR 0020).
+            brief_facts = assemble_facts(
                 db,
                 bill,
                 cosponsors=cosponsors,
                 subjects=subjects,
                 actions=actions,
-                vote_history=vote_history,
+                vote_count=len(vote_history),
                 summaries=summaries,
-                model=request.app.state.briefer.model,
             )
+            brief_view = cached_view(db, brief_facts, model=request.app.state.briefer.model)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "bills/profile.html",
@@ -568,7 +571,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "enrichment_error": enrichment_error,
                 "brief_enabled": brief_enabled,
                 "brief": brief_view,
-                "latest_summary": latest_summary,
+                "facts": brief_facts,
                 "brief_error": None,
             },
         )

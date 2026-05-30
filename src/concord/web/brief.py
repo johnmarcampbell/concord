@@ -80,35 +80,22 @@ def _view_from_row(row: dict[str, Any], *, stale: bool) -> BriefView:
     )
 
 
-def load_brief_view(
+def cached_view(
     db: sqlite3.Connection,
-    bill: dict[str, Any],
+    facts: BriefFacts,
     *,
-    cosponsors: list[dict[str, Any]],
-    subjects: list[str],
-    actions: list[dict[str, Any]],
-    vote_history: list[Any],
-    summaries: list[dict[str, Any]],
     model: str,
+    lens: str = "",
 ) -> BriefView | None:
-    """Return the cached neutral brief as a stale-flagged view, or ``None``.
+    """Return the cached brief for ``(facts.bill_id, lens)`` as a stale-flagged view.
 
-    Reads the cache first so the extra fact-pack query is only paid when a
-    brief actually exists. The single read path is
-    :func:`concord.web.search.get_bill_brief`.
+    Takes a pre-assembled fact pack so the caller can both render the
+    deterministic facts and compute staleness from the same object. The
+    single read path is :func:`concord.web.search.get_bill_brief`.
     """
-    cached = search_mod.get_bill_brief(db, bill["bill_id"], "")
+    cached = search_mod.get_bill_brief(db, facts.bill_id, lens)
     if cached is None:
         return None
-    facts = assemble_facts(
-        db,
-        bill,
-        cosponsors=cosponsors,
-        subjects=subjects,
-        actions=actions,
-        vote_count=len(vote_history),
-        summaries=summaries,
-    )
     current_hash = facts_hash(facts, model=model, prompt_version=BRIEF_PROMPT_VERSION)
     return _view_from_row(cached, stale=current_hash != cached["facts_hash"])
 
@@ -216,8 +203,8 @@ def register_brief_routes(app: FastAPI) -> None:
             "bills/_brief.html",
             {
                 "bill": {"congress": congress, "bill_type": bt, "bill_number": bill_number},
+                "facts": facts,
                 "brief": view,
-                "latest_summary": summaries[-1] if summaries else None,
                 "brief_error": error,
                 "brief_enabled": True,
             },
