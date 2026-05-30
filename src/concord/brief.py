@@ -252,7 +252,13 @@ class Briefer:
             )
             content = response.choices[0].message.content
         except Exception as exc:
-            raise BriefError(f"brief generation failed for {facts.bill_id}") from exc
+            # Surface the underlying cause in the message — the caller logs
+            # this, and "brief generation failed" alone is useless for
+            # diagnosis (auth? model? rate limit? network?).
+            raise BriefError(
+                f"chat completion request failed for {facts.bill_id} "
+                f"(model {self._model}): {type(exc).__name__}: {exc}"
+            ) from exc
         return _parse_brief(content)
 
 

@@ -238,10 +238,18 @@ class TestBrieferGenerate:
         out = Briefer(client).generate(_sample_facts())
         assert out.executive_summary == "Just a prose summary, no JSON here."
 
-    def test_client_error_raises_brieferror(self) -> None:
-        client = _StubChatClient(error=RuntimeError("boom"))
-        with pytest.raises(BriefError, match="119-hr-1"):
+    def test_client_error_raises_brieferror_surfacing_the_cause(self) -> None:
+        client = _StubChatClient(error=RuntimeError("kaboom: 401 unauthorized"))
+        with pytest.raises(BriefError) as excinfo:
             Briefer(client).generate(_sample_facts())
+        # The wrapped message must name the underlying cause (type + text)
+        # so logs are diagnosable, not just "brief generation failed".
+        msg = str(excinfo.value)
+        assert "RuntimeError" in msg
+        assert "kaboom: 401 unauthorized" in msg
+        assert "119-hr-1" in msg
+        # And the original exception is chained for traceback/exc_info.
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
 
     def test_empty_content_raises_brieferror(self) -> None:
         client = _StubChatClient("   ")

@@ -135,7 +135,9 @@ def get_or_generate_brief(
     try:
         generated = briefer.generate(facts, lens=lens or None)
     except BriefError as exc:
-        _log.warning("brief generation failed for %s: %s", facts.bill_id, exc)
+        # exc_info=True captures the chained __cause__ (the real OpenAI /
+        # network error), so the operator's log shows *why* it failed.
+        _log.warning("brief generation failed for %s: %s", facts.bill_id, exc, exc_info=True)
         if cached is not None:
             # A stale brief still beats showing nothing on the error path.
             return _view_from_row(cached, stale=True), _GENERATION_ERROR
