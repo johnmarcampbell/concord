@@ -50,6 +50,10 @@
       </section>
     {% endif %}
 
+    {% if brief_enabled %}
+      {% include "bills/_brief.html" %}
+    {% endif %}
+
     {% if bill.latest_action_date or bill.latest_action_text %}
       <section>
         <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Latest action</h2>

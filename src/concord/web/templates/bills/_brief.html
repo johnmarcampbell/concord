@@ -1,0 +1,84 @@
+{# Bill Brief section (ADR 0020). HTMX-swappable: the generate form POSTs
+   here and replaces this whole <section> with the re-rendered fragment.
+   Context: brief (dict|None), latest_summary (dict|None), brief_error
+   (str|None), bill ({congress, bill_type, bill_number}). #}
+<section
+  id="bill-brief"
+  class="border border-stone-200 rounded-lg p-4 bg-white"
+>
+  <div class="flex items-center gap-2 mb-2">
+    <h2 class="text-sm uppercase tracking-wide text-stone-500">Brief</h2>
+    <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+      AI-generated
+    </span>
+  </div>
+
+  {% if brief_error %}
+    <p class="text-sm text-red-700 mb-3">{{ brief_error }}</p>
+  {% endif %}
+
+  {% if brief %}
+    {% if brief.stale %}
+      <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-3">
+        The underlying data changed since this brief was generated — regenerate for an up-to-date version.
+      </p>
+    {% endif %}
+    {% if brief.lens %}
+      <p class="text-xs text-stone-500 mb-2">
+        Tailored for: <span class="italic">&ldquo;{{ brief.lens }}&rdquo;</span>
+      </p>
+    {% endif %}
+    <div class="prose prose-sm max-w-none text-stone-800 whitespace-pre-line">{{ brief.executive_summary }}</div>
+    <p class="mt-2 text-xs text-stone-400">
+      Generated {{ brief.generated_at|humanize_age }} · model {{ brief.model }} ·
+      AI-generated from the data below; verify against the record.
+    </p>
+  {% elif not brief_error %}
+    <p class="text-stone-500 text-sm">
+      No brief generated yet. Generate a short executive summary distilled from the
+      data on this page.
+    </p>
+  {% endif %}
+
+  {% if latest_summary %}
+    <p class="mt-2 text-xs text-stone-400">
+      Grounded in the most recent CRS summary —
+      {{ latest_summary.action_desc or latest_summary.version_code }}{% if latest_summary.action_date %} · {{ latest_summary.action_date }}{% endif %}.
+    </p>
+  {% endif %}
+
+  <form
+    hx-post="/bills/{{ bill.congress }}/{{ bill.bill_type }}/{{ bill.bill_number }}/brief"
+    hx-target="#bill-brief"
+    hx-swap="outerHTML"
+    hx-disabled-elt="find button"
+    class="mt-3 space-y-2"
+  >
+    <label class="block text-xs uppercase tracking-wide text-stone-400" for="brief-lens">
+      Tailor this brief (optional)
+    </label>
+    <textarea
+      id="brief-lens"
+      name="lens"
+      rows="2"
+      placeholder="e.g. Emphasize the fiscal impact for a budget-committee audience"
+      class="w-full rounded border border-stone-300 px-2 py-1 text-sm focus:border-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-500"
+    >{{ brief.lens if brief else "" }}</textarea>
+    <div class="flex items-center gap-3">
+      <button
+        type="submit"
+        class="rounded bg-stone-900 px-3 py-1.5 text-white text-sm font-medium hover:bg-stone-700 disabled:opacity-50"
+      >
+        {{ "Regenerate brief" if brief else "Generate brief" }}
+      </button>
+      <span class="htmx-indicator text-xs text-stone-500">Generating…</span>
+    </div>
+  </form>
+  {# Indicator CSS lives inside the swapped section so an outerHTML
+     regenerate replaces it rather than accumulating copies. #}
+  <style>
+    #bill-brief .htmx-indicator { opacity: 0; transition: opacity 150ms ease-in; }
+    #bill-brief.htmx-request .htmx-indicator,
+    #bill-brief .htmx-request .htmx-indicator { opacity: 1; }
+  </style>
+</section>

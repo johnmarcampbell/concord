@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlite_vec  # type: ignore[import-untyped]
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -39,6 +39,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from concord.brief import (
+    BRIEF_PROMPT_VERSION,
+    Briefer,
+    BriefError,
+    BriefFacts,
+    build_facts,
+    facts_hash,
+)
 from concord.embedding import Embedder
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
 from concord.storage.sqlite import ensure_schema
@@ -116,6 +124,7 @@ def create_app(
     db_path: Path | str,
     *,
     embedder: Embedder | None = None,
+    briefer: Briefer | None = None,
     storage_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build a fully wired FastAPI app.
@@ -128,6 +137,12 @@ def create_app(
         Optional injected :class:`Embedder`. When ``None`` (production
         default), constructs one from a default ``openai.OpenAI()``.
         Tests pass a stub to avoid network and OpenAI key requirements.
+    briefer:
+        Optional injected :class:`Briefer` for the Bill Brief feature
+        (ADR 0020). When ``embedder`` is also ``None`` (production
+        default), constructed from the *same* ``openai.OpenAI()`` client.
+        When ``None`` (the case for tests that only inject an embedder),
+        the brief feature is disabled and its routes are not registered.
     storage_dir:
         Path to the JSONL canonical store. Defaults to ``db_path.parent``
         to match the conventional ``./data/`` layout. Only consulted by
@@ -143,7 +158,12 @@ def create_app(
     if embedder is None:
         import openai  # noqa: PLC0415 — guarded so tests can import this module without openai
 
-        embedder = Embedder(openai.OpenAI())
+        # One OpenAI client backs both query embeddings (ADR 0004) and
+        # Bill Brief generation (ADR 0020). serve already requires the key.
+        client = openai.OpenAI()
+        embedder = Embedder(client)
+        if briefer is None:
+            briefer = Briefer(client)
 
     storage_dir_path = Path(storage_dir) if storage_dir is not None else db_path.parent
 
@@ -164,6 +184,11 @@ def create_app(
     app.state.db_path = db_path
     app.state.storage_dir = storage_dir_path
     app.state.embedder = embedder
+    app.state.briefer = briefer
+    # Bill Brief feature is on whenever a Briefer is present (ADR 0020);
+    # in production that is always, since serve builds one from the same
+    # OpenAI client the embedder uses.
+    app.state.brief_enabled = briefer is not None
     app.state.limiter = limiter
     app.state.enrichment_enabled = enrichment_enabled
     # Cross-request de-dup of in-flight enrichment jobs. Single-worker
@@ -185,6 +210,8 @@ def create_app(
     _register_routes(app, limiter)
     if enrichment_enabled:
         _register_enrichment_routes(app)
+    if briefer is not None:
+        _register_brief_routes(app)
     return app
 
 
@@ -520,6 +547,20 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         summaries = search_mod.summaries_for_bill(db, bill_id)
         vote_history = search_mod.vote_history_for_bill(db, bill_id)
         enrichment_state, enrichment_error = _compute_enrichment_state(request.app, bill, bill_id)
+        brief_enabled = request.app.state.brief_enabled
+        latest_summary = summaries[-1] if summaries else None
+        brief_ctx = None
+        if brief_enabled:
+            brief_ctx = _load_cached_brief(
+                request.app,
+                db,
+                bill,
+                cosponsors=cosponsors,
+                subjects=subjects,
+                actions=actions,
+                vote_history=vote_history,
+                summaries=summaries,
+            )
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "bills/profile.html",
@@ -534,6 +575,10 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "enrichment_enabled": request.app.state.enrichment_enabled,
                 "enrichment_state": enrichment_state,
                 "enrichment_error": enrichment_error,
+                "brief_enabled": brief_enabled,
+                "brief": brief_ctx,
+                "latest_summary": latest_summary,
+                "brief_error": None,
             },
         )
 
@@ -741,6 +786,77 @@ def _compute_enrichment_state(
     return "_enrichment_button", None
 
 
+def _assemble_facts(
+    db: sqlite3.Connection,
+    bill: dict[str, Any],
+    *,
+    cosponsors: list[dict[str, Any]],
+    subjects: list[str],
+    actions: list[dict[str, Any]],
+    vote_count: int,
+    summaries: list[dict[str, Any]],
+) -> BriefFacts:
+    """Build the deterministic Bill Brief fact pack (ADR 0020).
+
+    Pure assembly over rows the caller already fetched, plus one extra
+    query for the cosponsor party split. Shared by the profile-page
+    staleness check and the brief POST handler so both hash the same
+    fact pack.
+    """
+    latest_summary = summaries[-1] if summaries else None
+    party_counts = search_mod.cosponsor_party_breakdown(db, bill["bill_id"])
+    return build_facts(
+        bill=bill,
+        cosponsors=cosponsors,
+        cosponsor_party_counts=party_counts,
+        subjects=subjects,
+        action_count=len(actions),
+        vote_count=vote_count,
+        latest_summary=latest_summary,
+    )
+
+
+def _load_cached_brief(
+    app: FastAPI,
+    db: sqlite3.Connection,
+    bill: dict[str, Any],
+    *,
+    cosponsors: list[dict[str, Any]],
+    subjects: list[str],
+    actions: list[dict[str, Any]],
+    vote_history: list[Any],
+    summaries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the cached neutral brief for a bill (or ``None``), stale-flagged.
+
+    Recomputes the current fact-pack hash and compares it to the stored
+    one so the profile page can prompt a regenerate when the underlying
+    mirror data has moved since the brief was written (ADR 0020).
+    """
+    cached = search_mod.get_bill_brief(db, bill["bill_id"], "")
+    if cached is None:
+        return None
+    facts = _assemble_facts(
+        db,
+        bill,
+        cosponsors=cosponsors,
+        subjects=subjects,
+        actions=actions,
+        vote_count=len(vote_history),
+        summaries=summaries,
+    )
+    current_hash = facts_hash(
+        facts, model=app.state.briefer.model, prompt_version=BRIEF_PROMPT_VERSION
+    )
+    return {
+        "executive_summary": cached["executive_summary"],
+        "lens": cached["lens"],
+        "generated_at": cached["generated_at"],
+        "model": cached["model"],
+        "stale": current_hash != cached["facts_hash"],
+    }
+
+
 def _register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
     """Register the two web-initiated enrichment routes (ADR 0016)."""
     templates: Jinja2Templates = app.state.templates
@@ -833,6 +949,112 @@ def _register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI
         # restarted mid-job. Either way: show the button again so the
         # user can retry the still-NULL sections.
         return templates.TemplateResponse(request, "bills/_enrichment_button.html", context)
+
+
+def _register_brief_routes(app: FastAPI) -> None:
+    """Register the synchronous Bill Brief generation route (ADR 0020).
+
+    A ``def`` (not ``async``) route runs in FastAPI's threadpool, so the
+    one blocking OpenAI call doesn't stall the event loop and no
+    background-task machinery is needed.
+    """
+    templates: Jinja2Templates = app.state.templates
+
+    @app.post(
+        "/bills/{congress}/{bill_type}/{bill_number}/brief",
+        response_class=HTMLResponse,
+    )
+    def generate_brief(
+        request: Request,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+        lens: str = Form(""),
+        db: sqlite3.Connection = Depends(_db_for_status),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        from concord.storage.sqlite import SqliteStorage  # noqa: PLC0415 — defer heavy import
+
+        bt = bill_type.lower()
+        if bt not in _VALID_BILL_TYPES:
+            raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
+        bill = search_mod.get_bill(db, congress=congress, bill_type=bt, bill_number=bill_number)
+        if bill is None:
+            raise HTTPException(
+                status_code=404, detail=f"unknown bill: {congress}/{bt}/{bill_number}"
+            )
+        bill_id = bill["bill_id"]
+
+        cosponsors = search_mod.cosponsors_for_bill(db, bill_id)
+        actions = search_mod.actions_for_bill(db, bill_id)
+        subjects = search_mod.subjects_for_bill(db, bill_id)
+        summaries = search_mod.summaries_for_bill(db, bill_id)
+        vote_history = search_mod.vote_history_for_bill(db, bill_id)
+        latest_summary = summaries[-1] if summaries else None
+
+        facts = _assemble_facts(
+            db,
+            bill,
+            cosponsors=cosponsors,
+            subjects=subjects,
+            actions=actions,
+            vote_count=len(vote_history),
+            summaries=summaries,
+        )
+        briefer = request.app.state.briefer
+        lens_norm = lens.strip()
+        current_hash = facts_hash(facts, model=briefer.model, prompt_version=BRIEF_PROMPT_VERSION)
+
+        exec_summary: str | None = None
+        generated_at: str | None = None
+        brief_error: str | None = None
+        storage = SqliteStorage(request.app.state.db_path, load_vec=False)
+        try:
+            cached = storage.get_bill_brief(bill_id, lens_norm)
+            if cached is not None and cached["facts_hash"] == current_hash:
+                # Cache hit on the same fact pack — reuse, no LLM call.
+                exec_summary = cached["executive_summary"]
+                generated_at = cached["generated_at"]
+            else:
+                try:
+                    generated = briefer.generate(facts, lens=lens_norm or None)
+                except BriefError as exc:
+                    _log.warning("brief generation failed for %s: %s", bill_id, exc)
+                    brief_error = "Couldn't generate a brief right now. Please try again."
+                else:
+                    exec_summary = generated.executive_summary
+                    generated_at = datetime.now(UTC).isoformat()
+                    storage.upsert_bill_brief(
+                        bill_id=bill_id,
+                        lens=lens_norm,
+                        executive_summary=exec_summary,
+                        facts_hash=current_hash,
+                        model=briefer.model,
+                        prompt_version=BRIEF_PROMPT_VERSION,
+                        generated_at=generated_at,
+                    )
+        finally:
+            storage.close()
+
+        brief_ctx: dict[str, Any] | None = None
+        if exec_summary is not None:
+            brief_ctx = {
+                "executive_summary": exec_summary,
+                "lens": lens_norm,
+                "generated_at": generated_at,
+                "model": briefer.model,
+                "stale": False,
+            }
+        return templates.TemplateResponse(
+            request,
+            "bills/_brief.html",
+            {
+                "bill": {"congress": congress, "bill_type": bt, "bill_number": bill_number},
+                "brief": brief_ctx,
+                "latest_summary": latest_summary,
+                "brief_error": brief_error,
+                "brief_enabled": True,
+            },
+        )
 
 
 def _bill_row_exists(db_path: Path, bill_id: str) -> bool:

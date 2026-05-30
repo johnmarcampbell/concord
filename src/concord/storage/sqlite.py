@@ -348,6 +348,27 @@ CREATE TABLE IF NOT EXISTS member_party_unity (
     party_line_votes         INTEGER NOT NULL,
     PRIMARY KEY (bioguide_id, congress, chamber)
 );
+
+-- bill_briefs is a RECORD table, not a mirror (ADR 0019). It holds the
+-- LLM-generated executive summary of a Bill (ADR 0020): derived from the
+-- data but non-deterministic and not rebuildable from JSONL, so a mirror
+-- re-derivation (re-run load/index) must NOT recreate or destroy it. The
+-- loaders only UPSERT mirror rows and ensure_schema is CREATE IF NOT
+-- EXISTS, so this row survives a rebuild. Keyed by (bill_id, lens): an
+-- empty lens is the neutral, cacheable default; a non-empty lens is a
+-- user-conditioned brief. facts_hash pins the brief to the fact-pack it
+-- was generated from (+ model + prompt_version) so the web layer can flag
+-- a brief stale when the underlying mirror data moves.
+CREATE TABLE IF NOT EXISTS bill_briefs (
+    bill_id            TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    lens               TEXT NOT NULL DEFAULT '',
+    executive_summary  TEXT NOT NULL,
+    facts_hash         TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    prompt_version     INTEGER NOT NULL,
+    generated_at       TEXT NOT NULL,
+    PRIMARY KEY (bill_id, lens)
+);
 """
 
 # Column lists for members + member_terms tables. Mirrors the ``_PROCEEDING_COLUMNS``
@@ -560,6 +581,29 @@ _SUBJECT_INSERT_SQL = _insert_sql("bill_subjects", _SUBJECT_COLUMNS)
 _TITLE_INSERT_SQL = _insert_sql("bill_titles", _TITLE_COLUMNS)
 _SUMMARY_INSERT_SQL = _insert_sql("bill_summaries", _SUMMARY_COLUMNS)
 
+# bill_briefs is a record table (ADR 0019); these power the upsert in
+# upsert_bill_brief. The (bill_id, lens) pair is the conflict target.
+_BILL_BRIEF_COLUMNS: tuple[str, ...] = (
+    "bill_id",
+    "lens",
+    "executive_summary",
+    "facts_hash",
+    "model",
+    "prompt_version",
+    "generated_at",
+)
+
+_BILL_BRIEF_UPSERT_SQL = (
+    "INSERT INTO bill_briefs ("
+    + ", ".join(_BILL_BRIEF_COLUMNS)
+    + ") VALUES ("
+    + ", ".join("?" for _ in _BILL_BRIEF_COLUMNS)
+    + ") ON CONFLICT(bill_id, lens) DO UPDATE SET "
+    + ", ".join(
+        f"{col} = excluded.{col}" for col in _BILL_BRIEF_COLUMNS if col not in {"bill_id", "lens"}
+    )
+)
+
 # Vec-only schema. Only created when load_vec=True.
 _VEC_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
@@ -619,6 +663,31 @@ def _m001_add_bill_last_enrichment_error(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE bills ADD COLUMN last_enrichment_error TEXT")
 
 
+def _m002_add_bill_briefs(conn: sqlite3.Connection) -> None:
+    """ADR 0019/0020: the ``bill_briefs`` record table.
+
+    ``CREATE TABLE IF NOT EXISTS`` is idempotent against fresh installs
+    (whose ``_BASE_SCHEMA`` already declares the table; this ALTER is a
+    no-op) and against pre-0020 DBs (which gain the table here). The DDL
+    must stay byte-equivalent to the ``_BASE_SCHEMA`` declaration — the
+    schema-equivalence test (ADR 0017) fails if they drift.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS bill_briefs (
+            bill_id            TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+            lens               TEXT NOT NULL DEFAULT '',
+            executive_summary  TEXT NOT NULL,
+            facts_hash         TEXT NOT NULL,
+            model              TEXT NOT NULL,
+            prompt_version     INTEGER NOT NULL,
+            generated_at       TEXT NOT NULL,
+            PRIMARY KEY (bill_id, lens)
+        );
+        """
+    )
+
+
 #: Ordered, append-only schema migrations. Each entry is
 #: ``(version, callable)``; the callable receives a connection and
 #: mutates it to bring the DB from version N-1 to version N. The
@@ -629,6 +698,7 @@ def _m001_add_bill_last_enrichment_error(conn: sqlite3.Connection) -> None:
 #: buggy migration is a *new* migration with a higher version.
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _m001_add_bill_last_enrichment_error),
+    (2, _m002_add_bill_briefs),
 )
 _HEAD: int = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
 
@@ -1097,6 +1167,49 @@ class SqliteStorage:
             (bill_id,),
         )
         return cursor.fetchall()
+
+    # -- Bill Briefs (record table — ADR 0019 / 0020) ---------------------
+
+    def get_bill_brief(self, bill_id: str, lens: str = "") -> sqlite3.Row | None:
+        """Fetch a cached brief for ``(bill_id, lens)``; ``lens=''`` is neutral."""
+        cursor = self._conn.execute(
+            "SELECT * FROM bill_briefs WHERE bill_id = ? AND lens = ?",
+            (bill_id, lens),
+        )
+        row: sqlite3.Row | None = cursor.fetchone()
+        return row
+
+    def upsert_bill_brief(
+        self,
+        *,
+        bill_id: str,
+        lens: str,
+        executive_summary: str,
+        facts_hash: str,
+        model: str,
+        prompt_version: int,
+        generated_at: str,
+    ) -> None:
+        """Insert or replace the cached brief for ``(bill_id, lens)``.
+
+        A record-table write (ADR 0019): the brief is generated state, not
+        a mirror projection. Safe to call for a Bill not in ``bills`` only
+        if the FK target exists — callers generate from a loaded bill, so
+        the parent row is present.
+        """
+        with self._maybe_transaction():
+            self._conn.execute(
+                _BILL_BRIEF_UPSERT_SQL,
+                (
+                    bill_id,
+                    lens,
+                    executive_summary,
+                    facts_hash,
+                    model,
+                    prompt_version,
+                    generated_at,
+                ),
+            )
 
     # -- Votes (Phase 3a) -------------------------------------------------
 

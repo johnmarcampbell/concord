@@ -792,6 +792,72 @@ def summaries_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, A
     return [dict(r) for r in rows]
 
 
+def _party_bucket(party: str | None) -> str:
+    """Bucket a Term's party string into D / R / I / Other / Unknown.
+
+    member_terms stores full party names ("Republican", "Democratic",
+    "Independent"). Unindexed cosponsors (no Term row) bucket as
+    "Unknown" so the brief's coalition fact stays honest about coverage.
+    """
+    if not party:
+        return "Unknown"
+    p = party.strip().lower()
+    if p.startswith("democr"):
+        return "D"
+    if p.startswith("republic"):
+        return "R"
+    if p.startswith("independ"):
+        return "I"
+    return "Other"
+
+
+def cosponsor_party_breakdown(db: sqlite3.Connection, bill_id: str) -> dict[str, int]:
+    """Best-effort D/R/I/Other/Unknown counts of a bill's cosponsors.
+
+    Joins each cosponsor to their most-recent Term for party. Used by the
+    Bill Brief fact pack (ADR 0020) to ground the coalition-shape claim in
+    real counts rather than letting the model guess. Empty dict when the
+    bill has no cosponsors loaded.
+    """
+    rows = db.execute(
+        """
+        SELECT
+            c.bioguide_id AS bioguide_id,
+            (
+                SELECT t.party FROM member_terms t
+                WHERE t.bioguide_id = c.bioguide_id
+                ORDER BY t.congress DESC
+                LIMIT 1
+            ) AS party
+        FROM bill_cosponsors c
+        WHERE c.bill_id = ?
+        """,
+        (bill_id,),
+    ).fetchall()
+    counts: dict[str, int] = {}
+    for r in rows:
+        bucket = _party_bucket(r["party"])
+        counts[bucket] = counts.get(bucket, 0) + 1
+    return counts
+
+
+def get_bill_brief(
+    db: sqlite3.Connection,
+    bill_id: str,
+    lens: str = "",
+) -> dict[str, Any] | None:
+    """Fetch a cached Bill Brief row for ``(bill_id, lens)`` as a dict.
+
+    ``lens=''`` is the neutral default. Returns ``None`` when no brief has
+    been generated for that pair. See ADR 0020.
+    """
+    row = db.execute(
+        "SELECT * FROM bill_briefs WHERE bill_id = ? AND lens = ?",
+        (bill_id, lens),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
 # -- Votes (Phase 3a) -------------------------------------------------------
 
 
