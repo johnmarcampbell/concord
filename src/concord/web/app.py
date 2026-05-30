@@ -39,9 +39,13 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from concord.brief import Briefer
 from concord.embedding import Embedder
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
 from concord.storage.sqlite import ensure_schema
+from concord.web._deps import VALID_BILL_TYPES as _VALID_BILL_TYPES
+from concord.web._deps import db_connection as _db_for_status
+from concord.web.brief import assemble_facts, cached_view, register_brief_routes
 from concord.web.top_bills import CURATED_TOP_BILLS
 
 from . import search as search_mod
@@ -81,11 +85,6 @@ MEMBER_RESULT_LIMIT = 10
 #: Cap on Bill hits surfaced in a federated ``/search``.
 BILL_RESULT_LIMIT = 10
 
-#: Bill type codes accepted in URL paths. Mirrors
-#: :data:`concord.cli.DEFAULT_BILL_TYPES`; kept here too so the web
-#: package doesn't import the CLI module.
-_VALID_BILL_TYPES = frozenset({"hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres"})
-
 #: Regex that matches a bare Bill identifier like ``"HR 1234"`` or
 #: ``"S.47"``. Used to detect "did you mean this Bill?" queries and
 #: redirect to the Bill page when there's exactly one match across the
@@ -116,6 +115,7 @@ def create_app(
     db_path: Path | str,
     *,
     embedder: Embedder | None = None,
+    briefer: Briefer | None = None,
     storage_dir: Path | str | None = None,
 ) -> FastAPI:
     """Build a fully wired FastAPI app.
@@ -128,6 +128,12 @@ def create_app(
         Optional injected :class:`Embedder`. When ``None`` (production
         default), constructs one from a default ``openai.OpenAI()``.
         Tests pass a stub to avoid network and OpenAI key requirements.
+    briefer:
+        Optional injected :class:`Briefer` for the Bill Brief feature
+        (ADR 0020). When ``embedder`` is also ``None`` (production
+        default), constructed from the *same* ``openai.OpenAI()`` client.
+        When ``None`` (the case for tests that only inject an embedder),
+        the brief feature is disabled and its routes are not registered.
     storage_dir:
         Path to the JSONL canonical store. Defaults to ``db_path.parent``
         to match the conventional ``./data/`` layout. Only consulted by
@@ -143,7 +149,12 @@ def create_app(
     if embedder is None:
         import openai  # noqa: PLC0415 — guarded so tests can import this module without openai
 
-        embedder = Embedder(openai.OpenAI())
+        # One OpenAI client backs both query embeddings (ADR 0004) and
+        # Bill Brief generation (ADR 0020). serve already requires the key.
+        client = openai.OpenAI()
+        embedder = Embedder(client)
+        if briefer is None:
+            briefer = Briefer(client)
 
     storage_dir_path = Path(storage_dir) if storage_dir is not None else db_path.parent
 
@@ -164,6 +175,11 @@ def create_app(
     app.state.db_path = db_path
     app.state.storage_dir = storage_dir_path
     app.state.embedder = embedder
+    app.state.briefer = briefer
+    # Bill Brief feature is on whenever a Briefer is present (ADR 0020);
+    # in production that is always, since serve builds one from the same
+    # OpenAI client the embedder uses.
+    app.state.brief_enabled = briefer is not None
     app.state.limiter = limiter
     app.state.enrichment_enabled = enrichment_enabled
     # Cross-request de-dup of in-flight enrichment jobs. Single-worker
@@ -185,6 +201,8 @@ def create_app(
     _register_routes(app, limiter)
     if enrichment_enabled:
         _register_enrichment_routes(app)
+    if briefer is not None:
+        register_brief_routes(app)
     return app
 
 
@@ -520,6 +538,23 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         summaries = search_mod.summaries_for_bill(db, bill_id)
         vote_history = search_mod.vote_history_for_bill(db, bill_id)
         enrichment_state, enrichment_error = _compute_enrichment_state(request.app, bill, bill_id)
+        brief_enabled = request.app.state.brief_enabled
+        brief_facts = None
+        brief_view = None
+        if brief_enabled:
+            # Assemble the fact pack unconditionally: it's the deterministic
+            # body of the self-contained brief card, shown whether or not an
+            # executive summary has been generated yet (ADR 0020).
+            brief_facts = assemble_facts(
+                db,
+                bill,
+                cosponsors=cosponsors,
+                subjects=subjects,
+                actions=actions,
+                vote_count=len(vote_history),
+                summaries=summaries,
+            )
+            brief_view = cached_view(db, brief_facts, model=request.app.state.briefer.model)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "bills/profile.html",
@@ -534,6 +569,10 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
                 "enrichment_enabled": request.app.state.enrichment_enabled,
                 "enrichment_state": enrichment_state,
                 "enrichment_error": enrichment_error,
+                "brief_enabled": brief_enabled,
+                "brief": brief_view,
+                "facts": brief_facts,
+                "brief_error": None,
             },
         )
 
@@ -846,22 +885,6 @@ def _bill_row_exists(db_path: Path, bill_id: str) -> bool:
     try:
         cur = conn.execute("SELECT 1 FROM bills WHERE bill_id = ? LIMIT 1", (bill_id,))
         return cur.fetchone() is not None
-    finally:
-        conn.close()
-
-
-def _db_for_status(request: Request) -> Iterator[sqlite3.Connection]:
-    """Per-request connection for the enrichment-status endpoint.
-
-    The bulk-search ``get_db`` is defined as a nested closure inside
-    :func:`_register_routes`, so the enrichment-status endpoint (registered
-    in a separate helper) gets its own equivalent here. No sqlite-vec
-    extension load — the status query is one indexed SELECT.
-    """
-    conn = sqlite3.connect(request.app.state.db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
     finally:
         conn.close()
 
