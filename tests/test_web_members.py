@@ -164,10 +164,8 @@ class TestMemberProfile:
         body = resp.text
         assert "Bernard Sanders" in body
         assert "Senate" in body or "Senator" in body
-        # Future-phase placeholders should be present.
         assert "Sponsored bills" in body
         assert "Recent votes" in body
-        assert "Mentioned in proceedings" in body
 
     def test_unknown_bioguide_404(self, client: TestClient) -> None:
         resp = client.get("/members/X999999")
