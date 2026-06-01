@@ -1,6 +1,48 @@
 {% extends "base.html" %}
 {% block title %}{{ bill.bill_type|upper }} {{ bill.bill_number }} — Concord{% endblock %}
 {% block content %}
+{# Long sections (cosponsors, votes, actions, subjects, titles) start as a
+   preview of the first N items and expand on click — see the per-section
+   PREVIEW counts below. Item markup is factored into macros so the preview
+   and the expanded remainder render identically. #}
+{%- macro cosponsor_li(c) -%}
+  <li class="text-sm">
+    {% if c.sponsorship_withdrawn_date %}
+      <del class="text-stone-500">
+        {% if c.display_name %}
+          <a href="/members/{{ c.bioguide_id }}" class="hover:text-stone-700">{{ c.display_name }}</a>
+        {% else %}
+          <span class="font-mono">{{ c.bioguide_id }}</span>
+        {% endif %}
+      </del>
+      <span class="text-xs text-stone-400 ml-1">(withdrawn {{ c.sponsorship_withdrawn_date }})</span>
+    {% else %}
+      {% if c.display_name %}
+        <a href="/members/{{ c.bioguide_id }}" class="text-stone-800 hover:text-stone-600">{{ c.display_name }}</a>
+      {% else %}
+        <span class="font-mono text-stone-700">{{ c.bioguide_id }}</span>
+        <span class="text-xs text-stone-400">(not indexed)</span>
+      {% endif %}
+      {% if c.is_original_cosponsor %}
+        <span class="text-xs text-stone-400 ml-1">· original</span>
+      {% elif c.sponsorship_date %}
+        <span class="text-xs text-stone-400 ml-1">· joined {{ c.sponsorship_date }}</span>
+      {% endif %}
+    {% endif %}
+  </li>
+{%- endmacro -%}
+{%- macro title_li(t) -%}
+  <li class="text-sm">
+    <div class="text-xs uppercase tracking-wide text-stone-400">{{ t.title_type }}{% if t.chamber %} · {{ t.chamber }}{% endif %}</div>
+    <div class="text-stone-800">{{ t.title_text }}</div>
+  </li>
+{%- endmacro -%}
+{%- macro empty_state(label) -%}
+  <div class="border border-dashed border-stone-300 rounded p-3 text-stone-500 text-sm">{{ label }}</div>
+{%- endmacro -%}
+{%- macro show_more(label) -%}
+  <summary class="cursor-pointer text-sm text-stone-600 hover:text-stone-900 select-none">{{ label }}</summary>
+{%- endmacro -%}
 {# Compute the most recent fetched_at across tier-1 + tier-2 sections. #}
 {%- set tier2_stamps = [bill.cosponsors_fetched_at, bill.actions_fetched_at,
                         bill.subjects_fetched_at, bill.titles_fetched_at,
@@ -9,6 +51,9 @@
 {%- for stamp in tier2_stamps -%}
   {%- if stamp and stamp > updated_at -%}{%- set updated_at = stamp -%}{%- endif -%}
 {%- endfor -%}
+{%- set any_missing = (bill.cosponsors_fetched_at is none or bill.actions_fetched_at is none
+                       or bill.subjects_fetched_at is none or bill.titles_fetched_at is none
+                       or bill.summaries_fetched_at is none) -%}
 <article class="grid grid-cols-1 md:grid-cols-4 gap-6">
   <aside class="md:col-span-1 text-sm text-stone-600 space-y-3">
     <div>
@@ -44,16 +89,26 @@
       <h1 class="text-2xl font-serif font-semibold leading-snug">{{ bill.title }}</h1>
     </header>
 
+    {# -- Data completeness --------------------------------------------- #}
     {% if enrichment_enabled and enrichment_state %}
       <section>
         {% include "bills/" + enrichment_state + ".html" %}
       </section>
+    {% elif any_missing %}
+      {# No on-demand enrichment available here, but sections are empty:
+         explain why rather than leaving silent dashed boxes below. #}
+      <section class="border border-dashed border-stone-300 rounded p-3 text-sm text-stone-600 bg-stone-50/60">
+        Some sections below haven't been fetched from Congress.gov yet.
+        {% include "bills/_why_enrichment.html" %}
+      </section>
     {% endif %}
 
+    {# -- Brief (synthesized summary — the headline glance) ------------- #}
     {% if brief_enabled %}
       {% include "bills/_brief.html" %}
     {% endif %}
 
+    {# -- Latest action (current status) ------------------------------- #}
     {% if bill.latest_action_date or bill.latest_action_text %}
       <section>
         <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Latest action</h2>
@@ -66,149 +121,11 @@
       </section>
     {% endif %}
 
-    <section>
-      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Sponsor</h2>
-      {% if bill.sponsor_bioguide_id %}
-        {% if bill.sponsor_display_name %}
-          <a
-            href="/members/{{ bill.sponsor_bioguide_id }}"
-            class="text-stone-900 hover:text-stone-700 underline"
-          >{{ bill.sponsor_display_name }}</a>
-        {% else %}
-          <span class="text-stone-700">
-            Bioguide
-            <span class="font-mono">{{ bill.sponsor_bioguide_id }}</span>
-            <span class="text-stone-400 text-xs">(not indexed)</span>
-          </span>
-        {% endif %}
-      {% else %}
-        <span class="text-stone-500">No sponsor recorded.</span>
-      {% endif %}
-    </section>
-
-    {# -- Cosponsors --------------------------------------------------- #}
-    <section>
-      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Cosponsors</h2>
-      {% if bill.cosponsors_fetched_at is none %}
-        <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-          Cosponsors not yet fetched. Run
-          <code class="font-mono text-stone-700">concord scrape bills enrich --bill-ids {{ bill.bill_id }}</code>
-          to populate.
-        </div>
-      {% elif cosponsors %}
-        <ul class="space-y-1">
-          {% for c in cosponsors %}
-            <li class="text-sm">
-              {% if c.sponsorship_withdrawn_date %}
-                <del class="text-stone-500">
-                  {% if c.display_name %}
-                    <a href="/members/{{ c.bioguide_id }}" class="hover:text-stone-700">{{ c.display_name }}</a>
-                  {% else %}
-                    <span class="font-mono">{{ c.bioguide_id }}</span>
-                  {% endif %}
-                </del>
-                <span class="text-xs text-stone-400 ml-1">(withdrawn {{ c.sponsorship_withdrawn_date }})</span>
-              {% else %}
-                {% if c.display_name %}
-                  <a href="/members/{{ c.bioguide_id }}" class="text-stone-800 hover:text-stone-600">{{ c.display_name }}</a>
-                {% else %}
-                  <span class="font-mono text-stone-700">{{ c.bioguide_id }}</span>
-                  <span class="text-xs text-stone-400">(not indexed)</span>
-                {% endif %}
-                {% if c.is_original_cosponsor %}
-                  <span class="text-xs text-stone-400 ml-1">· original</span>
-                {% elif c.sponsorship_date %}
-                  <span class="text-xs text-stone-400 ml-1">· joined {{ c.sponsorship_date }}</span>
-                {% endif %}
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ul>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
-      {% else %}
-        <p class="text-stone-500 text-sm">No cosponsors recorded.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
-      {% endif %}
-    </section>
-
-    {# -- Action history ----------------------------------------------- #}
-    <section>
-      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Action history</h2>
-      {% if bill.actions_fetched_at is none %}
-        <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-          Action history not yet fetched. Run
-          <code class="font-mono text-stone-700">concord scrape bills enrich --bill-ids {{ bill.bill_id }}</code>
-          to populate.
-        </div>
-      {% elif actions %}
-        <ul>
-          {% for action in actions %}
-            {% include "bills/_action_row.html" %}
-          {% endfor %}
-        </ul>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
-      {% else %}
-        <p class="text-stone-500 text-sm">No actions recorded.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
-      {% endif %}
-    </section>
-
-    {# -- Subjects ----------------------------------------------------- #}
-    <section>
-      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Subjects</h2>
-      {% if bill.subjects_fetched_at is none %}
-        <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-          Subjects not yet fetched. Run
-          <code class="font-mono text-stone-700">concord scrape bills enrich --bill-ids {{ bill.bill_id }}</code>
-          to populate.
-        </div>
-      {% elif subjects %}
-        <div class="flex flex-wrap gap-1">
-          {% for s in subjects %}
-            <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
-          {% endfor %}
-        </div>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
-      {% else %}
-        <p class="text-stone-500 text-sm">No subjects assigned.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
-      {% endif %}
-    </section>
-
-    {# -- Titles ------------------------------------------------------- #}
-    <section>
-      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Titles</h2>
-      {% if bill.titles_fetched_at is none %}
-        <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-          Titles not yet fetched. Run
-          <code class="font-mono text-stone-700">concord scrape bills enrich --bill-ids {{ bill.bill_id }}</code>
-          to populate.
-        </div>
-      {% elif titles %}
-        <ul class="space-y-2">
-          {% for t in titles %}
-            <li class="text-sm">
-              <div class="text-xs uppercase tracking-wide text-stone-400">{{ t.title_type }}{% if t.chamber %} · {{ t.chamber }}{% endif %}</div>
-              <div class="text-stone-800">{{ t.title_text }}</div>
-            </li>
-          {% endfor %}
-        </ul>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
-      {% else %}
-        <p class="text-stone-500 text-sm">No titles recorded.</p>
-        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
-      {% endif %}
-    </section>
-
-    {# -- Summaries ---------------------------------------------------- #}
+    {# -- Summaries (what the bill does) ------------------------------- #}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Summaries</h2>
       {% if bill.summaries_fetched_at is none %}
-        <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-          Summaries not yet fetched. Run
-          <code class="font-mono text-stone-700">concord scrape bills enrich --bill-ids {{ bill.bill_id }}</code>
-          to populate.
-        </div>
+        {{ empty_state("Summaries not yet fetched.") }}
       {% elif summaries %}
         {% set latest_index = summaries|length - 1 %}
         <div class="space-y-2">
@@ -229,29 +146,158 @@
       {% endif %}
     </section>
 
+    {# -- Sponsor ------------------------------------------------------- #}
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Sponsor</h2>
+      {% if bill.sponsor_bioguide_id %}
+        {% if bill.sponsor_display_name %}
+          <a
+            href="/members/{{ bill.sponsor_bioguide_id }}"
+            class="text-stone-900 hover:text-stone-700 underline"
+          >{{ bill.sponsor_display_name }}</a>
+        {% else %}
+          <span class="text-stone-700">
+            Bioguide
+            <span class="font-mono">{{ bill.sponsor_bioguide_id }}</span>
+            <span class="text-stone-400 text-xs">(not indexed)</span>
+          </span>
+        {% endif %}
+      {% else %}
+        <span class="text-stone-500">No sponsor recorded.</span>
+      {% endif %}
+    </section>
+
+    {# -- Cosponsors ---------------------------------------------------- #}
+    {% set PREVIEW = 8 %}
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Cosponsors</h2>
+      {% if bill.cosponsors_fetched_at is none %}
+        {{ empty_state("Cosponsors not yet fetched.") }}
+      {% elif cosponsors %}
+        <ul class="space-y-1">
+          {% for c in cosponsors[:PREVIEW] %}{{ cosponsor_li(c) }}{% endfor %}
+        </ul>
+        {% if cosponsors|length > PREVIEW %}
+          <details class="mt-2">
+            {{ show_more("Show all %d cosponsors"|format(cosponsors|length)) }}
+            <ul class="space-y-1 mt-1">
+              {% for c in cosponsors[PREVIEW:] %}{{ cosponsor_li(c) }}{% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
+      {% else %}
+        <p class="text-stone-500 text-sm">No cosponsors recorded.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
+      {% endif %}
+    </section>
+
     {# -- Vote history -------------------------------------------------- #}
+    {% set PREVIEW = 5 %}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Vote history</h2>
       {% if vote_history %}
         <ul class="space-y-2">
-          {% for v in vote_history %}
-            {% include "_vote_row.html" %}
-          {% endfor %}
+          {% for v in vote_history[:PREVIEW] %}{% include "_vote_row.html" %}{% endfor %}
         </ul>
+        {% if vote_history|length > PREVIEW %}
+          <details class="mt-2">
+            {{ show_more("Show all %d votes"|format(vote_history|length)) }}
+            <ul class="space-y-2 mt-2">
+              {% for v in vote_history[PREVIEW:] %}{% include "_vote_row.html" %}{% endfor %}
+            </ul>
+          </details>
+        {% endif %}
       {% else %}
         <p class="text-stone-500 text-sm">No votes recorded for this bill yet.</p>
       {% endif %}
     </section>
 
-    <section class="space-y-3">
-      <h2 class="text-sm uppercase tracking-wide text-stone-500">Coming in later phases</h2>
-      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-        <div class="font-medium text-stone-600">Committee path (Phase 4)</div>
-        <div class="text-xs">Committee referrals and reports will appear here.</div>
-      </div>
-      <div class="border border-dashed border-stone-300 rounded p-4 text-stone-500 text-sm">
-        <div class="font-medium text-stone-600">Search within this bill (Phase 5)</div>
-        <div class="text-xs">Bill text will become searchable here.</div>
+    {# -- Action history ----------------------------------------------- #}
+    {% set PREVIEW = 8 %}
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Action history</h2>
+      {% if bill.actions_fetched_at is none %}
+        {{ empty_state("Action history not yet fetched.") }}
+      {% elif actions %}
+        <ul>
+          {% for action in actions[:PREVIEW] %}{% include "bills/_action_row.html" %}{% endfor %}
+        </ul>
+        {% if actions|length > PREVIEW %}
+          <details class="mt-2">
+            {{ show_more("Show all %d actions"|format(actions|length)) }}
+            <ul class="mt-1">
+              {% for action in actions[PREVIEW:] %}{% include "bills/_action_row.html" %}{% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
+      {% else %}
+        <p class="text-stone-500 text-sm">No actions recorded.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
+      {% endif %}
+    </section>
+
+    {# -- Subjects ----------------------------------------------------- #}
+    {% set PREVIEW = 18 %}
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Subjects</h2>
+      {% if bill.subjects_fetched_at is none %}
+        {{ empty_state("Subjects not yet fetched.") }}
+      {% elif subjects %}
+        <div class="flex flex-wrap gap-1">
+          {% for s in subjects[:PREVIEW] %}
+            <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
+          {% endfor %}
+        </div>
+        {% if subjects|length > PREVIEW %}
+          <details class="mt-2">
+            {{ show_more("Show all %d subjects"|format(subjects|length)) }}
+            <div class="flex flex-wrap gap-1 mt-1">
+              {% for s in subjects[PREVIEW:] %}
+                <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
+              {% endfor %}
+            </div>
+          </details>
+        {% endif %}
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
+      {% else %}
+        <p class="text-stone-500 text-sm">No subjects assigned.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
+      {% endif %}
+    </section>
+
+    {# -- Titles ------------------------------------------------------- #}
+    {% set PREVIEW = 4 %}
+    <section>
+      <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Titles</h2>
+      {% if bill.titles_fetched_at is none %}
+        {{ empty_state("Titles not yet fetched.") }}
+      {% elif titles %}
+        <ul class="space-y-2">
+          {% for t in titles[:PREVIEW] %}{{ title_li(t) }}{% endfor %}
+        </ul>
+        {% if titles|length > PREVIEW %}
+          <details class="mt-2">
+            {{ show_more("Show all %d titles"|format(titles|length)) }}
+            <ul class="space-y-2 mt-1">
+              {% for t in titles[PREVIEW:] %}{{ title_li(t) }}{% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
+      {% else %}
+        <p class="text-stone-500 text-sm">No titles recorded.</p>
+        <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
+      {% endif %}
+    </section>
+
+    {# -- Roadmap (developer-facing, lowest priority) ------------------- #}
+    <section class="space-y-3 border-t border-stone-200 pt-6">
+      <h2 class="text-xs uppercase tracking-wide text-stone-400">Coming in later phases</h2>
+      <div class="text-stone-400 text-xs space-y-1">
+        <div><span class="font-medium text-stone-500">Committee path (Phase 4)</span> — committee referrals and reports.</div>
+        <div><span class="font-medium text-stone-500">Search within this bill (Phase 5)</span> — full bill text becomes searchable.</div>
       </div>
     </section>
   </div>

@@ -131,6 +131,52 @@
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-3">
         Proceedings ({{ total }})
       </h2>
+      {# Proceeding-only filters live here, not in the global header: date
+         range and Congressional-Record section don't apply to Members or
+         Bills. Submitting re-runs the federated search with the current
+         entity toggles preserved. #}
+      <form
+        hx-get="/search"
+        hx-target="main"
+        hx-swap="innerHTML"
+        hx-push-url="true"
+        hx-trigger="submit, change from:select[name='section']"
+        action="/search"
+        method="get"
+        class="mb-4 flex flex-wrap items-center gap-3 text-sm text-stone-600"
+      >
+        <input type="hidden" name="q" value="{{ query }}">
+        <input type="hidden" name="members" value="{% if include_members %}on{% endif %}">
+        <input type="hidden" name="bills" value="{% if include_bills %}on{% endif %}">
+        <input type="hidden" name="proceedings" value="on">
+        <label class="flex items-center gap-1">
+          <span>From</span>
+          <input
+            type="date" name="from" value="{{ from_date }}"
+            class="rounded border border-stone-300 px-2 py-1 text-sm"
+          >
+        </label>
+        <label class="flex items-center gap-1">
+          <span>To</span>
+          <input
+            type="date" name="to" value="{{ to_date }}"
+            class="rounded border border-stone-300 px-2 py-1 text-sm"
+          >
+        </label>
+        <label class="flex items-center gap-1">
+          <span>Section</span>
+          <select name="section" class="rounded border border-stone-300 px-2 py-1 text-sm">
+            <option value="">All</option>
+            {% for s in sections|default(['Senate Section','House Section','Extensions of Remarks Section','Daily Digest']) %}
+              <option value="{{ s }}" {% if s == section %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button
+          type="submit"
+          class="rounded border border-stone-300 px-3 py-1 text-xs font-medium text-stone-700 hover:bg-stone-100"
+        >Apply</button>
+      </form>
       {% if total == 0 %}
         <p class="text-stone-600">
           No proceedings match <span class="font-mono">&ldquo;{{ query }}&rdquo;</span>.

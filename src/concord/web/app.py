@@ -228,9 +228,32 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
         return request.app.state.embedder  # type: ignore[no-any-return]
 
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request) -> Response:
+    def index(
+        request: Request,
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
+    ) -> Response:
+        # Bills are the headline entity, so the landing page leads with them
+        # (curated Top Bills + recently-active bills) rather than an empty
+        # search prompt. The curated set degrades gracefully: any bill not in
+        # the local store is skipped.
+        keys = [(c.congress, c.bill_type, c.bill_number) for c in CURATED_TOP_BILLS]
+        resolved = search_mod.get_curated_bills(db, keys)
+        top_bills: list[dict[str, Any]] = []
+        for entry in CURATED_TOP_BILLS:
+            hit = resolved.get((entry.congress, entry.bill_type, entry.bill_number))
+            if hit is None:
+                continue
+            top_bills.append({"bill": hit, "label": entry.label, "blurb": entry.blurb})
+        recent_bills, bills_total = search_mod.list_bills(db, limit=6, offset=0)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
-            request, "index.html", {"query": ""}
+            request,
+            "index.html",
+            {
+                "query": "",
+                "top_bills": top_bills[:6],
+                "recent_bills": recent_bills,
+                "bills_total": bills_total,
+            },
         )
 
     @app.get("/search", response_class=HTMLResponse)
