@@ -1,0 +1,14 @@
+{# Reusable "why isn't this enriched?" explainer. Self-contained — needs no
+   template context. Used by the enrichment button and by the per-section
+   empty states when on-demand enrichment isn't available. #}
+<details class="text-xs text-stone-500 mt-1">
+  <summary class="cursor-pointer hover:text-stone-700 select-none">Why?</summary>
+  <p class="mt-1 leading-relaxed">
+    Every bill carries a core record (title, sponsor, latest action) that
+    Concord fetches up front. The detailed sections — cosponsors, action
+    history, subjects, titles, and summaries — live behind separate
+    Congress.gov endpoints, so they're fetched on demand rather than for all
+    50,000+ bills at once. Until a bill has been enriched, those sections stay
+    empty.
+  </p>
+</details>

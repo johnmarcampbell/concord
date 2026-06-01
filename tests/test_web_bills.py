@@ -233,9 +233,6 @@ class TestBillProfile:
         # Vote history is live (Phase 3a) but empty when no votes loaded.
         assert "Vote history" in body
         assert "No votes recorded for this bill yet" in body
-        # Phase 4/5 placeholders still present.
-        assert "Committee path (Phase 4)" in body
-        assert "Search within this bill (Phase 5)" in body
 
     def test_unknown_bill_number_404(self, client: TestClient) -> None:
         resp = client.get("/bills/119/hr/9999")

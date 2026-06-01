@@ -83,37 +83,7 @@
   {% if bills %}
     <ul class="space-y-3">
       {% for b in bills %}
-        <li class="border border-stone-200 rounded p-3 bg-white">
-          <div class="flex items-baseline gap-2 mb-1">
-            <span class="text-xs uppercase tracking-wide px-2 py-0.5 rounded
-              {% if b.origin_chamber == 'House' %}bg-blue-50 text-blue-800{% else %}bg-amber-50 text-amber-800{% endif %}">
-              {{ b.origin_chamber }}
-            </span>
-            <a
-              href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
-              class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
-            >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
-            <span class="text-xs text-stone-400">· {{ b.congress }}th Congress</span>
-          </div>
-          <a
-            href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
-            class="block text-stone-800 hover:text-stone-600"
-          >{{ b.title|truncate(120) }}</a>
-          <div class="text-xs text-stone-500 mt-1 flex flex-wrap gap-x-3">
-            {% if b.policy_area %}<span>{{ b.policy_area }}</span>{% endif %}
-            {% if b.sponsor_bioguide_id %}
-              <span>
-                Sponsor:
-                <a href="/members/{{ b.sponsor_bioguide_id }}" class="underline hover:text-stone-700">
-                  {{ b.sponsor_display_name or b.sponsor_bioguide_id }}
-                </a>
-              </span>
-            {% endif %}
-            {% if b.latest_action_date %}
-              <span>Latest action: {{ b.latest_action_date }}</span>
-            {% endif %}
-          </div>
-        </li>
+        {% include "bills/_bill_card.html" %}
       {% endfor %}
     </ul>
 

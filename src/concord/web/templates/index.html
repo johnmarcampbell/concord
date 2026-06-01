@@ -1,13 +1,67 @@
 {% extends "base.html" %}
 {% block content %}
-<div id="results" class="prose prose-stone max-w-none">
-  <p class="text-stone-600">
-    Search the daily Congressional Record. Results combine keyword and
-    semantic match across {{ "1995–present" }}.
-  </p>
-  <p class="text-stone-500 text-sm mt-4">
-    Try: <em>bank regulation</em>, <em>Senator Warren on antitrust</em>,
-    or <em>climate change in the Senate</em>.
-  </p>
+<div class="space-y-10">
+  {# Bills are the headline entity (see route): the landing page leads with
+     them rather than an empty search prompt. #}
+  {% if top_bills %}
+    <section>
+      <div class="flex items-baseline justify-between mb-3">
+        <h1 class="text-2xl font-serif font-semibold text-stone-900">Top bills</h1>
+        <a href="/bills" class="text-sm text-stone-500 hover:text-stone-900 underline">
+          Browse all{% if bills_total %} {{ "{:,}".format(bills_total) }}{% endif %} bills &rarr;
+        </a>
+      </div>
+      <ul class="grid gap-3 sm:grid-cols-2">
+        {% for item in top_bills %}
+          {% set b = item.bill %}
+          <li class="border border-stone-200 rounded p-3 bg-amber-50/40 hover:border-stone-300">
+            <div class="flex items-baseline gap-2 mb-1">
+              <span class="text-xs uppercase tracking-wide px-2 py-0.5 rounded
+                {% if b.origin_chamber == 'House' %}bg-blue-50 text-blue-800{% else %}bg-amber-50 text-amber-800{% endif %}">
+                {{ b.origin_chamber }}
+              </span>
+              <a
+                href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+                class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+              >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
+              <span class="text-xs text-stone-400">· {{ b.congress }}th Congress</span>
+            </div>
+            <a
+              href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+              class="block font-serif text-stone-900 hover:text-stone-700"
+            >{{ item.label }}</a>
+            <p class="text-sm text-stone-600 mt-1">{{ item.blurb }}</p>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if recent_bills %}
+    <section>
+      <div class="flex items-baseline justify-between mb-3">
+        <h2 class="text-sm uppercase tracking-wide text-stone-500">Recently active</h2>
+        <a href="/bills" class="text-sm text-stone-500 hover:text-stone-900 underline">More &rarr;</a>
+      </div>
+      <ul class="space-y-3">
+        {% for b in recent_bills %}
+          {% include "bills/_bill_card.html" %}
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section class="border-t border-stone-200 pt-6 text-sm text-stone-600">
+    <p>
+      Or search the daily <strong>Congressional Record</strong> — results combine
+      keyword and semantic match across 1995–present, alongside matching
+      <a href="/members" class="underline hover:text-stone-900">members</a> and
+      <a href="/votes" class="underline hover:text-stone-900">votes</a>.
+    </p>
+    <p class="text-stone-500 mt-2">
+      Try: <em>bank regulation</em>, <em>Senator Warren on antitrust</em>,
+      or jump straight to a bill with <em>HR 1</em>.
+    </p>
+  </section>
 </div>
 {% endblock %}
