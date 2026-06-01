@@ -1,0 +1,14 @@
+{# Card header: chamber badge + bill-number link + Congress. Caller provides
+   ``b`` (origin_chamber, congress, bill_type, bill_number). Shared by the
+   standard bill card and the curated Top-bills card on the landing page. #}
+<div class="flex items-baseline gap-2 mb-1">
+  <span class="text-xs uppercase tracking-wide px-2 py-0.5 rounded
+    {% if b.origin_chamber == 'House' %}bg-blue-50 text-blue-800{% else %}bg-amber-50 text-amber-800{% endif %}">
+    {{ b.origin_chamber }}
+  </span>
+  <a
+    href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+    class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
+  >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
+  <span class="text-xs text-stone-400">· {{ b.congress }}th Congress</span>
+</div>

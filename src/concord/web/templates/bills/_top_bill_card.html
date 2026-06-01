@@ -1,0 +1,12 @@
+{# Curated Top-bills card: editorial label + blurb over the shared card
+   header. Caller provides ``item`` (.bill, .label, .blurb). Used by the
+   landing page and the /bills index. #}
+{% set b = item.bill %}
+<li class="border border-stone-200 rounded p-3 bg-amber-50/40 hover:border-stone-300">
+  {% include "bills/_bill_card_header.html" %}
+  <a
+    href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
+    class="block font-serif text-stone-900 hover:text-stone-700"
+  >{{ item.label }}</a>
+  <p class="text-sm text-stone-600 mt-1">{{ item.blurb }}</p>
+</li>
