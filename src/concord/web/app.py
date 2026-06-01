@@ -111,6 +111,21 @@ def _read_enrichment_flag(raw: str | None) -> bool:
     return raw.strip().lower() in _ENRICHMENT_FLAG_TRUTHY
 
 
+def _resolve_top_bills(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Resolve CURATED_TOP_BILLS against the local store, in curated order.
+
+    Degrades gracefully: any curated bill missing from the store is skipped.
+    Shared by the landing page (``/``) and the bills index (``/bills``).
+    """
+    keys = [(c.congress, c.bill_type, c.bill_number) for c in CURATED_TOP_BILLS]
+    resolved = search_mod.get_curated_bills(db, keys)
+    return [
+        {"bill": hit, "label": entry.label, "blurb": entry.blurb}
+        for entry in CURATED_TOP_BILLS
+        if (hit := resolved.get((entry.congress, entry.bill_type, entry.bill_number))) is not None
+    ]
+
+
 def create_app(
     db_path: Path | str,
     *,
@@ -234,23 +249,14 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
     ) -> Response:
         # Bills are the headline entity, so the landing page leads with them
         # (curated Top Bills + recently-active bills) rather than an empty
-        # search prompt. The curated set degrades gracefully: any bill not in
-        # the local store is skipped.
-        keys = [(c.congress, c.bill_type, c.bill_number) for c in CURATED_TOP_BILLS]
-        resolved = search_mod.get_curated_bills(db, keys)
-        top_bills: list[dict[str, Any]] = []
-        for entry in CURATED_TOP_BILLS:
-            hit = resolved.get((entry.congress, entry.bill_type, entry.bill_number))
-            if hit is None:
-                continue
-            top_bills.append({"bill": hit, "label": entry.label, "blurb": entry.blurb})
+        # search prompt.
         recent_bills, bills_total = search_mod.list_bills(db, limit=6, offset=0)
         return templates.TemplateResponse(  # type: ignore[no-any-return]
             request,
             "index.html",
             {
                 "query": "",
-                "top_bills": top_bills[:6],
+                "top_bills": _resolve_top_bills(db),
                 "recent_bills": recent_bills,
                 "bills_total": bills_total,
             },
@@ -501,22 +507,7 @@ def _register_routes(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901, PLR
             and congress is None
             and not sponsor
         )
-        top_bills: list[dict[str, Any]] = []
-        if is_landing:
-            keys = [(c.congress, c.bill_type, c.bill_number) for c in CURATED_TOP_BILLS]
-            resolved = search_mod.get_curated_bills(db, keys)
-            for entry in CURATED_TOP_BILLS:
-                key = (entry.congress, entry.bill_type, entry.bill_number)
-                hit = resolved.get(key)
-                if hit is None:
-                    continue
-                top_bills.append(
-                    {
-                        "bill": hit,
-                        "label": entry.label,
-                        "blurb": entry.blurb,
-                    }
-                )
+        top_bills = _resolve_top_bills(db) if is_landing else []
         context = {
             "bills": hits,
             "total": total,

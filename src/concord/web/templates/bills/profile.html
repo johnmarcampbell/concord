@@ -2,9 +2,9 @@
 {% block title %}{{ bill.bill_type|upper }} {{ bill.bill_number }} — Concord{% endblock %}
 {% block content %}
 {# Long sections (cosponsors, votes, actions, subjects, titles) start as a
-   preview of the first N items and expand on click — see the per-section
-   PREVIEW counts below. Item markup is factored into macros so the preview
-   and the expanded remainder render identically. #}
+   preview of the first N items and expand the remainder on click. The
+   preview/expand structure is shared via show_more_list (below); each call
+   supplies the per-item markup as its {% call(item) %} body. #}
 {%- macro cosponsor_li(c) -%}
   <li class="text-sm">
     {% if c.sponsorship_withdrawn_date %}
@@ -42,6 +42,22 @@
 {%- endmacro -%}
 {%- macro show_more(label) -%}
   <summary class="cursor-pointer text-sm text-stone-600 hover:text-stone-900 select-none">{{ label }}</summary>
+{%- endmacro -%}
+{# Render ``items`` as a preview of the first ``preview`` entries, with the
+   remainder behind a <details>. ``caller(item)`` renders one entry, so the
+   preview and the expanded remainder render identically. #}
+{%- macro show_more_list(items, preview, noun, wrapper_class="space-y-1", tag="ul") -%}
+  <{{ tag }} class="{{ wrapper_class }}">
+    {% for item in items[:preview] %}{{ caller(item) }}{% endfor %}
+  </{{ tag }}>
+  {% if items|length > preview %}
+    <details class="mt-2">
+      {{ show_more("Show all %d %s"|format(items|length, noun)) }}
+      <{{ tag }} class="{{ wrapper_class }} mt-1">
+        {% for item in items[preview:] %}{{ caller(item) }}{% endfor %}
+      </{{ tag }}>
+    </details>
+  {% endif %}
 {%- endmacro -%}
 {# Compute the most recent fetched_at across tier-1 + tier-2 sections. #}
 {%- set tier2_stamps = [bill.cosponsors_fetched_at, bill.actions_fetched_at,
@@ -168,23 +184,12 @@
     </section>
 
     {# -- Cosponsors ---------------------------------------------------- #}
-    {% set PREVIEW = 8 %}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Cosponsors</h2>
       {% if bill.cosponsors_fetched_at is none %}
         {{ empty_state("Cosponsors not yet fetched.") }}
       {% elif cosponsors %}
-        <ul class="space-y-1">
-          {% for c in cosponsors[:PREVIEW] %}{{ cosponsor_li(c) }}{% endfor %}
-        </ul>
-        {% if cosponsors|length > PREVIEW %}
-          <details class="mt-2">
-            {{ show_more("Show all %d cosponsors"|format(cosponsors|length)) }}
-            <ul class="space-y-1 mt-1">
-              {% for c in cosponsors[PREVIEW:] %}{{ cosponsor_li(c) }}{% endfor %}
-            </ul>
-          </details>
-        {% endif %}
+        {% call(c) show_more_list(cosponsors, 8, "cosponsors") %}{{ cosponsor_li(c) }}{% endcall %}
         <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.cosponsors_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No cosponsors recorded.</p>
@@ -193,44 +198,22 @@
     </section>
 
     {# -- Vote history -------------------------------------------------- #}
-    {% set PREVIEW = 5 %}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Vote history</h2>
       {% if vote_history %}
-        <ul class="space-y-2">
-          {% for v in vote_history[:PREVIEW] %}{% include "_vote_row.html" %}{% endfor %}
-        </ul>
-        {% if vote_history|length > PREVIEW %}
-          <details class="mt-2">
-            {{ show_more("Show all %d votes"|format(vote_history|length)) }}
-            <ul class="space-y-2 mt-2">
-              {% for v in vote_history[PREVIEW:] %}{% include "_vote_row.html" %}{% endfor %}
-            </ul>
-          </details>
-        {% endif %}
+        {% call(v) show_more_list(vote_history, 5, "votes", "space-y-2") %}{% include "_vote_row.html" %}{% endcall %}
       {% else %}
         <p class="text-stone-500 text-sm">No votes recorded for this bill yet.</p>
       {% endif %}
     </section>
 
     {# -- Action history ----------------------------------------------- #}
-    {% set PREVIEW = 8 %}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Action history</h2>
       {% if bill.actions_fetched_at is none %}
         {{ empty_state("Action history not yet fetched.") }}
       {% elif actions %}
-        <ul>
-          {% for action in actions[:PREVIEW] %}{% include "bills/_action_row.html" %}{% endfor %}
-        </ul>
-        {% if actions|length > PREVIEW %}
-          <details class="mt-2">
-            {{ show_more("Show all %d actions"|format(actions|length)) }}
-            <ul class="mt-1">
-              {% for action in actions[PREVIEW:] %}{% include "bills/_action_row.html" %}{% endfor %}
-            </ul>
-          </details>
-        {% endif %}
+        {% call(action) show_more_list(actions, 8, "actions", "") %}{% include "bills/_action_row.html" %}{% endcall %}
         <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.actions_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No actions recorded.</p>
@@ -239,27 +222,14 @@
     </section>
 
     {# -- Subjects ----------------------------------------------------- #}
-    {% set PREVIEW = 18 %}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Subjects</h2>
       {% if bill.subjects_fetched_at is none %}
         {{ empty_state("Subjects not yet fetched.") }}
       {% elif subjects %}
-        <div class="flex flex-wrap gap-1">
-          {% for s in subjects[:PREVIEW] %}
-            <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
-          {% endfor %}
-        </div>
-        {% if subjects|length > PREVIEW %}
-          <details class="mt-2">
-            {{ show_more("Show all %d subjects"|format(subjects|length)) }}
-            <div class="flex flex-wrap gap-1 mt-1">
-              {% for s in subjects[PREVIEW:] %}
-                <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
-              {% endfor %}
-            </div>
-          </details>
-        {% endif %}
+        {% call(s) show_more_list(subjects, 18, "subjects", "flex flex-wrap gap-1", "div") -%}
+          <span class="inline-block px-2 py-0.5 rounded bg-stone-100 text-stone-700 text-xs">{{ s }}</span>
+        {%- endcall %}
         <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.subjects_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No subjects assigned.</p>
@@ -268,23 +238,12 @@
     </section>
 
     {# -- Titles ------------------------------------------------------- #}
-    {% set PREVIEW = 4 %}
     <section>
       <h2 class="text-sm uppercase tracking-wide text-stone-500 mb-2">Titles</h2>
       {% if bill.titles_fetched_at is none %}
         {{ empty_state("Titles not yet fetched.") }}
       {% elif titles %}
-        <ul class="space-y-2">
-          {% for t in titles[:PREVIEW] %}{{ title_li(t) }}{% endfor %}
-        </ul>
-        {% if titles|length > PREVIEW %}
-          <details class="mt-2">
-            {{ show_more("Show all %d titles"|format(titles|length)) }}
-            <ul class="space-y-2 mt-1">
-              {% for t in titles[PREVIEW:] %}{{ title_li(t) }}{% endfor %}
-            </ul>
-          </details>
-        {% endif %}
+        {% call(t) show_more_list(titles, 4, "titles", "space-y-2") %}{{ title_li(t) }}{% endcall %}
         <p class="mt-2 text-xs text-stone-400">Fetched {{ bill.titles_fetched_at|humanize_age }}.</p>
       {% else %}
         <p class="text-stone-500 text-sm">No titles recorded.</p>
