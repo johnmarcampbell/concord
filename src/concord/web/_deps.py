@@ -1,10 +1,13 @@
 """Shared FastAPI dependencies and constants for the web layer.
 
-Small primitives used by more than one route-registration module
-(``concord.web.app`` and ``concord.web.brief``): the bill-type allow-list
-and a per-request read-only SQLite connection. They live here, rather than
-in ``app``, so the brief routes can share them without an ``app``↔``brief``
-import cycle.
+Small primitives shared across the route-registration modules
+(``concord.web.routes_*``, ``concord.web.enrichment``, ``concord.web.brief``):
+the bill-type allow-list (:data:`VALID_BILL_TYPES`) and two per-request SQLite
+connection dependencies — :func:`db_connection` (plain, for indexed SELECTs)
+and :func:`get_db` (with the ``sqlite-vec`` extension loaded, for hybrid
+search). They live here, rather than in ``app``, so the route modules can
+share them without an ``app``↔``routes`` import cycle: ``app`` imports the
+route modules to register them, so they cannot import back.
 """
 
 import sqlite3
