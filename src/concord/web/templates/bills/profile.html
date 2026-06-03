@@ -78,7 +78,7 @@
     </div>
     <div>
       <div class="uppercase text-xs tracking-wide text-stone-400">Congress</div>
-      <div>{{ bill.congress }}th</div>
+      <div>{{ bill.congress|ordinal }}</div>
     </div>
     {% if bill.introduced_date %}
       <div>
@@ -100,7 +100,7 @@
   <div class="md:col-span-3 space-y-8">
     <header>
       <div class="font-mono text-sm text-stone-500 mb-1">
-        {{ bill.bill_type|upper }} {{ bill.bill_number }} · {{ bill.congress }}th Congress
+        {{ bill.bill_type|upper }} {{ bill.bill_number }} · {{ bill.congress|ordinal }} Congress
       </div>
       <h1 class="text-2xl font-serif font-semibold leading-snug">{{ bill.title }}</h1>
     </header>

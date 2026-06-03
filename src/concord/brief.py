@@ -26,6 +26,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from concord._common import ordinal
+
 #: Default chat model for brief generation. Centralized here like
 #: :data:`concord.embedding.DEFAULT_MODEL` so a swap is one edit (ADR 0004).
 DEFAULT_BRIEF_MODEL = "gpt-4o-mini"
@@ -314,7 +316,7 @@ def _facts_to_context(facts: BriefFacts) -> str:
     else:
         party = "n/a"
     lines = [
-        f"Bill: {facts.identifier} ({facts.congress}th Congress, {facts.origin_chamber})",
+        f"Bill: {facts.identifier} ({ordinal(facts.congress)} Congress, {facts.origin_chamber})",
         f"Title: {facts.title}",
         f"Sponsor: {facts.sponsor_display_name or 'unknown'}",
         f"Policy area: {facts.policy_area or 'n/a'}",

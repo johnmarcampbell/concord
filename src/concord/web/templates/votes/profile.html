@@ -11,7 +11,7 @@
       </div>
       <div>
         <div class="uppercase text-xs tracking-wide text-stone-400">Congress</div>
-        <div>{{ vote.congress }}th · session {{ vote.session }}</div>
+        <div>{{ vote.congress|ordinal }} · session {{ vote.session }}</div>
       </div>
       <div>
         <div class="uppercase text-xs tracking-wide text-stone-400">Date</div>
@@ -38,7 +38,7 @@
     <div class="md:col-span-3 space-y-8">
       <header>
         <div class="font-mono text-sm text-stone-500 mb-1">
-          {{ "House" if vote.chamber == "house" else "Senate" }} roll {{ vote.roll_number }} · {{ vote.congress }}th
+          {{ "House" if vote.chamber == "house" else "Senate" }} roll {{ vote.roll_number }} · {{ vote.congress|ordinal }}
         </div>
         <h1 class="text-2xl font-serif font-semibold leading-snug">{{ vote.vote_question }}</h1>
       </header>
