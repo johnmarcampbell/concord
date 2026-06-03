@@ -46,24 +46,7 @@ from concord.models import (
     Vote,
     VotePosition,
 )
-from concord.storage.runs import (
-    RUNS_SCHEMA,
-)
-from concord.storage.runs import (
-    get_run as _get_run,
-)
-from concord.storage.runs import (
-    insert_run as _insert_run,
-)
-from concord.storage.runs import (
-    insert_run_events as _insert_run_events,
-)
-from concord.storage.runs import (
-    list_run_events as _list_run_events,
-)
-from concord.storage.runs import (
-    m003_add_runs_tables as _m003_add_runs_tables,
-)
+from concord.storage import runs as runs_storage
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,
@@ -390,7 +373,7 @@ CREATE TABLE IF NOT EXISTS bill_briefs (
     PRIMARY KEY (bill_id, lens)
 );
 """
-_BASE_SCHEMA += f"\n{RUNS_SCHEMA}\n"
+_BASE_SCHEMA += f"\n{runs_storage.RUNS_SCHEMA}\n"
 
 # Column lists for members + member_terms tables. Mirrors the ``_PROCEEDING_COLUMNS``
 # pattern: one source of truth for INSERT order.
@@ -720,7 +703,7 @@ def _m002_add_bill_briefs(conn: sqlite3.Connection) -> None:
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _m001_add_bill_last_enrichment_error),
     (2, _m002_add_bill_briefs),
-    (3, _m003_add_runs_tables),
+    (3, runs_storage.m003_add_runs_tables),
 )
 _HEAD: int = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
 
@@ -1234,7 +1217,7 @@ class SqliteStorage:
         :func:`_row_from_run`, mirroring :func:`_row_from_vote`. Does not
         write ``run.events`` — those fan out via :meth:`insert_run_events`.
         """
-        _insert_run(self._conn, self._maybe_transaction, run)
+        runs_storage.insert_run(self._conn, self._maybe_transaction, run)
 
     def insert_run_events(self, run_id: str, events: Sequence[RunEvent]) -> None:
         """Bulk-INSERT the :class:`RunEvent` rows for one Scrape Run (ADR 0021).
@@ -1244,15 +1227,15 @@ class SqliteStorage:
         on); :func:`concord.observability.scrape_run` inserts it first in the
         same transaction.
         """
-        _insert_run_events(self._conn, self._maybe_transaction, run_id, events)
+        runs_storage.insert_run_events(self._conn, self._maybe_transaction, run_id, events)
 
     def get_run(self, run_id: str) -> sqlite3.Row | None:
         """Return the ``runs`` row for ``run_id``, or ``None`` if absent."""
-        return _get_run(self._conn, run_id)
+        return runs_storage.get_run(self._conn, run_id)
 
     def list_run_events(self, run_id: str) -> list[sqlite3.Row]:
         """Return every ``run_events`` row for ``run_id``, ordered by ``seq``."""
-        return _list_run_events(self._conn, run_id)
+        return runs_storage.list_run_events(self._conn, run_id)
 
     # -- Votes (Phase 3a) -------------------------------------------------
 

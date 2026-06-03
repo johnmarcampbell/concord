@@ -65,17 +65,14 @@ _RUN_EVENT_COLUMNS: tuple[str, ...] = (
     "ts",
 )
 
-_RUN_INSERT_SQL = """
-INSERT INTO runs (
-    run_id, entity, command, started_at, ended_at, status,
-    success_counts, throttle_counts, unmatched_sample, error_event_count
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-_RUN_EVENT_INSERT_SQL = """
-INSERT INTO run_events (
-    run_id, seq, endpoint_bucket, attempts, overflow_count, final_status, ts
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-"""
+
+def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    placeholders = ", ".join("?" for _ in columns)
+    return f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"  # noqa: S608 - static table/column tuples
+
+
+_RUN_INSERT_SQL = _insert_sql("runs", _RUN_COLUMNS)
+_RUN_EVENT_INSERT_SQL = _insert_sql("run_events", _RUN_EVENT_COLUMNS)
 
 
 def m003_add_runs_tables(conn: sqlite3.Connection) -> None:
