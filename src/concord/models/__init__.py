@@ -40,6 +40,7 @@ from concord.models.bills import (
 )
 from concord.models.members import Member, Term, normalize_state
 from concord.models.proceedings import Article, Issue, Proceeding, parse_granule_id
+from concord.models.runs import Attempt, RunEvent, RunRecord
 from concord.models.votes import (
     HouseVoteMembers,
     SenateVoteDetail,
@@ -55,6 +56,7 @@ from concord.models.votes import (
 
 __all__ = [
     "Article",
+    "Attempt",
     "BillAction",
     "BillCosponsor",
     "BillDetail",
@@ -66,6 +68,8 @@ __all__ = [
     "Issue",
     "Member",
     "Proceeding",
+    "RunEvent",
+    "RunRecord",
     "SenateVoteDetail",
     "SenateVotePosition",
     "SessionNumber",

@@ -1,33 +1,39 @@
-"""runs / run_events record tables — insert/read round-trip and the
+"""runs / run_events record tables — RunRecord insert/read round-trip and the
 schema-equivalence guarantee at the new _HEAD (ADR 0017, 0021)."""
 
 import json
 import sqlite3
 from pathlib import Path
 
+from concord.models import Attempt, RunEvent, RunRecord
 from concord.storage.sqlite import _HEAD, SqliteStorage, ensure_schema
+
+
+def _record(**overrides: object) -> RunRecord:
+    base: dict[str, object] = {
+        "run_id": "20260603T120000-deadbeef",
+        "entity": "bills",
+        "command": "scrape bills",
+        "started_at": "2026-06-03T12:00:00+00:00",
+        "ended_at": "2026-06-03T12:05:00+00:00",
+        "status": "ok",
+        "success_counts": {},
+        "throttle_counts": None,
+        "unmatched_sample": [],
+        "error_event_count": 0,
+        "events": [],
+    }
+    base.update(overrides)
+    return RunRecord(**base)  # type: ignore[arg-type]
 
 
 class TestRunsRoundTrip:
     def test_insert_and_read_run(self, tmp_path: Path) -> None:
         db_path = tmp_path / "ledger.db"
-        storage = SqliteStorage(db_path, load_vec=False)
-        try:
-            storage.insert_run(
-                run_id="20260603T120000-deadbeef",
-                entity="bills",
-                command="scrape bills",
-                started_at="2026-06-03T12:00:00+00:00",
-                ended_at="2026-06-03T12:05:00+00:00",
-                status="ok",
-                success_counts={"api:bill/list": 3, "api:bill/detail": 12},
-                throttle_counts=None,
-                unmatched_sample=[],
-                error_event_count=0,
-            )
-            row = storage.get_run("20260603T120000-deadbeef")
-        finally:
-            storage.close()
+        record = _record(success_counts={"api:bill/list": 3, "api:bill/detail": 12})
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.insert_run(record)
+            row = storage.get_run(record.run_id)
 
         assert row is not None
         assert row["entity"] == "bills"
@@ -39,98 +45,73 @@ class TestRunsRoundTrip:
 
     def test_insert_run_events_round_trip(self, tmp_path: Path) -> None:
         db_path = tmp_path / "ledger.db"
-        storage = SqliteStorage(db_path, load_vec=False)
-        try:
-            storage.insert_run(
-                run_id="r1",
-                entity="bills",
-                command="scrape bills",
-                started_at="2026-06-03T12:00:00+00:00",
-                ended_at="2026-06-03T12:05:00+00:00",
-                status="partial",
-                success_counts={"api:bill/list": 1},
-                throttle_counts=None,
-                unmatched_sample=["/odd/path"],
-                error_event_count=1,
-            )
-            storage.insert_run_events(
-                "r1",
-                [
-                    {
-                        "endpoint_bucket": "api:bill/detail",
-                        "attempts": [{"n": 1, "status": 503, "transport_class": None, "msg": "x"}],
-                        "overflow_count": 0,
-                        "final_status": "resolved",
-                        "ts": "2026-06-03T12:01:00+00:00",
-                    }
-                ],
-            )
-            events = storage.list_run_events("r1")
-            run = storage.get_run("r1")
-        finally:
-            storage.close()
+        record = _record(
+            run_id="r1",
+            status="partial",
+            success_counts={"api:bill/list": 1},
+            unmatched_sample=["/odd/path"],
+            error_event_count=1,
+            events=[
+                RunEvent(
+                    endpoint_bucket="api:bill/detail",
+                    attempts=[
+                        Attempt(
+                            n=1, status=503, transport_class=None, message="Service Unavailable"
+                        )
+                    ],
+                    overflow_count=0,
+                    final_status="resolved",
+                    ts="2026-06-03T12:01:00+00:00",
+                )
+            ],
+        )
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.insert_run(record)
+            storage.insert_run_events(record.run_id, record.events)
+            events = storage.list_run_events(record.run_id)
+            run = storage.get_run(record.run_id)
 
         assert run is not None
         assert json.loads(run["unmatched_sample"]) == ["/odd/path"]
         assert len(events) == 1
         assert events[0]["seq"] == 0
         assert events[0]["endpoint_bucket"] == "api:bill/detail"
-        assert json.loads(events[0]["attempts"])[0]["status"] == 503
+        attempt = json.loads(events[0]["attempts"])[0]
+        assert attempt["status"] == 503
+        # The attempt is the producer's real field name — the model would have
+        # rejected a stray key, so DB and producer can't disagree (review #1).
+        assert attempt["message"] == "Service Unavailable"
 
     def test_empty_events_is_a_noop(self, tmp_path: Path) -> None:
         db_path = tmp_path / "ledger.db"
-        storage = SqliteStorage(db_path, load_vec=False)
-        try:
-            storage.insert_run(
-                run_id="r2",
-                entity="bills",
-                command="scrape bills",
-                started_at="2026-06-03T12:00:00+00:00",
-                ended_at=None,
-                status="ok",
-                success_counts={},
-                throttle_counts=None,
-                unmatched_sample=[],
-                error_event_count=0,
-            )
-            storage.insert_run_events("r2", [])
+        record = _record(run_id="r2", ended_at=None)
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.insert_run(record)
+            storage.insert_run_events(record.run_id, record.events)
             assert storage.list_run_events("r2") == []
-        finally:
-            storage.close()
 
     def test_run_events_cascade_on_run_delete(self, tmp_path: Path) -> None:
         db_path = tmp_path / "ledger.db"
-        storage = SqliteStorage(db_path, load_vec=False)
-        try:
-            storage.insert_run(
-                run_id="r3",
-                entity="bills",
-                command="scrape bills",
-                started_at="2026-06-03T12:00:00+00:00",
-                ended_at=None,
-                status="ok",
-                success_counts={},
-                throttle_counts=None,
-                unmatched_sample=[],
-                error_event_count=1,
-            )
-            storage.insert_run_events(
-                "r3",
-                [
-                    {
-                        "endpoint_bucket": "api:bill/list",
-                        "attempts": [],
-                        "overflow_count": 0,
-                        "final_status": "failed",
-                        "ts": "2026-06-03T12:01:00+00:00",
-                    }
-                ],
-            )
+        record = _record(
+            run_id="r3",
+            ended_at=None,
+            error_event_count=1,
+            events=[
+                RunEvent(
+                    endpoint_bucket="api:bill/list",
+                    attempts=[],
+                    overflow_count=0,
+                    final_status="failed",
+                    ts="2026-06-03T12:01:00+00:00",
+                )
+            ],
+        )
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.insert_run(record)
+            storage.insert_run_events(record.run_id, record.events)
             storage._conn.execute("DELETE FROM runs WHERE run_id = ?", ("r3",))
             storage._conn.commit()
             assert storage.list_run_events("r3") == []
-        finally:
-            storage.close()
 
 
 class TestSchemaVersion:

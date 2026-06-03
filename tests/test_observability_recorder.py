@@ -3,7 +3,8 @@ resolved/failed Run Event classification (ADR 0021)."""
 
 from datetime import UTC, datetime
 
-from concord.observability import Attempt, Recorder
+from concord.models import Attempt
+from concord.observability import Recorder
 
 
 def _recorder() -> Recorder:
@@ -35,7 +36,7 @@ class TestRunEventClassification:
         rec.note_request_outcome("api", "/bill/119/hr/1", _attempts(2), resolved=True)
         assert len(rec.events) == 1
         event = rec.events[0]
-        assert event.bucket == "api:bill/detail"
+        assert event.endpoint_bucket == "api:bill/detail"
         assert event.final_status == "resolved"
         assert len(event.attempts) == 2
         assert event.overflow_count == 0
@@ -45,7 +46,7 @@ class TestRunEventClassification:
         rec = _recorder()
         rec.note_request_outcome("api", "/bill/119/hr", _attempts(6), resolved=False)
         assert rec.events[0].final_status == "failed"
-        assert rec.events[0].bucket == "api:bill/list"
+        assert rec.events[0].endpoint_bucket == "api:bill/list"
 
     def test_first_try_success_emits_no_event(self) -> None:
         rec = _recorder()

@@ -33,10 +33,12 @@ class TestNormalize:
         ],
     )
     def test_known_api_paths_map_to_buckets(self, path: str, expected: str) -> None:
-        assert normalize("api", path) == expected
+        bucket, matched = normalize("api", path)
+        assert bucket == expected
+        assert matched is True
 
     def test_trailing_slash_does_not_change_bucket(self) -> None:
-        assert normalize("api", "/bill/119/hr/1234/") == "api:bill/detail"
+        assert normalize("api", "/bill/119/hr/1234/") == ("api:bill/detail", True)
 
     @pytest.mark.parametrize(
         "path",
@@ -49,11 +51,11 @@ class TestNormalize:
         ],
     )
     def test_unknown_path_falls_to_unmatched(self, path: str) -> None:
-        assert normalize("api", path) == "api:unmatched"
+        assert normalize("api", path) == ("api:unmatched", False)
 
     def test_unknown_source_is_unmatched(self) -> None:
-        assert normalize("text", "/anything") == "text:unmatched"
-        assert normalize("senate", "/anything") == "senate:unmatched"
+        assert normalize("text", "/anything") == ("text:unmatched", False)
+        assert normalize("senate", "/anything") == ("senate:unmatched", False)
 
 
 class TestUnmatchedSampling:

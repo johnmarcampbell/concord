@@ -24,7 +24,7 @@ caller can pass ``load_vec=False`` to skip the extension entirely.
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -41,6 +41,8 @@ from concord.models import (
     BillTitle,
     Member,
     Proceeding,
+    RunEvent,
+    RunRecord,
     Term,
     Vote,
     VotePosition,
@@ -1305,70 +1307,28 @@ class SqliteStorage:
 
     # -- Scrape Run ledger (ADR 0021) -------------------------------------
 
-    def insert_run(  # noqa: PLR0913 — one kwarg per `runs` ledger column (ADR 0021)
-        self,
-        *,
-        run_id: str,
-        entity: str,
-        command: str,
-        started_at: str,
-        ended_at: str | None,
-        status: str,
-        success_counts: dict[str, int],
-        throttle_counts: dict[str, int] | None,
-        unmatched_sample: Sequence[str],
-        error_event_count: int,
-    ) -> None:
-        """INSERT one ``runs`` ledger row (ADR 0021).
+    def insert_run(self, run: RunRecord) -> None:
+        """INSERT one ``runs`` ledger row from a :class:`RunRecord` (ADR 0021).
 
         A record-table write (ADR 0019): re-running scrape/load/index never
-        rewrites it. The JSON columns are serialized here — ``success_counts``
-        with sorted keys for stable output; ``unmatched_sample`` and a missing
-        ``throttle_counts`` collapse to SQL ``NULL`` when empty.
+        rewrites it. Column projection + JSON serialization live in
+        :func:`_row_from_run`, mirroring :func:`_row_from_vote`. Does not
+        write ``run.events`` — those fan out via :meth:`insert_run_events`.
         """
         with self._maybe_transaction():
-            self._conn.execute(
-                _RUN_INSERT_SQL,
-                (
-                    run_id,
-                    entity,
-                    command,
-                    started_at,
-                    ended_at,
-                    status,
-                    json.dumps(success_counts, sort_keys=True),
-                    json.dumps(throttle_counts, sort_keys=True)
-                    if throttle_counts is not None
-                    else None,
-                    json.dumps(list(unmatched_sample)) if unmatched_sample else None,
-                    error_event_count,
-                ),
-            )
+            self._conn.execute(_RUN_INSERT_SQL, _row_from_run(run))
 
-    def insert_run_events(self, run_id: str, events: Sequence[Mapping[str, Any]]) -> None:
-        """Bulk-INSERT the Run Events for one Scrape Run (ADR 0021).
+    def insert_run_events(self, run_id: str, events: Sequence[RunEvent]) -> None:
+        """Bulk-INSERT the :class:`RunEvent` rows for one Scrape Run (ADR 0021).
 
-        ``seq`` is assigned from the list order. Each event maps
-        ``endpoint_bucket`` / ``attempts`` (a list serialized to JSON) /
-        ``overflow_count`` / ``final_status`` / ``ts``. A no-op for a clean
-        run with zero error events. The parent ``runs`` row must already
-        exist (FKs are on); :func:`concord.observability.scrape_run` inserts
-        it first in the same transaction.
+        ``seq`` is assigned from the list order. A no-op for a clean run with
+        zero error events. The parent ``runs`` row must already exist (FKs are
+        on); :func:`concord.observability.scrape_run` inserts it first in the
+        same transaction.
         """
         if not events:
             return
-        rows = [
-            (
-                run_id,
-                seq,
-                event["endpoint_bucket"],
-                json.dumps(event["attempts"]),
-                event["overflow_count"],
-                event["final_status"],
-                event["ts"],
-            )
-            for seq, event in enumerate(events)
-        ]
+        rows = [_row_from_run_event(run_id, seq, event) for seq, event in enumerate(events)]
         with self._maybe_transaction():
             self._conn.executemany(_RUN_EVENT_INSERT_SQL, rows)
 
@@ -1609,3 +1569,53 @@ def _row_from_vote(vote: Vote, *, fetched_at: str) -> tuple[Any, ...]:
     dumped["fetched_at"] = fetched_at
     dumped["is_party_unity"] = 1 if dumped.get("is_party_unity") else 0
     return tuple(dumped[col] for col in _VOTE_COLUMNS)
+
+
+def _row_from_run(run: RunRecord) -> tuple[Any, ...]:
+    """Project a :class:`RunRecord` into the ``runs`` column tuple (ADR 0021).
+
+    Owns the JSON-column serialization: ``success_counts`` /
+    ``throttle_counts`` / ``unmatched_sample`` are dumped with sorted keys for
+    a byte-stable row, and an empty ``unmatched_sample`` or absent
+    ``throttle_counts`` collapses to SQL ``NULL``.
+    """
+    values: dict[str, Any] = {
+        "run_id": run.run_id,
+        "entity": run.entity,
+        "command": run.command,
+        "started_at": run.started_at,
+        "ended_at": run.ended_at,
+        "status": run.status,
+        "success_counts": json.dumps(run.success_counts, sort_keys=True),
+        "throttle_counts": (
+            json.dumps(run.throttle_counts, sort_keys=True)
+            if run.throttle_counts is not None
+            else None
+        ),
+        "unmatched_sample": (
+            json.dumps(run.unmatched_sample, sort_keys=True) if run.unmatched_sample else None
+        ),
+        "error_event_count": run.error_event_count,
+    }
+    return tuple(values[col] for col in _RUN_COLUMNS)
+
+
+def _row_from_run_event(run_id: str, seq: int, event: RunEvent) -> tuple[Any, ...]:
+    """Project one :class:`RunEvent` into the ``run_events`` column tuple.
+
+    ``run_id`` / ``seq`` are supplied by the caller (the parent run and the
+    event's position); ``attempts`` is dumped with sorted keys to match
+    :func:`_row_from_run`'s byte-stable policy.
+    """
+    values: dict[str, Any] = {
+        "run_id": run_id,
+        "seq": seq,
+        "endpoint_bucket": event.endpoint_bucket,
+        "attempts": json.dumps(
+            [attempt.model_dump() for attempt in event.attempts], sort_keys=True
+        ),
+        "overflow_count": event.overflow_count,
+        "final_status": event.final_status,
+        "ts": event.ts,
+    }
+    return tuple(values[col] for col in _RUN_EVENT_COLUMNS)

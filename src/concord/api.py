@@ -31,8 +31,8 @@ from typing import Any
 import httpx
 
 from . import __version__
-from .models import Article, Issue
-from .observability import Attempt, Recorder, active_recorder
+from .models import Article, Attempt, Issue
+from .observability import Recorder, active_recorder
 
 API_BASE = "https://api.congress.gov/v3"
 USER_AGENT = f"concord/{__version__}"
@@ -525,14 +525,7 @@ class Client:
             except httpx.HTTPError as exc:
                 # Transport-level failure (DNS, timeout, connection reset).
                 # Treat as a retryable transient.
-                attempts.append(
-                    Attempt(
-                        n=len(attempts) + 1,
-                        status=None,
-                        transport_class=type(exc).__name__,
-                        message=str(exc),
-                    )
-                )
+                _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
                 if transient_attempts >= MAX_5XX_RETRIES:
                     _record_failure(rec, path, attempts)
                     raise ApiError(
@@ -551,14 +544,7 @@ class Client:
                 # 429s are recorded as errors (ADR 0021) even though we retry
                 # them indefinitely — a rate-limit-aware client hitting one is
                 # our own request-budget signal worth surfacing.
-                attempts.append(
-                    Attempt(
-                        n=len(attempts) + 1,
-                        status=status,
-                        transport_class=None,
-                        message=response.reason_phrase,
-                    )
-                )
+                _note_attempt(attempts, status=status, message=response.reason_phrase)
                 delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
                 _log.warning("429 from %s; backing off %.1fs before retry", path, delay)
                 self._sleep(delay)
@@ -567,14 +553,7 @@ class Client:
                 continue
 
             if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
-                attempts.append(
-                    Attempt(
-                        n=len(attempts) + 1,
-                        status=status,
-                        transport_class=None,
-                        message=response.reason_phrase,
-                    )
-                )
+                _note_attempt(attempts, status=status, message=response.reason_phrase)
                 if transient_attempts >= MAX_5XX_RETRIES:
                     _record_failure(rec, path, attempts)
                     raise ApiError(
@@ -597,14 +576,7 @@ class Client:
 
             if not response.is_success:
                 # Non-retryable client error (4xx other than 429): surface immediately.
-                attempts.append(
-                    Attempt(
-                        n=len(attempts) + 1,
-                        status=status,
-                        transport_class=None,
-                        message=response.reason_phrase,
-                    )
-                )
+                _note_attempt(attempts, status=status, message=response.reason_phrase)
                 _record_failure(rec, path, attempts)
                 raise ApiError(
                     f"{status} {response.reason_phrase} from {path}",
@@ -613,13 +585,10 @@ class Client:
 
             data: Any = response.json()
             if not isinstance(data, dict):
-                attempts.append(
-                    Attempt(
-                        n=len(attempts) + 1,
-                        status=status,
-                        transport_class=None,
-                        message=f"expected JSON object, got {type(data).__name__}",
-                    )
+                _note_attempt(
+                    attempts,
+                    status=status,
+                    message=f"expected JSON object, got {type(data).__name__}",
                 )
                 _record_failure(rec, path, attempts)
                 raise ApiError(f"expected JSON object from {path}, got {type(data).__name__}")
@@ -629,9 +598,31 @@ class Client:
 
 # -- observability helpers --------------------------------------------------
 #
-# Kept module-level (rather than inline ``if rec is not None`` blocks) so the
+# Kept module-level (rather than inline blocks / a nested closure) so the
 # recording stays a single statement per call site in :meth:`Client._get` —
 # the retry loop is already at the project's complexity ceiling.
+
+
+def _note_attempt(
+    attempts: list[Attempt],
+    *,
+    status: int | None = None,
+    transport_class: str | None = None,
+    message: str,
+) -> None:
+    """Append one non-success :class:`Attempt`; ``n`` derives from list position.
+
+    Centralizing the construction keeps the five retry-loop branches one line
+    each and means no call site can mis-number an attempt.
+    """
+    attempts.append(
+        Attempt(
+            n=len(attempts) + 1,
+            status=status,
+            transport_class=transport_class,
+            message=message,
+        )
+    )
 
 
 def _record_success(rec: Recorder | None, path: str, attempts: list[Attempt]) -> None:

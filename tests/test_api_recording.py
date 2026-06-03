@@ -71,7 +71,7 @@ class TestErrorRecording:
         assert rec.successes == {"api:daily-record/list": 1}
         assert len(rec.events) == 1
         event = rec.events[0]
-        assert event.bucket == "api:daily-record/list"
+        assert event.endpoint_bucket == "api:daily-record/list"
         assert event.final_status == "resolved"
         assert [a.status for a in event.attempts] == [503]
 
