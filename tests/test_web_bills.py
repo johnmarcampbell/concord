@@ -26,8 +26,9 @@ from concord.scraper.bills import (
     enrichment_jsonl_name,
 )
 from concord.storage.sqlite import SqliteStorage
-from concord.web import app as web_app
-from concord.web.app import create_app, humanize_age
+from concord.web import enrichment as web_enrichment
+from concord.web.app import create_app
+from concord.web.filters import humanize_age
 
 
 class _StubData:
@@ -608,7 +609,7 @@ class TestEnrichmentPostRoute:
     ) -> None:
         # Block the background task from doing any real work — we only
         # care about the request-flow behavior here.
-        monkeypatch.setattr(web_app, "_enrich_one_bill", lambda app, bill_id: None)
+        monkeypatch.setattr(web_enrichment, "_enrich_one_bill", lambda app, bill_id: None)
 
         resp = enrichment_client.post("/bills/119/hr/1/enrichment")
         assert resp.status_code == 200
@@ -638,7 +639,7 @@ class TestEnrichmentPostRoute:
         """
         called: list[str] = []
         monkeypatch.setattr(
-            web_app, "_enrich_one_bill", lambda app, bill_id: called.append(bill_id)
+            web_enrichment, "_enrich_one_bill", lambda app, bill_id: called.append(bill_id)
         )
         resp = enrichment_client.post("/bills/119/hr/9999/enrichment")
         assert resp.status_code == 404
@@ -665,7 +666,7 @@ class TestEnrichmentPostRoute:
             # where a second POST arrives before the first finishes.
             calls.append(bill_id)
 
-        monkeypatch.setattr(web_app, "_enrich_one_bill", _record_only)
+        monkeypatch.setattr(web_enrichment, "_enrich_one_bill", _record_only)
 
         first = enrichment_client.post("/bills/119/hr/1/enrichment")
         assert first.status_code == 200
@@ -819,7 +820,7 @@ class TestEnrichOneBillBackgroundTask:
 
         monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _fake_scrape)
 
-        web_app._enrich_one_bill(enrichment_client.app, "119-hr-1")
+        web_enrichment._enrich_one_bill(enrichment_client.app, "119-hr-1")
 
         with SqliteStorage(db_path, load_vec=False) as storage:
             row = storage.get_bill("119-hr-1")
@@ -841,7 +842,7 @@ class TestEnrichOneBillBackgroundTask:
         monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _boom)
 
         enrichment_client.app.state.enrichment_in_flight.add("119-hr-1")
-        web_app._enrich_one_bill(enrichment_client.app, "119-hr-1")
+        web_enrichment._enrich_one_bill(enrichment_client.app, "119-hr-1")
 
         db_path = enrichment_client.app.state.db_path
         with SqliteStorage(db_path, load_vec=False) as storage:
@@ -873,7 +874,7 @@ class TestEnrichOneBillBackgroundTask:
 
         monkeypatch.setattr("concord.scraper.bills.scrape_enrichment", _partial)
 
-        web_app._enrich_one_bill(enrichment_client.app, "119-hr-1")
+        web_enrichment._enrich_one_bill(enrichment_client.app, "119-hr-1")
 
         db_path = enrichment_client.app.state.db_path
         with SqliteStorage(db_path, load_vec=False) as storage:
@@ -917,7 +918,7 @@ class TestEnrichOneBillBackgroundTask:
 
         monkeypatch.setattr("concord.storage.sqlite.SqliteStorage", _BrokenStorage)
 
-        web_app._enrich_one_bill(app, "119-hr-1")
+        web_enrichment._enrich_one_bill(app, "119-hr-1")
 
         # Even though everything blew up, in-flight must be cleared.
         assert "119-hr-1" not in app.state.enrichment_in_flight
