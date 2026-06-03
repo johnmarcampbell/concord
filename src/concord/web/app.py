@@ -39,6 +39,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from concord._common import ordinal
 from concord.brief import Briefer
 from concord.embedding import Embedder
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
@@ -208,6 +209,7 @@ def create_app(
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     templates.env.filters["humanize_age"] = humanize_age
+    templates.env.filters["ordinal"] = ordinal
     app.state.templates = templates
 
     if _STATIC_DIR.exists():

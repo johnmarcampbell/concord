@@ -10,7 +10,7 @@
     >
       {% if v.chamber == "house" %}H{% else %}S{% endif %} {{ v.roll_number }}
     </a>
-    <span class="text-xs text-stone-400">· {{ v.congress }}th · {{ v.start_date[:10] }}</span>
+    <span class="text-xs text-stone-400">· {{ v.congress|ordinal }} · {{ v.start_date[:10] }}</span>
     {% if v.is_party_unity %}
       <span class="text-xs text-amber-700 bg-amber-50 px-1 rounded">party-unity</span>
     {% endif %}

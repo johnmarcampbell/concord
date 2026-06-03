@@ -10,5 +10,5 @@
     href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
     class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
   >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
-  <span class="text-xs text-stone-400">· {{ b.congress }}th Congress</span>
+  <span class="text-xs text-stone-400">· {{ b.congress|ordinal }} Congress</span>
 </div>

@@ -107,7 +107,7 @@
                   href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
                   class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
                 >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
-                <span class="text-xs text-stone-400">· {{ b.congress }}th</span>
+                <span class="text-xs text-stone-400">· {{ b.congress|ordinal }}</span>
               </div>
               <a
                 href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
@@ -139,7 +139,7 @@
                   href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
                   class="font-mono text-sm font-medium text-stone-900 hover:text-stone-700"
                 >{{ b.bill_type|upper }} {{ b.bill_number }}</a>
-                <span class="text-xs text-stone-400">· {{ b.congress }}th</span>
+                <span class="text-xs text-stone-400">· {{ b.congress|ordinal }}</span>
               </div>
               <a
                 href="/bills/{{ b.congress }}/{{ b.bill_type }}/{{ b.bill_number }}"
@@ -200,7 +200,7 @@
               <p class="text-stone-700">
                 <span class="text-xs uppercase tracking-wide text-stone-500">{{ chamber_label }}:</span>
                 Voted on {{ current.party_unity_votes_cast }} party-unity vote{{ "" if current.party_unity_votes_cast == 1 else "s" }}
-                in the {{ current.congress }}th Congress —
+                in the {{ current.congress|ordinal }} Congress —
                 <span class="text-stone-500">not enough for a stable score yet.</span>
               </p>
             {% else %}
@@ -212,7 +212,7 @@
                 <span class="font-semibold">{{ pct }}%</span>
                 of party-unity votes
                 ({{ current.party_line_votes }}/{{ current.party_unity_votes_cast }}
-                in the {{ current.congress }}th Congress).
+                in the {{ current.congress|ordinal }} Congress).
               </p>
             {% endif %}
           {% endfor %}
@@ -224,11 +224,11 @@
               {% set chamber_short = "S" if r.chamber == "senate" else "H" %}
               {% if r.party_unity_votes_cast >= party_unity_min_votes %}
                 {% set rp = (r.party_line_votes * 100 // r.party_unity_votes_cast) %}
-                <span>{{ r.congress }}th ({{ chamber_short }}): {{ rp }}%
+                <span>{{ r.congress|ordinal }} ({{ chamber_short }}): {{ rp }}%
                   <span class="text-stone-400">({{ r.party_line_votes }}/{{ r.party_unity_votes_cast }})</span>
                 </span>
               {% else %}
-                <span class="text-stone-400">{{ r.congress }}th ({{ chamber_short }}): {{ r.party_unity_votes_cast }} votes</span>
+                <span class="text-stone-400">{{ r.congress|ordinal }} ({{ chamber_short }}): {{ r.party_unity_votes_cast }} votes</span>
               {% endif %}
             {% endfor %}
           </div>
