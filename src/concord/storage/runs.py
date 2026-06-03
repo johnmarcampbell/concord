@@ -131,6 +131,13 @@ def list_run_events(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
 
 
 def _row_from_run(run: RunRecord) -> tuple[Any, ...]:
+    """Project a :class:`RunRecord` into the ``runs`` column tuple (ADR 0021).
+
+    Owns the JSON-column serialization: ``success_counts`` /
+    ``throttle_counts`` / ``unmatched_sample`` are dumped with sorted keys for
+    a byte-stable row, and an empty ``unmatched_sample`` or absent
+    ``throttle_counts`` collapses to SQL ``NULL``.
+    """
     values: dict[str, Any] = {
         "run_id": run.run_id,
         "entity": run.entity,
@@ -153,6 +160,12 @@ def _row_from_run(run: RunRecord) -> tuple[Any, ...]:
 
 
 def _row_from_run_event(run_id: str, seq: int, event: RunEvent) -> tuple[Any, ...]:
+    """Project one :class:`RunEvent` into the ``run_events`` column tuple.
+
+    ``run_id`` / ``seq`` are supplied by the caller (the parent run and the
+    event's position); ``attempts`` is dumped with sorted keys to match
+    :func:`_row_from_run`'s byte-stable policy.
+    """
     values: dict[str, Any] = {
         "run_id": run_id,
         "seq": seq,
