@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.observability import scrape_run
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.load_bills import load as load_bills
 from concord.scraper import bills as bills_scraper
@@ -138,43 +139,56 @@ def _run_scrape_bills(
     storage_dir: Path,
     limit: int | None,
     show_progress: bool,
+    db_path: Path,
+    command: str,
     skip_unchanged: bool = False,
 ) -> int:
+    # Construct (and validate) the client BEFORE the scrape seam. A pure config
+    # error — e.g. a missing API key — must not mint a Scrape Run or bootstrap
+    # the ledger DB: ADR 0021 says the recorder is "born exactly where the
+    # network is", and client construction is config, not network. This also
+    # keeps `scrape bills` consistent with `run bills`, which guards the key
+    # upfront.
     try:
         api_client = Client()
     except ApiError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    progress = Progress(enabled=show_progress)
-    tracker = RateTracker()
+    # The Bills Stage-0 path is the proven vertical slice for the Scrape Run
+    # ledger (ADR 0021): the recorder is born here, at the scrape seam, and
+    # the api.py chokepoint records into it via contextvar. Stage 0 still
+    # writes entity data only to JSONL — the DB write is telemetry.
+    with scrape_run(entity="bills", command=command, db_path=db_path):
+        progress = Progress(enabled=show_progress)
+        tracker = RateTracker()
 
-    def _on_progress(event: bills_scraper.ScrapeProgressEvent) -> None:
-        if not progress.interactive and not event.is_pair_done:
-            return
-        tracker.update_total(event.category_total)
-        label = f"  congress {event.congress:>3}  {event.bill_type:<7}  "
-        if event.is_pair_done:
-            progress.update(label + tracker.finish(event.bills_written))
+        def _on_progress(event: bills_scraper.ScrapeProgressEvent) -> None:
+            if not progress.interactive and not event.is_pair_done:
+                return
+            tracker.update_total(event.category_total)
+            label = f"  congress {event.congress:>3}  {event.bill_type:<7}  "
+            if event.is_pair_done:
+                progress.update(label + tracker.finish(event.bills_written))
+                progress.commit()
+                tracker.reset()
+            else:
+                progress.update(label + tracker.tick(event.bills_written))
+
+        try:
+            with api_client:
+                stats = bills_scraper.scrape_basic(
+                    client=api_client,
+                    congresses=congresses,
+                    storage_dir=storage_dir,
+                    fetched_at=datetime.now(UTC),
+                    bill_types=bill_types,
+                    limit=limit,
+                    progress=_on_progress if show_progress else None,
+                    skip_unchanged=skip_unchanged,
+                )
+        finally:
             progress.commit()
-            tracker.reset()
-        else:
-            progress.update(label + tracker.tick(event.bills_written))
-
-    try:
-        with api_client:
-            stats = bills_scraper.scrape_basic(
-                client=api_client,
-                congresses=congresses,
-                storage_dir=storage_dir,
-                fetched_at=datetime.now(UTC),
-                bill_types=bill_types,
-                limit=limit,
-                progress=_on_progress if show_progress else None,
-                skip_unchanged=skip_unchanged,
-            )
-    finally:
-        progress.commit()
 
     suffix = f" ({stats.bills_skipped} skipped)" if stats.bills_skipped else ""
     typer.echo(
@@ -317,6 +331,16 @@ def scrape_bills_command(
             help="Directory holding bills.jsonl (and Phase 2b's sibling files).",
         ),
     ] = DEFAULT_BILLS_STORAGE_DIR,
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db",
+            help=(
+                "SQLite DB for the Scrape Run ledger (ADR 0021). Stage 0 still "
+                "writes entity data only to JSONL; this DB receives telemetry only."
+            ),
+        ),
+    ] = DEFAULT_DB,
     limit: Annotated[
         int | None,
         typer.Option(
@@ -362,6 +386,8 @@ def scrape_bills_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        db_path=db_path,
+        command="scrape bills",
         skip_unchanged=skip_unchanged,
     )
 
@@ -572,6 +598,8 @@ def run_bills_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        db_path=db_path,
+        command="run bills",
     )
 
     typer.echo("→ Stage 1: load", err=True)
