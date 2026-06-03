@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from concord.cli._common import DEFAULT_DB, _require_openai_key
+from concord.observability import configure_logging
 
 
 def serve_command(
@@ -45,6 +46,9 @@ def serve_command(
     A missing DB file is created with an empty schema on startup (ADR 0012);
     `serve` is the only top-level command that bootstraps rather than fails.
     """
+    # Run_id-stamped logging for the long-running server, installed before
+    # the app boots (ADR 0021). Idempotent with the CLI callback's install.
+    configure_logging()
     _require_openai_key()
 
     # Lazy imports so `concord --help` doesn't pay the FastAPI/uvicorn cost.

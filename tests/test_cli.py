@@ -1060,6 +1060,8 @@ class TestScrapeBillsCommand:
                 "hr",
                 "--storage-dir",
                 str(tmp_path),
+                "--db",
+                str(tmp_path / "ledger.db"),
                 "--limit",
                 "2",
                 "--no-progress",
@@ -1070,6 +1072,65 @@ class TestScrapeBillsCommand:
         assert out.exists()
         lines = out.read_text().splitlines()
         assert len(lines) == 2
+
+    def test_scrape_records_a_scrape_run(
+        self,
+        runner: CliRunner,
+        with_api_key: None,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A bills scrape persists a complete Scrape Run: DB row + JSONL line
+        with per-bucket success counts (ADR 0021)."""
+        handler = _bills_handler()
+        original_init = Client.__init__
+
+        def patched_init(self, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handler))
+            kwargs.setdefault("sleep", lambda _s: None)
+            original_init(self, **kwargs)
+
+        monkeypatch.setattr(Client, "__init__", patched_init)
+
+        db_path = tmp_path / "ledger.db"
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "--congresses",
+                "119",
+                "--bill-types",
+                "hr",
+                "--storage-dir",
+                str(tmp_path),
+                "--db",
+                str(db_path),
+                "--limit",
+                "2",
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        storage = SqliteStorage(db_path, load_vec=False)
+        try:
+            runs = storage._conn.execute("SELECT * FROM runs").fetchall()
+        finally:
+            storage.close()
+        assert len(runs) == 1
+        run = dict(runs[0])
+        assert run["entity"] == "bills"
+        assert run["command"] == "scrape bills"
+        assert run["status"] == "ok"
+        counts = json.loads(run["success_counts"])
+        # One list page + two detail fetches, bucketed by endpoint.
+        assert counts["api:bill/list"] == 1
+        assert counts["api:bill/detail"] == 2
+
+        backup = json.loads((tmp_path / "runs.jsonl").read_text().splitlines()[0])
+        assert backup["run_id"] == run["run_id"]
+        assert backup["success_counts"] == counts
 
     def test_rejects_unknown_bill_type(
         self,

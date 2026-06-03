@@ -29,6 +29,8 @@ scriptable.
 
 import typer
 
+from concord.observability import configure_logging
+
 # Side-effectful: each module decorates its commands onto the stage apps.
 from . import bills, members, proceedings, votes  # noqa: F401
 from ._apps import index_app, load_app, run_app, scrape_app
@@ -69,6 +71,10 @@ def _root() -> None:
     The empty callback exists so Typer treats this as a multi-command app
     rather than collapsing the lone command into the root.
     """
+    # Central run_id-stamped logging, installed once at the CLI seam (not at
+    # import time, per ADR 0014). Idempotent across repeated in-process
+    # invocations (tests).
+    configure_logging()
 
 
 # serve lives directly on the root app, not under a stage sub-app.

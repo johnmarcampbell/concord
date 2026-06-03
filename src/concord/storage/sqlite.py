@@ -22,8 +22,9 @@ default (``True``) is what the pipeline needs. Tests and any Stage-1-only
 caller can pass ``load_vec=False`` to skip the extension entirely.
 """
 
+import json
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -369,6 +370,38 @@ CREATE TABLE IF NOT EXISTS bill_briefs (
     generated_at       TEXT NOT NULL,
     PRIMARY KEY (bill_id, lens)
 );
+
+-- runs + run_events are RECORD tables (ADR 0019), not mirrors: each row is
+-- the durable ledger of one Stage-0 Scrape Run (ADR 0021). They are
+-- Concord-originated, not rebuildable from upstream JSONL, and an entity
+-- re-derivation (re-run scrape/load/index) must NOT touch them — ensure_schema
+-- is CREATE IF NOT EXISTS so they survive a rebuild. runs.jsonl is written
+-- alongside as a cold backup; this table is the queried source of truth.
+-- success_counts / throttle_counts / unmatched_sample hold JSON; throttle_counts
+-- is reserved for a later throttle-aware metric. status is ok/partial/error.
+CREATE TABLE IF NOT EXISTS runs (
+    run_id             TEXT PRIMARY KEY,
+    entity             TEXT NOT NULL,
+    command            TEXT NOT NULL,
+    started_at         TEXT NOT NULL,
+    ended_at           TEXT,
+    status             TEXT NOT NULL,
+    success_counts     TEXT NOT NULL,
+    throttle_counts    TEXT,
+    unmatched_sample   TEXT,
+    error_event_count  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS run_events (
+    run_id           TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    seq              INTEGER NOT NULL,
+    endpoint_bucket  TEXT NOT NULL,
+    attempts         TEXT NOT NULL,
+    overflow_count   INTEGER NOT NULL DEFAULT 0,
+    final_status     TEXT NOT NULL,
+    ts               TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+);
 """
 
 # Column lists for members + member_terms tables. Mirrors the ``_PROCEEDING_COLUMNS``
@@ -604,6 +637,35 @@ _BILL_BRIEF_UPSERT_SQL = (
     )
 )
 
+# runs / run_events are record tables (ADR 0019, 0021); these power the
+# ledger inserts in insert_run / insert_run_events. Plain INSERTs (no
+# UPSERT): a run_id is minted fresh per Scrape Run, so a conflict is a bug.
+_RUN_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "entity",
+    "command",
+    "started_at",
+    "ended_at",
+    "status",
+    "success_counts",
+    "throttle_counts",
+    "unmatched_sample",
+    "error_event_count",
+)
+
+_RUN_EVENT_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "seq",
+    "endpoint_bucket",
+    "attempts",
+    "overflow_count",
+    "final_status",
+    "ts",
+)
+
+_RUN_INSERT_SQL = _insert_sql("runs", _RUN_COLUMNS)
+_RUN_EVENT_INSERT_SQL = _insert_sql("run_events", _RUN_EVENT_COLUMNS)
+
 # Vec-only schema. Only created when load_vec=True.
 _VEC_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
@@ -688,6 +750,44 @@ def _m002_add_bill_briefs(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m003_add_runs_tables(conn: sqlite3.Connection) -> None:
+    """ADR 0021: the ``runs`` + ``run_events`` Scrape Run ledger tables.
+
+    ``CREATE TABLE IF NOT EXISTS`` is idempotent against fresh installs
+    (whose ``_BASE_SCHEMA`` already declares both tables; this is a no-op)
+    and against pre-0021 DBs (which gain the tables here). The DDL must stay
+    byte-equivalent to the ``_BASE_SCHEMA`` declaration — the
+    schema-equivalence test (ADR 0017) fails if they drift.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS runs (
+            run_id             TEXT PRIMARY KEY,
+            entity             TEXT NOT NULL,
+            command            TEXT NOT NULL,
+            started_at         TEXT NOT NULL,
+            ended_at           TEXT,
+            status             TEXT NOT NULL,
+            success_counts     TEXT NOT NULL,
+            throttle_counts    TEXT,
+            unmatched_sample   TEXT,
+            error_event_count  INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS run_events (
+            run_id           TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            seq              INTEGER NOT NULL,
+            endpoint_bucket  TEXT NOT NULL,
+            attempts         TEXT NOT NULL,
+            overflow_count   INTEGER NOT NULL DEFAULT 0,
+            final_status     TEXT NOT NULL,
+            ts               TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        );
+        """
+    )
+
+
 #: Ordered, append-only schema migrations. Each entry is
 #: ``(version, callable)``; the callable receives a connection and
 #: mutates it to bring the DB from version N-1 to version N. The
@@ -699,6 +799,7 @@ def _m002_add_bill_briefs(conn: sqlite3.Connection) -> None:
 _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _m001_add_bill_last_enrichment_error),
     (2, _m002_add_bill_briefs),
+    (3, _m003_add_runs_tables),
 )
 _HEAD: int = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
 
@@ -1201,6 +1302,89 @@ class SqliteStorage:
                     generated_at,
                 ),
             )
+
+    # -- Scrape Run ledger (ADR 0021) -------------------------------------
+
+    def insert_run(  # noqa: PLR0913 — one kwarg per `runs` ledger column (ADR 0021)
+        self,
+        *,
+        run_id: str,
+        entity: str,
+        command: str,
+        started_at: str,
+        ended_at: str | None,
+        status: str,
+        success_counts: dict[str, int],
+        throttle_counts: dict[str, int] | None,
+        unmatched_sample: Sequence[str],
+        error_event_count: int,
+    ) -> None:
+        """INSERT one ``runs`` ledger row (ADR 0021).
+
+        A record-table write (ADR 0019): re-running scrape/load/index never
+        rewrites it. The JSON columns are serialized here — ``success_counts``
+        with sorted keys for stable output; ``unmatched_sample`` and a missing
+        ``throttle_counts`` collapse to SQL ``NULL`` when empty.
+        """
+        with self._maybe_transaction():
+            self._conn.execute(
+                _RUN_INSERT_SQL,
+                (
+                    run_id,
+                    entity,
+                    command,
+                    started_at,
+                    ended_at,
+                    status,
+                    json.dumps(success_counts, sort_keys=True),
+                    json.dumps(throttle_counts, sort_keys=True)
+                    if throttle_counts is not None
+                    else None,
+                    json.dumps(list(unmatched_sample)) if unmatched_sample else None,
+                    error_event_count,
+                ),
+            )
+
+    def insert_run_events(self, run_id: str, events: Sequence[Mapping[str, Any]]) -> None:
+        """Bulk-INSERT the Run Events for one Scrape Run (ADR 0021).
+
+        ``seq`` is assigned from the list order. Each event maps
+        ``endpoint_bucket`` / ``attempts`` (a list serialized to JSON) /
+        ``overflow_count`` / ``final_status`` / ``ts``. A no-op for a clean
+        run with zero error events. The parent ``runs`` row must already
+        exist (FKs are on); :func:`concord.observability.scrape_run` inserts
+        it first in the same transaction.
+        """
+        if not events:
+            return
+        rows = [
+            (
+                run_id,
+                seq,
+                event["endpoint_bucket"],
+                json.dumps(event["attempts"]),
+                event["overflow_count"],
+                event["final_status"],
+                event["ts"],
+            )
+            for seq, event in enumerate(events)
+        ]
+        with self._maybe_transaction():
+            self._conn.executemany(_RUN_EVENT_INSERT_SQL, rows)
+
+    def get_run(self, run_id: str) -> sqlite3.Row | None:
+        """Return the ``runs`` row for ``run_id``, or ``None`` if absent."""
+        cursor = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,))
+        row: sqlite3.Row | None = cursor.fetchone()
+        return row
+
+    def list_run_events(self, run_id: str) -> list[sqlite3.Row]:
+        """Return every ``run_events`` row for ``run_id``, ordered by ``seq``."""
+        cursor = self._conn.execute(
+            "SELECT * FROM run_events WHERE run_id = ? ORDER BY seq ASC",
+            (run_id,),
+        )
+        return cursor.fetchall()
 
     # -- Votes (Phase 3a) -------------------------------------------------
 
