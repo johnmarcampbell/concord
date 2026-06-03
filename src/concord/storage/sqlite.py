@@ -48,10 +48,20 @@ from concord.models import (
 )
 from concord.storage.runs import (
     RUNS_SCHEMA,
+)
+from concord.storage.runs import (
     get_run as _get_run,
+)
+from concord.storage.runs import (
     insert_run as _insert_run,
+)
+from concord.storage.runs import (
     insert_run_events as _insert_run_events,
+)
+from concord.storage.runs import (
     list_run_events as _list_run_events,
+)
+from concord.storage.runs import (
     m003_add_runs_tables as _m003_add_runs_tables,
 )
 
@@ -1467,4 +1477,3 @@ def _row_from_vote(vote: Vote, *, fetched_at: str) -> tuple[Any, ...]:
     dumped["fetched_at"] = fetched_at
     dumped["is_party_unity"] = 1 if dumped.get("is_party_unity") else 0
     return tuple(dumped[col] for col in _VOTE_COLUMNS)
-
