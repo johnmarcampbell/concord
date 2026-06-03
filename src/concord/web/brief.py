@@ -33,7 +33,7 @@ from concord.brief import (
 )
 from concord.storage.sqlite import SqliteStorage
 from concord.web import search as search_mod
-from concord.web._deps import VALID_BILL_TYPES, db_connection
+from concord.web._deps import VALID_BILL_TYPES, get_db
 
 _log = logging.getLogger("concord.web.brief")
 
@@ -168,7 +168,7 @@ def register_brief_routes(app: FastAPI) -> None:
         bill_type: str,
         bill_number: int,
         lens: str = Form(""),
-        db: sqlite3.Connection = Depends(db_connection),  # noqa: B008 - FastAPI Depends pattern
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
     ) -> Response:
         bt = bill_type.lower()
         if bt not in VALID_BILL_TYPES:

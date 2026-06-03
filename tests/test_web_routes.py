@@ -5,6 +5,7 @@ a stub :class:`Embedder` (no OpenAI key required), and the tests hit real
 HTTP endpoints.
 """
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from concord.embedding import EMBEDDING_DIM, Embedder
 from concord.models import Article, Issue, Proceeding
 from concord.storage import SqliteStorage
+from concord.web import _deps
 from concord.web.app import create_app
 
 # -- fixtures -----------------------------------------------------------------
@@ -117,6 +119,42 @@ class TestBasicRoutes:
         r = client.get("/static/style.css")
         assert r.status_code == 200
         assert "font-serif" in r.text
+
+
+class TestDbDependencyWiring:
+    def test_index_does_not_load_sqlite_vec(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        load_calls = 0
+        original_load = _deps.sqlite_vec.load
+
+        def _counting_load(conn: sqlite3.Connection) -> None:
+            nonlocal load_calls
+            load_calls += 1
+            original_load(conn)
+
+        monkeypatch.setattr(_deps.sqlite_vec, "load", _counting_load)
+
+        r = client.get("/")
+        assert r.status_code == 200
+        assert load_calls == 0
+
+    def test_search_loads_sqlite_vec(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        load_calls = 0
+        original_load = _deps.sqlite_vec.load
+
+        def _counting_load(conn: sqlite3.Connection) -> None:
+            nonlocal load_calls
+            load_calls += 1
+            original_load(conn)
+
+        monkeypatch.setattr(_deps.sqlite_vec, "load", _counting_load)
+
+        r = client.get("/search?q=banking")
+        assert r.status_code == 200
+        assert load_calls == 1
 
 
 class TestBootstrapMissingDb:
