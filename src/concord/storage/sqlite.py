@@ -373,7 +373,7 @@ CREATE TABLE IF NOT EXISTS bill_briefs (
     PRIMARY KEY (bill_id, lens)
 );
 """
-_BASE_SCHEMA += f"\n{runs_storage.RUNS_SCHEMA}\n"
+_BASE_SCHEMA += "\n" + runs_storage.RUNS_SCHEMA + "\n"
 
 # Column lists for members + member_terms tables. Mirrors the ``_PROCEEDING_COLUMNS``
 # pattern: one source of truth for INSERT order.
