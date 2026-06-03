@@ -10,6 +10,7 @@ import cycle.
 import sqlite3
 from collections.abc import Iterator
 
+import sqlite_vec  # type: ignore[import-untyped]
 from fastapi import Request
 
 #: Bill type codes accepted in URL paths. Mirrors
@@ -22,11 +23,29 @@ def db_connection(request: Request) -> Iterator[sqlite3.Connection]:
     """Per-request read-only SQLite connection (no sqlite-vec extension).
 
     For route handlers whose queries are plain indexed SELECTs and don't
-    need the vector index. The bulk-search ``get_db`` closure in
-    ``concord.web.app`` is the sqlite-vec-loaded equivalent.
+    need the vector index. The sqlite-vec-loaded equivalent is
+    :func:`get_db`.
     """
     conn = sqlite3.connect(request.app.state.db_path)
     conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def get_db(request: Request) -> Iterator[sqlite3.Connection]:
+    """Per-request connection with sqlite-vec loaded.
+
+    The dependency the entity route modules share for queries that may
+    touch the vector index (hybrid search). Plain-SELECT routes use the
+    lighter :func:`db_connection` instead.
+    """
+    conn = sqlite3.connect(request.app.state.db_path)
+    conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     try:
         yield conn
     finally:
