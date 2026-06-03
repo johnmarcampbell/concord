@@ -1132,6 +1132,38 @@ class TestScrapeBillsCommand:
         assert backup["run_id"] == run["run_id"]
         assert backup["success_counts"] == counts
 
+    def test_missing_key_records_no_ledger_artifacts(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing API key is a config error, not a scrape: it must exit 2
+        and mint no ledger DB or runs.jsonl (ADR 0021; consistent with
+        `run bills`). Client construction lives outside the scrape seam."""
+        monkeypatch.delenv(ENV_API_KEY, raising=False)
+        db_path = tmp_path / "ledger.db"
+        result = runner.invoke(
+            cli_module.app,
+            [
+                "scrape",
+                "bills",
+                "--congresses",
+                "119",
+                "--bill-types",
+                "hr",
+                "--storage-dir",
+                str(tmp_path),
+                "--db",
+                str(db_path),
+                "--no-progress",
+            ],
+        )
+        assert result.exit_code == 2
+        # No network was touched, so nothing should have been minted.
+        assert not db_path.exists()
+        assert not (tmp_path / "runs.jsonl").exists()
+
     def test_rejects_unknown_bill_type(
         self,
         runner: CliRunner,

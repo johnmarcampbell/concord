@@ -143,17 +143,23 @@ def _run_scrape_bills(
     command: str,
     skip_unchanged: bool = False,
 ) -> int:
+    # Construct (and validate) the client BEFORE the scrape seam. A pure config
+    # error — e.g. a missing API key — must not mint a Scrape Run or bootstrap
+    # the ledger DB: ADR 0021 says the recorder is "born exactly where the
+    # network is", and client construction is config, not network. This also
+    # keeps `scrape bills` consistent with `run bills`, which guards the key
+    # upfront.
+    try:
+        api_client = Client()
+    except ApiError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
     # The Bills Stage-0 path is the proven vertical slice for the Scrape Run
     # ledger (ADR 0021): the recorder is born here, at the scrape seam, and
     # the api.py chokepoint records into it via contextvar. Stage 0 still
     # writes entity data only to JSONL — the DB write is telemetry.
     with scrape_run(entity="bills", command=command, db_path=db_path):
-        try:
-            api_client = Client()
-        except ApiError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(code=2) from exc
-
         progress = Progress(enabled=show_progress)
         tracker = RateTracker()
 
