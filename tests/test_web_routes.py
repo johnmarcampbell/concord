@@ -121,40 +121,54 @@ class TestBasicRoutes:
         assert "font-serif" in r.text
 
 
+class _VecLoadCounter:
+    """Counts sqlite-vec extension loads triggered while serving a request."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+
+@pytest.fixture
+def vec_loads(monkeypatch: pytest.MonkeyPatch) -> _VecLoadCounter:
+    """Patch ``sqlite_vec.load`` to tally how often a request loads the extension."""
+    counter = _VecLoadCounter()
+    original_load = _deps.sqlite_vec.load
+
+    def _counting_load(conn: sqlite3.Connection) -> None:
+        counter.count += 1
+        original_load(conn)
+
+    monkeypatch.setattr(_deps.sqlite_vec, "load", _counting_load)
+    return counter
+
+
 class TestDbDependencyWiring:
-    def test_index_does_not_load_sqlite_vec(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    """Only ``/search`` touches the vector index (issue #113). Every browse/
+    profile route uses the plain ``get_db`` connection and must not pay for the
+    ``sqlite-vec`` load — the rename swapped ``get_db`` from vec-loaded to plain,
+    so these assertions pin behavior the diff itself doesn't make visible."""
+
+    @pytest.mark.parametrize(
+        ("path", "expected_vec_loads"),
+        [
+            ("/", 0),
+            ("/bills", 0),
+            ("/members", 0),
+            ("/votes", 0),
+            ("/proceedings/CREC-2026-05-22-pt1-PgS001-1", 0),
+            ("/search?q=banking", 1),
+        ],
+    )
+    def test_only_search_loads_sqlite_vec(
+        self,
+        client: TestClient,
+        vec_loads: _VecLoadCounter,
+        path: str,
+        expected_vec_loads: int,
     ) -> None:
-        load_calls = 0
-        original_load = _deps.sqlite_vec.load
-
-        def _counting_load(conn: sqlite3.Connection) -> None:
-            nonlocal load_calls
-            load_calls += 1
-            original_load(conn)
-
-        monkeypatch.setattr(_deps.sqlite_vec, "load", _counting_load)
-
-        r = client.get("/")
+        r = client.get(path)
         assert r.status_code == 200
-        assert load_calls == 0
-
-    def test_search_loads_sqlite_vec(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        load_calls = 0
-        original_load = _deps.sqlite_vec.load
-
-        def _counting_load(conn: sqlite3.Connection) -> None:
-            nonlocal load_calls
-            load_calls += 1
-            original_load(conn)
-
-        monkeypatch.setattr(_deps.sqlite_vec, "load", _counting_load)
-
-        r = client.get("/search?q=banking")
-        assert r.status_code == 200
-        assert load_calls == 1
+        assert vec_loads.count == expected_vec_loads
 
 
 class TestBootstrapMissingDb:
