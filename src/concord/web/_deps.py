@@ -3,8 +3,8 @@
 Small primitives shared across the route-registration modules
 (``concord.web.routes_*``, ``concord.web.enrichment``, ``concord.web.brief``):
 the bill-type allow-list (:data:`VALID_BILL_TYPES`) and two per-request SQLite
-connection dependencies — :func:`db_connection` (plain, for indexed SELECTs)
-and :func:`get_db` (with the ``sqlite-vec`` extension loaded, for hybrid
+connection dependencies — :func:`get_db` (plain, for indexed SELECTs) and
+:func:`get_vector_db` (with the ``sqlite-vec`` extension loaded, for hybrid
 search). They live here, rather than in ``app``, so the route modules can
 share them without an ``app``↔``routes`` import cycle: ``app`` imports the
 route modules to register them, so they cannot import back.
@@ -22,12 +22,12 @@ from fastapi import Request
 VALID_BILL_TYPES = frozenset({"hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres"})
 
 
-def db_connection(request: Request) -> Iterator[sqlite3.Connection]:
+def get_db(request: Request) -> Iterator[sqlite3.Connection]:
     """Per-request read-only SQLite connection (no sqlite-vec extension).
 
     For route handlers whose queries are plain indexed SELECTs and don't
     need the vector index. The sqlite-vec-loaded equivalent is
-    :func:`get_db`.
+    :func:`get_vector_db`.
     """
     conn = sqlite3.connect(request.app.state.db_path)
     conn.row_factory = sqlite3.Row
@@ -37,12 +37,11 @@ def db_connection(request: Request) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def get_db(request: Request) -> Iterator[sqlite3.Connection]:
+def get_vector_db(request: Request) -> Iterator[sqlite3.Connection]:
     """Per-request connection with sqlite-vec loaded.
 
-    The dependency the entity route modules share for queries that may
-    touch the vector index (hybrid search). Plain-SELECT routes use the
-    lighter :func:`db_connection` instead.
+    Used by routes whose queries touch the vector index (hybrid search).
+    Plain-SELECT routes use the lighter :func:`get_db` instead.
     """
     conn = sqlite3.connect(request.app.state.db_path)
     conn.row_factory = sqlite3.Row

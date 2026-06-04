@@ -19,7 +19,7 @@ from slowapi import Limiter
 
 from concord.embedding import Embedder
 from concord.web import search as search_mod
-from concord.web._deps import get_db
+from concord.web._deps import get_db, get_vector_db
 from concord.web._helpers import resolve_top_bills
 from concord.web.snippets import keyword_snippet, semantic_snippet
 
@@ -111,7 +111,7 @@ def register(app: FastAPI, limiter: Limiter) -> None:  # noqa: C901 — wraps th
         proceedings_on: str = Query(
             "on", alias="proceedings", description="'on' to include Proceedings."
         ),
-        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
+        db: sqlite3.Connection = Depends(get_vector_db),  # noqa: B008 - FastAPI Depends pattern
         embedder: Embedder = Depends(_get_embedder),  # noqa: B008 - FastAPI Depends pattern
     ) -> Response:
         date_from_parsed = _parse_optional_date(date_from)

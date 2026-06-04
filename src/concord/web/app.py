@@ -2,9 +2,10 @@
 
 One process. Reads from the SQLite store at ``app.state.db_path``,
 embeds queries via the ``Embedder`` stashed on ``app.state.embedder``.
-Per-request, the route modules open a fresh ``sqlite3.Connection`` (with
-the ``sqlite-vec`` extension loaded via :func:`concord.web._deps.get_db`)
-so WAL-mode visibility of new writes from the pipeline is automatic.
+Per-request, route modules open a fresh ``sqlite3.Connection`` via
+:func:`concord.web._deps.get_db` (plain) or
+:func:`concord.web._deps.get_vector_db` (for vector-search routes), so
+WAL-mode visibility of new writes from the pipeline is automatic.
 
 This module is deliberately thin: :func:`create_app` bootstraps the
 schema (ADR 0012), constructs the OpenAI-backed ``Embedder``/``Briefer``,

@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
-from concord.web._deps import VALID_BILL_TYPES, db_connection
+from concord.web._deps import VALID_BILL_TYPES, get_db
 
 _log = logging.getLogger("concord.web")
 
@@ -120,7 +120,7 @@ def register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI 
         congress: int,
         bill_type: str,
         bill_number: int,
-        db: sqlite3.Connection = Depends(db_connection),  # noqa: B008 - FastAPI Depends pattern
+        db: sqlite3.Connection = Depends(get_db),  # noqa: B008 - FastAPI Depends pattern
     ) -> Response:
         bt = bill_type.lower()
         if bt not in VALID_BILL_TYPES:
