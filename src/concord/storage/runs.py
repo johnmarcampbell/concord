@@ -2,11 +2,11 @@
 
 import json
 import sqlite3
-from collections.abc import Callable, Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Sequence
 from typing import Any
 
 from concord.models import RunEvent, RunRecord
+from concord.storage._sql import insert_sql
 
 RUNS_SCHEMA = """
 -- runs + run_events are RECORD tables (ADR 0019), not mirrors: each row is
@@ -66,13 +66,8 @@ _RUN_EVENT_COLUMNS: tuple[str, ...] = (
 )
 
 
-def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
-    placeholders = ", ".join("?" for _ in columns)
-    return f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"  # noqa: S608 - static table/column tuples
-
-
-_RUN_INSERT_SQL = _insert_sql("runs", _RUN_COLUMNS)
-_RUN_EVENT_INSERT_SQL = _insert_sql("run_events", _RUN_EVENT_COLUMNS)
+_RUN_INSERT_SQL = insert_sql("runs", _RUN_COLUMNS)
+_RUN_EVENT_INSERT_SQL = insert_sql("run_events", _RUN_EVENT_COLUMNS)
 
 
 def m003_add_runs_tables(conn: sqlite3.Connection) -> None:
@@ -87,28 +82,24 @@ def m003_add_runs_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(RUNS_SCHEMA)
 
 
-def insert_run(
-    conn: sqlite3.Connection,
-    maybe_transaction: Callable[[], AbstractContextManager[None]],
-    run: RunRecord,
-) -> None:
-    """INSERT one ``runs`` ledger row from a :class:`RunRecord` (ADR 0021)."""
-    with maybe_transaction():
-        conn.execute(_RUN_INSERT_SQL, _row_from_run(run))
+def insert_run(conn: sqlite3.Connection, run: RunRecord) -> None:
+    """INSERT one ``runs`` ledger row from a :class:`RunRecord` (ADR 0021).
+
+    Pure SQL: :class:`SqliteStorage` owns the transaction boundary so this
+    record write can join an outer batch (ADR 0019).
+    """
+    conn.execute(_RUN_INSERT_SQL, _row_from_run(run))
 
 
-def insert_run_events(
-    conn: sqlite3.Connection,
-    maybe_transaction: Callable[[], AbstractContextManager[None]],
-    run_id: str,
-    events: Sequence[RunEvent],
-) -> None:
-    """Bulk-INSERT the :class:`RunEvent` rows for one Scrape Run (ADR 0021)."""
+def insert_run_events(conn: sqlite3.Connection, run_id: str, events: Sequence[RunEvent]) -> None:
+    """Bulk-INSERT the :class:`RunEvent` rows for one Scrape Run (ADR 0021).
+
+    ``seq`` is assigned from list order; a no-op when ``events`` is empty.
+    """
     if not events:
         return
     rows = [_row_from_run_event(run_id, seq, event) for seq, event in enumerate(events)]
-    with maybe_transaction():
-        conn.executemany(_RUN_EVENT_INSERT_SQL, rows)
+    conn.executemany(_RUN_EVENT_INSERT_SQL, rows)
 
 
 def get_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:

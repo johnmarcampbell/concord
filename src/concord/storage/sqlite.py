@@ -47,6 +47,7 @@ from concord.models import (
     VotePosition,
 )
 from concord.storage import runs as runs_storage
+from concord.storage._sql import insert_sql
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
 # this list in one place makes it easy to add a column later: extend here,
@@ -504,16 +505,6 @@ _SUMMARY_COLUMNS: tuple[str, ...] = (
 )
 
 
-def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
-    return (
-        f"INSERT INTO {table} ("
-        + ", ".join(columns)
-        + ") VALUES ("
-        + ", ".join("?" for _ in columns)
-        + ")"
-    )
-
-
 _VOTE_COLUMNS: tuple[str, ...] = (
     "vote_id",
     "chamber",
@@ -579,11 +570,11 @@ _MEMBER_PARTY_UNITY_UPSERT_SQL = (
     + ")"
 )
 
-_COSPONSOR_INSERT_SQL = _insert_sql("bill_cosponsors", _COSPONSOR_COLUMNS)
-_ACTION_INSERT_SQL = _insert_sql("bill_actions", _ACTION_COLUMNS)
-_SUBJECT_INSERT_SQL = _insert_sql("bill_subjects", _SUBJECT_COLUMNS)
-_TITLE_INSERT_SQL = _insert_sql("bill_titles", _TITLE_COLUMNS)
-_SUMMARY_INSERT_SQL = _insert_sql("bill_summaries", _SUMMARY_COLUMNS)
+_COSPONSOR_INSERT_SQL = insert_sql("bill_cosponsors", _COSPONSOR_COLUMNS)
+_ACTION_INSERT_SQL = insert_sql("bill_actions", _ACTION_COLUMNS)
+_SUBJECT_INSERT_SQL = insert_sql("bill_subjects", _SUBJECT_COLUMNS)
+_TITLE_INSERT_SQL = insert_sql("bill_titles", _TITLE_COLUMNS)
+_SUMMARY_INSERT_SQL = insert_sql("bill_summaries", _SUMMARY_COLUMNS)
 
 # bill_briefs is a record table (ADR 0019); these power the upsert in
 # upsert_bill_brief. The (bill_id, lens) pair is the conflict target.
@@ -1217,7 +1208,8 @@ class SqliteStorage:
         :func:`_row_from_run`, mirroring :func:`_row_from_vote`. Does not
         write ``run.events`` — those fan out via :meth:`insert_run_events`.
         """
-        runs_storage.insert_run(self._conn, self._maybe_transaction, run)
+        with self._maybe_transaction():
+            runs_storage.insert_run(self._conn, run)
 
     def insert_run_events(self, run_id: str, events: Sequence[RunEvent]) -> None:
         """Bulk-INSERT the :class:`RunEvent` rows for one Scrape Run (ADR 0021).
@@ -1227,7 +1219,8 @@ class SqliteStorage:
         on); :func:`concord.observability.scrape_run` inserts it first in the
         same transaction.
         """
-        runs_storage.insert_run_events(self._conn, self._maybe_transaction, run_id, events)
+        with self._maybe_transaction():
+            runs_storage.insert_run_events(self._conn, run_id, events)
 
     def get_run(self, run_id: str) -> sqlite3.Row | None:
         """Return the ``runs`` row for ``run_id``, or ``None`` if absent."""
