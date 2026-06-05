@@ -16,7 +16,7 @@ from concord.web import search as search_mod
 from concord.web._deps import VALID_BILL_TYPES, get_db
 from concord.web._helpers import resolve_top_bills
 from concord.web.brief import assemble_facts, cached_view
-from concord.web.enrichment import _compute_enrichment_state
+from concord.web.enrichment import compute_enrichment_state
 
 #: Page size for the ``/bills`` browse-only index.
 BILLS_PAGE_SIZE = 50
@@ -98,7 +98,7 @@ def register(app: FastAPI) -> None:
         titles = search_mod.titles_for_bill(db, bill_id)
         summaries = search_mod.summaries_for_bill(db, bill_id)
         vote_history = search_mod.vote_history_for_bill(db, bill_id)
-        enrichment_state, enrichment_error = _compute_enrichment_state(request.app, bill, bill_id)
+        enrichment_state, enrichment_error = compute_enrichment_state(request.app, bill, bill_id)
         brief_enabled = request.app.state.brief_enabled
         brief_facts = None
         brief_view = None

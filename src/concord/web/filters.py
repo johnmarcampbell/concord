@@ -1,8 +1,8 @@
 """Jinja template filters for the web layer.
 
 Holds the presentation-only filters the templates rely on and the single
-:func:`register_filters` seam that ``create_app`` calls to wire them onto
-the Jinja environment. The pure helpers they delegate to live in core
+:func:`register` seam that ``create_app`` calls to wire them onto the
+Jinja environment. The pure helpers they delegate to live in core
 (:func:`concord._common.ordinal`); this module only owns the
 web-presentation ``humanize_age`` and the registration glue.
 """
@@ -62,7 +62,7 @@ def humanize_age(value: str | datetime | None, *, now: datetime | None = None) -
     return ""
 
 
-def register_filters(templates: Jinja2Templates) -> None:
+def register(templates: Jinja2Templates) -> None:
     """Wire the web layer's Jinja filters onto ``templates``.
 
     Called once by ``create_app``. ``ordinal`` is the shared core helper
