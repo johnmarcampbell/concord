@@ -8,14 +8,15 @@ so WAL-mode visibility of new writes from the pipeline is automatic.
 
 This module is deliberately thin: :func:`create_app` bootstraps the
 schema (ADR 0012), constructs the OpenAI-backed ``Embedder``/``Briefer``,
-sets up ``app.state``, and then calls a ``register_*`` function per
-concern. The routes themselves live in sibling modules:
+sets up ``app.state``, and then calls each sibling module's ``register``
+seam. The routes themselves live in sibling modules:
 
 - ``routes_search``      — landing page (``/``) + federated ``/search``
 - ``routes_bills``       — ``/bills`` index + Bill profile
 - ``routes_members``     — ``/members`` index + Member profile
 - ``routes_votes``       — ``/votes`` index + Vote profile
 - ``routes_proceedings`` — Proceeding document view
+- ``routes_meta``        — about page + health check
 - ``enrichment``         — web-initiated Stage 0 enrichment (ADR 0016)
 - ``brief``              — Bill Brief generation (ADR 0020)
 - ``filters``            — Jinja filters (``humanize_age``, ``ordinal``)
@@ -28,8 +29,7 @@ import asyncio
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -40,15 +40,16 @@ from concord.brief import Briefer
 from concord.embedding import Embedder
 from concord.storage.sqlite import ensure_schema
 from concord.web import (
+    brief,
+    enrichment,
+    filters,
     routes_bills,
     routes_members,
+    routes_meta,
     routes_proceedings,
     routes_search,
     routes_votes,
 )
-from concord.web.brief import register_brief_routes
-from concord.web.enrichment import _read_enrichment_flag, register_enrichment_routes
-from concord.web.filters import register_filters
 
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
@@ -107,7 +108,9 @@ def create_app(
     # casual deployment can't be coaxed into triggering Stage 0 from the
     # web layer just by hand-crafting the POST URL.
     has_congress_api_key = bool(os.environ.get("CONGRESS_API_KEY"))
-    enrichment_flag = _read_enrichment_flag(os.environ.get("CONCORD_ENABLE_WEB_ENRICHMENT"))
+    enrichment_flag = enrichment.read_enrichment_flag(
+        os.environ.get("CONCORD_ENABLE_WEB_ENRICHMENT")
+    )
     enrichment_enabled = has_congress_api_key and enrichment_flag
 
     limiter = Limiter(key_func=get_remote_address)
@@ -136,36 +139,23 @@ def create_app(
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-    register_filters(templates)
+    filters.register(templates)
     app.state.templates = templates
 
     if _STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-    _register_meta_routes(app)
+    routes_meta.register(app)
     routes_search.register(app, limiter)
     routes_bills.register(app)
     routes_members.register(app)
     routes_votes.register(app)
     routes_proceedings.register(app)
     if enrichment_enabled:
-        register_enrichment_routes(app)
+        enrichment.register(app)
     if briefer is not None:
-        register_brief_routes(app)
+        brief.register(app)
     return app
-
-
-def _register_meta_routes(app: FastAPI) -> None:
-    """Register the entity-agnostic routes: about page and health check."""
-    templates: Jinja2Templates = app.state.templates
-
-    @app.get("/about/methodology", response_class=HTMLResponse)
-    def about_methodology(request: Request) -> Response:
-        return templates.TemplateResponse(request, "about/methodology.html", {})
-
-    @app.get("/healthz")
-    def healthz() -> JSONResponse:
-        return JSONResponse({"ok": True})
 
 
 __all__ = ["create_app"]

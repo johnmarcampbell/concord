@@ -149,7 +149,7 @@ def get_or_generate_brief(
     return view, None
 
 
-def register_brief_routes(app: FastAPI) -> None:
+def register(app: FastAPI) -> None:
     """Register the synchronous Bill Brief generation route (ADR 0020).
 
     A ``def`` (not ``async``) route runs in FastAPI's threadpool, so the

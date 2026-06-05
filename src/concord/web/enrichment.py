@@ -31,13 +31,13 @@ _log = logging.getLogger("concord.web")
 _ENRICHMENT_FLAG_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
-def _read_enrichment_flag(raw: str | None) -> bool:
+def read_enrichment_flag(raw: str | None) -> bool:
     if raw is None:
         return False
     return raw.strip().lower() in _ENRICHMENT_FLAG_TRUTHY
 
 
-def _compute_enrichment_state(
+def compute_enrichment_state(
     app: FastAPI,
     bill: dict[str, Any],
     bill_id: str,
@@ -71,7 +71,7 @@ def _compute_enrichment_state(
     return "_enrichment_button", None
 
 
-def register_enrichment_routes(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
+def register(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
     """Register the two web-initiated enrichment routes (ADR 0016)."""
     templates: Jinja2Templates = app.state.templates
 
