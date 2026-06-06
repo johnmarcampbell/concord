@@ -36,7 +36,7 @@ build:
 
 ## run: build then launch the web server, forwarding $(HOST_PORT) -> container 8000
 ## Keys: already-set environment wins; ./.env is only a fallback if present.
-run: build
+serve-container: build
 	mkdir -p "$(DATA_DIR)"
 	pre_openai="$${OPENAI_API_KEY:-}"; pre_congress="$${CONGRESS_API_KEY:-}"; \
 	set -a; [ -f .env ] && . ./.env; set +a; \
@@ -51,11 +51,11 @@ run: build
 		$(IMAGE)
 
 ## stop: stop the running container (if any)
-stop:
+stop-container:
 	-docker stop $(NAME)
 
 ## shell: open an interactive shell in a throwaway container
-shell: build
+enter-container: build
 	docker run --rm -it \
 		-v "$(DATA_DIR):/app/data" \
 		$(ENV_ARGS) \
@@ -63,5 +63,5 @@ shell: build
 		/bin/bash
 
 ## logs: follow logs from the running container
-logs:
+logs-container:
 	docker logs -f $(NAME)
