@@ -35,10 +35,13 @@ build:
 	docker build -t $(IMAGE) .
 
 ## run: build then launch the web server, forwarding $(HOST_PORT) -> container 8000
-## Auto-loads ./.env (exported) if present, so its keys reach the container.
+## Keys: already-set environment wins; ./.env is only a fallback if present.
 run: build
 	mkdir -p "$(DATA_DIR)"
+	pre_openai="$${OPENAI_API_KEY:-}"; pre_congress="$${CONGRESS_API_KEY:-}"; \
 	set -a; [ -f .env ] && . ./.env; set +a; \
+	[ -n "$$pre_openai" ] && export OPENAI_API_KEY="$$pre_openai"; \
+	[ -n "$$pre_congress" ] && export CONGRESS_API_KEY="$$pre_congress"; \
 	docker run --rm \
 		--name $(NAME) \
 		-p $(HOST_PORT):$(CTR_PORT) \
