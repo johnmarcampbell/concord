@@ -35,13 +35,16 @@ build:
 	docker build -t $(IMAGE) .
 
 ## run: build then launch the web server, forwarding $(HOST_PORT) -> container 8000
+## Auto-loads ./.env (exported) if present, so its keys reach the container.
 run: build
 	mkdir -p "$(DATA_DIR)"
+	set -a; [ -f .env ] && . ./.env; set +a; \
 	docker run --rm \
 		--name $(NAME) \
 		-p $(HOST_PORT):$(CTR_PORT) \
 		-v "$(DATA_DIR):/app/data" \
-		$(ENV_ARGS) \
+		$${OPENAI_API_KEY:+-e OPENAI_API_KEY} \
+		$${CONGRESS_API_KEY:+-e CONGRESS_API_KEY} \
 		$(IMAGE)
 
 ## stop: stop the running container (if any)
