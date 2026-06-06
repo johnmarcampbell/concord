@@ -17,7 +17,7 @@ import logging
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import IO, Any, NamedTuple
 
 from concord.api import Client
 from concord.scraper._common import (
@@ -114,7 +114,7 @@ def _scrape_basic_pair(  # noqa: PLR0913 — per-pair worker, all kwargs are sta
     client: Client,
     congress: int,
     bt: str,
-    fh: Any,
+    fh: IO[str],
     fetched_at: datetime,
     remaining: float,
     skip_unchanged: bool,
@@ -314,7 +314,7 @@ def _enrich_one_bill(
     client: Client,
     bill_key: tuple[int, str, int],
     requested_sections: tuple[str, ...],
-    handles: dict[str, Any],
+    handles: dict[str, IO[str]],
     fetched_at: datetime,
     skip_unchanged: bool,
     section_freshness: dict[str, dict[tuple[Any, ...], datetime]],
@@ -415,7 +415,7 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
 
     # Open every requested section's file once; the per-bill loop writes
     # to whichever it just fetched.
-    handles: dict[str, Any] = {}
+    handles: dict[str, IO[str]] = {}
     try:
         for section in requested_sections:
             handles[section] = (storage_dir / enrichment_jsonl_name(section)).open(

@@ -281,3 +281,35 @@ class TestAppendSnapshot:
                 payload={},
             )
         assert path.read_text() == ""  # nothing was written
+
+    def test_emits_compact_json_with_z_timestamp(self, tmp_path: Path) -> None:
+        # Pins the on-disk rendering ADR 0018 Rule 5 documents: compact JSON
+        # (no spaces after ':'/','), field order fetched_at/key/payload, and a
+        # 'Z'-suffixed UTC fetched_at (not '+00:00'). Loaders and freshness maps
+        # accept this; pinning it catches a future Pydantic change that flips it.
+        path = tmp_path / "out.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            append_snapshot(
+                fh,
+                fetched_at=datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC),
+                key={"s": 1},
+                payload={"n": 1},
+            )
+        line = path.read_text().splitlines()[0]
+        assert line == '{"fetched_at":"2026-05-25T14:02:11Z","key":{"s":1},"payload":{"n":1}}'
+
+    def test_non_finite_floats_become_null(self, tmp_path: Path) -> None:
+        # ADR 0018 Rule 5, consequence 3: Pydantic renders NaN/Infinity as JSON
+        # null, where the old json.dumps emitted bare NaN/Infinity tokens. Lossy,
+        # but the upstream sources never emit non-finite floats. Pinned so the
+        # divergence stays visible rather than being discovered in production.
+        path = tmp_path / "out.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            append_snapshot(
+                fh,
+                fetched_at=datetime(2026, 5, 25, tzinfo=UTC),
+                key={"k": 1},
+                payload={"a": float("nan"), "b": float("inf"), "c": 1.5},
+            )
+        loaded = json.loads(path.read_text())["payload"]
+        assert loaded == {"a": None, "b": None, "c": 1.5}

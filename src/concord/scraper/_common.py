@@ -21,6 +21,18 @@ The exports are:
 * :func:`load_bill_signal_map` — Bills-specific helper that reads
   ``bills.jsonl`` and returns ``{key: max(updateDate, updateDateIncludingText)}``
   off each line's ``payload``; used to gate enrichment fetches.
+
+Note the deliberate asymmetry: :func:`append_snapshot` serializes through
+:class:`~concord.models.Snapshot`, but :func:`load_freshness_map` and
+:func:`load_bill_signal_map` parse the same envelope with raw ``json.loads``,
+*not* ``Snapshot``. That is intentional — these scanners read only ``key`` and
+``fetched_at`` (never ``payload``), run on the hot scrape path over files up to
+tens of thousands of lines, and need a softer per-line failure mode (warn-and-skip
+a malformed line, treat the record as stale) than ``Snapshot.model_validate_json``'s
+fail-fast. ``Snapshot`` is the single envelope vocabulary for the *write* (scraper)
+and *load* (Stage 1 loader, ADR 0018) sides; these freshness scanners are a third,
+intentionally lightweight reader. Don't "unify" them onto ``Snapshot`` — it would
+force eager full-payload validation on the hot path for no benefit.
 """
 
 import json
@@ -50,8 +62,8 @@ def append_snapshot(
     ``str | int`` raises ``pydantic.ValidationError`` here rather than
     serializing a malformed envelope silently (ADR 0018 Rule 5).
     """
-    fh.write(Snapshot[Any](fetched_at=fetched_at, key=key, payload=payload).model_dump_json())
-    fh.write("\n")
+    line = Snapshot[Any](fetched_at=fetched_at, key=key, payload=payload).model_dump_json()
+    fh.write(line + "\n")
 
 
 def _coerce_utc(dt: datetime) -> datetime:
