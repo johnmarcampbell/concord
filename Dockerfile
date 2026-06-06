@@ -44,13 +44,17 @@ FROM python:3.12-slim AS runtime
 # - htop, sqlite3, less: debug conveniences. The whole project's state
 #   is one SQLite file — `sqlite3 /app/data/proceedings.db` is the
 #   fastest way to inspect FTS5 / vec / row counts when something is off.
+# - tmux, neovim: in-container editing/session conveniences for poking
+#   around live.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         htop \
         less \
+        neovim \
         sqlite3 \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user with a fixed UID/GID so host bind mounts have a stable
