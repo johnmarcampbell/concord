@@ -1,10 +1,16 @@
-"""Unit tests for :mod:`concord.scraper._common` (ADR 0015 helpers)."""
+"""Unit tests for :mod:`concord.scraper._common` (envelope read/write helpers)."""
 
 import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
+from concord.models import Snapshot
 from concord.scraper._common import (
+    append_snapshot,
     is_stub_unchanged,
     load_bill_signal_map,
     load_freshness_map,
@@ -190,3 +196,88 @@ class TestLoadBillSignalMap:
         )
         result = load_bill_signal_map(path)
         assert result[(119, "hr", 1)] == datetime(2026, 5, 15, tzinfo=UTC)
+
+
+class TestAppendSnapshot:
+    """The ADR 0006 envelope *write* helper (ADR 0018 Rule 5).
+
+    Serializes through :class:`Snapshot`, the same model the loaders parse
+    with, so these tests assert the write side stays compatible with that
+    read side and honours the payload-verbatim contract (ADR 0018 Rule 1).
+    """
+
+    def test_round_trips_through_snapshot_model(self, tmp_path: Path) -> None:
+        path = tmp_path / "out.jsonl"
+        fetched_at = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
+        key: dict[str, str | int] = {"bioguide_id": "O000172", "congress": 119}
+        payload = {"bioguideId": "O000172", "name": "Last, First"}
+        with path.open("a", encoding="utf-8") as fh:
+            append_snapshot(fh, fetched_at=fetched_at, key=key, payload=payload)
+
+        lines = path.read_text().splitlines()
+        assert len(lines) == 1
+        snap = Snapshot[dict[str, Any]].model_validate_json(lines[0])
+        assert snap.fetched_at == fetched_at
+        assert snap.key == key
+        assert snap.payload == payload
+
+    def test_non_ascii_and_nested_payload_preserved(self, tmp_path: Path) -> None:
+        # ADR 0018 Rule 1: the payload is written verbatim, including non-ASCII
+        # (unescaped) and arbitrarily nested structures.
+        path = tmp_path / "out.jsonl"
+        payload = {
+            "title": "Café résumé — naïve façade",
+            "nested": {"items": [1, 2, {"x": "ü"}], "flag": True},
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            append_snapshot(
+                fh,
+                fetched_at=datetime(2026, 5, 25, tzinfo=UTC),
+                key={"k": 1},
+                payload=payload,
+            )
+
+        line = path.read_text().splitlines()[0]
+        assert "Café résumé" in line  # written unescaped, not \uXXXX
+        assert json.loads(line)["payload"] == payload
+
+    def test_str_payload_round_trips(self, tmp_path: Path) -> None:
+        # Senate case: the payload is the raw decoded XML string, not a dict.
+        path = tmp_path / "out.jsonl"
+        payload = "<rollcall>café</rollcall>"
+        with path.open("a", encoding="utf-8") as fh:
+            append_snapshot(
+                fh,
+                fetched_at=datetime(2026, 5, 25, tzinfo=UTC),
+                key={"source": "senators_cfm"},
+                payload=payload,
+            )
+
+        snap = Snapshot[str].model_validate_json(path.read_text().splitlines()[0])
+        assert snap.payload == payload
+
+    def test_appends_one_line_per_call(self, tmp_path: Path) -> None:
+        path = tmp_path / "out.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            append_snapshot(
+                fh, fetched_at=datetime(2026, 5, 25, tzinfo=UTC), key={"k": 1}, payload={}
+            )
+            append_snapshot(
+                fh, fetched_at=datetime(2026, 5, 26, tzinfo=UTC), key={"k": 2}, payload={}
+            )
+        assert len(path.read_text().splitlines()) == 2
+
+    def test_malformed_key_raises_validation_error(self, tmp_path: Path) -> None:
+        # ADR 0018 Rule 5 fail-fast: a non-(str | int) key value raises at write
+        # time rather than serializing a malformed envelope silently. This never
+        # fires on current scraper paths (the skip rule guarantees scalar keys).
+        path = tmp_path / "out.jsonl"
+        bad_key: dict[str, Any] = {"bad": [1, 2]}
+        with path.open("a", encoding="utf-8") as fh, pytest.raises(ValidationError):
+            append_snapshot(
+                fh,
+                fetched_at=datetime(2026, 5, 25, tzinfo=UTC),
+                key=bad_key,
+                payload={},
+            )
+        assert path.read_text() == ""  # nothing was written

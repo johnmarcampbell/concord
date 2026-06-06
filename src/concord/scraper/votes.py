@@ -14,7 +14,6 @@ Phase 3b adds ``scrape_senate`` alongside ``scrape_house`` here; both
 write into the same canonical ``votes`` table via the loader.
 """
 
-import json
 import logging
 import time
 from collections.abc import Callable, Iterable
@@ -24,6 +23,7 @@ from typing import IO, Any, NamedTuple
 
 from concord.api import Client
 from concord.scraper._common import (
+    append_snapshot,
     is_stub_unchanged,
     load_freshness_map,
     parse_signal_timestamp,
@@ -104,7 +104,6 @@ def scrape_house(
     storage_dir.mkdir(parents=True, exist_ok=True)
     detail_path = storage_dir / HOUSE_VOTES_JSONL_NAME
     members_path = storage_dir / HOUSE_VOTE_POSITIONS_JSONL_NAME
-    iso = fetched_at.isoformat()
     sessions_tuple = tuple(sessions)
 
     # Detail and positions refresh independently under ``skip_unchanged``
@@ -137,7 +136,7 @@ def scrape_house(
                     session=session,
                     detail_fh=detail_fh,
                     members_fh=members_fh,
-                    iso=iso,
+                    fetched_at=fetched_at,
                     remaining=remaining,
                     skip_unchanged=skip_unchanged,
                     detail_freshness=detail_freshness,
@@ -179,7 +178,7 @@ def _scrape_pair(  # noqa: PLR0913 — pair worker forwards state from scrape_ho
     session: int,
     detail_fh: IO[str],
     members_fh: IO[str],
-    iso: str,
+    fetched_at: datetime,
     remaining: int | None,
     per_vote_progress: Callable[[ScrapeProgressEvent], None] | None = None,
     skip_unchanged: bool = False,
@@ -233,7 +232,7 @@ def _scrape_pair(  # noqa: PLR0913 — pair worker forwards state from scrape_ho
             skipped += 1
             positions_skipped += 1
             continue
-        key = {
+        key: dict[str, str | int] = {
             "chamber": "house",
             "congress": congress,
             "session": session,
@@ -241,13 +240,13 @@ def _scrape_pair(  # noqa: PLR0913 — pair worker forwards state from scrape_ho
         }
         if not skip_detail:
             detail = client.get_house_vote_detail(congress, session, roll_number)
-            _append_envelope(detail_fh, iso=iso, key=key, payload=detail)
+            append_snapshot(detail_fh, fetched_at=fetched_at, key=key, payload=detail)
             written += 1
         else:
             skipped += 1
         if not skip_positions:
             if _fetch_and_write_members(
-                client, congress, session, roll_number, members_fh, iso, key
+                client, congress, session, roll_number, members_fh, fetched_at, key
             ):
                 positions_written += 1
         else:
@@ -287,25 +286,14 @@ def _parse_roll_number(stub: dict[str, Any]) -> int | None:
         return None
 
 
-def _append_envelope(
-    fh: IO[str],
-    *,
-    iso: str,
-    key: dict[str, Any],
-    payload: Any,
-) -> None:
-    fh.write(json.dumps({"fetched_at": iso, "key": key, "payload": payload}, ensure_ascii=False))
-    fh.write("\n")
-
-
 def _fetch_and_write_members(
     client: Client,
     congress: int,
     session: int,
     roll_number: int,
     fh: IO[str],
-    iso: str,
-    key: dict[str, Any],
+    fetched_at: datetime,
+    key: dict[str, str | int],
 ) -> bool:
     """Best-effort fetch + write of the members payload; returns True on success.
 
@@ -323,7 +311,7 @@ def _fetch_and_write_members(
             exc,
         )
         return False
-    _append_envelope(fh, iso=iso, key=key, payload=members)
+    append_snapshot(fh, fetched_at=fetched_at, key=key, payload=members)
     return True
 
 
@@ -356,15 +344,14 @@ def scrape_senate(  # noqa: PLR0913 — kwargs match scrape_house surface
     storage_dir.mkdir(parents=True, exist_ok=True)
     detail_path = storage_dir / SENATE_VOTES_JSONL_NAME
     roster_path = storage_dir / SENATE_ROSTER_JSONL_NAME
-    iso = fetched_at.isoformat()
     sessions_tuple = tuple(sessions)
 
     # Roster envelope — always fetched, even if --limit truncates votes.
     roster_xml = client_xml.get_current_senators_xml().decode("utf-8")
     with roster_path.open("a", encoding="utf-8") as roster_fh:
-        _append_envelope(
+        append_snapshot(
             roster_fh,
-            iso=iso,
+            fetched_at=fetched_at,
             key={"source": "senators_cfm"},
             payload=roster_xml,
         )
@@ -399,7 +386,7 @@ def scrape_senate(  # noqa: PLR0913 — kwargs match scrape_house surface
                     congress=congress,
                     session=session,
                     detail_fh=detail_fh,
-                    iso=iso,
+                    fetched_at=fetched_at,
                     remaining=None if limit is None else max(0, limit - total_written),
                     skip_unchanged=skip_unchanged,
                     known_keys=known_keys,
@@ -433,7 +420,7 @@ def _scrape_senate_pair(  # noqa: PLR0913 — pair worker forwards state from sc
     congress: int,
     session: int,
     detail_fh: IO[str],
-    iso: str,
+    fetched_at: datetime,
     remaining: int | None,
     skip_unchanged: bool,
     known_keys: set[tuple[Any, ...]],
@@ -452,9 +439,9 @@ def _scrape_senate_pair(  # noqa: PLR0913 — pair worker forwards state from sc
             continue
         detail_bytes = client_xml.get_roll_call_xml(congress, session, roll_number)
         detail_xml = detail_bytes.decode("utf-8")
-        _append_envelope(
+        append_snapshot(
             detail_fh,
-            iso=iso,
+            fetched_at=fetched_at,
             key={
                 "chamber": "senate",
                 "congress": congress,

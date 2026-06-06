@@ -13,7 +13,6 @@ envelope key," and every such skip emits a WARN log naming the source
 endpoint and the missing field.
 """
 
-import json
 import logging
 from collections.abc import Callable, Iterable
 from datetime import datetime
@@ -22,6 +21,7 @@ from typing import NamedTuple
 
 from concord.api import Client
 from concord.scraper._common import (
+    append_snapshot,
     is_stub_unchanged,
     load_freshness_map,
     parse_signal_timestamp,
@@ -71,7 +71,6 @@ def scrape(
     cost, not an HTTP call. See ADR 0015.
     """
     storage_path.parent.mkdir(parents=True, exist_ok=True)
-    iso = fetched_at.isoformat()
     freshness = (
         load_freshness_map(storage_path, ("bioguide_id", "congress")) if skip_unchanged else {}
     )
@@ -111,19 +110,18 @@ def scrape(
                 ):
                     total_skipped += 1
                     continue
-                envelope = {
-                    "fetched_at": iso,
-                    # Composite key: the same Member appears in the listing
-                    # for every Congress they served in, and the payload is
-                    # identical across those queries. Without ``congress``
-                    # in the key we'd lose track of which Congress this
-                    # snapshot represents and the loader would collapse
-                    # multi-Congress careers into a single Term row.
-                    "key": {"bioguide_id": bioguide_id, "congress": congress},
-                    "payload": payload,
-                }
-                fh.write(json.dumps(envelope, ensure_ascii=False))
-                fh.write("\n")
+                # Composite key: the same Member appears in the listing for
+                # every Congress they served in, and the payload is identical
+                # across those queries. Without ``congress`` in the key we'd
+                # lose track of which Congress this snapshot represents and the
+                # loader would collapse multi-Congress careers into a single
+                # Term row.
+                append_snapshot(
+                    fh,
+                    fetched_at=fetched_at,
+                    key={"bioguide_id": bioguide_id, "congress": congress},
+                    payload=payload,
+                )
                 written_in_congress += 1
                 total_written += 1
                 if progress is not None:

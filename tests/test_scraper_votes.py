@@ -131,7 +131,7 @@ class TestScrapeHouse:
                 sessions=(1,),
             )
         env = json.loads((tmp_path / HOUSE_VOTES_JSONL_NAME).read_text().splitlines()[0])
-        assert env["fetched_at"] == FIXED_FETCHED_AT.isoformat()
+        assert datetime.fromisoformat(env["fetched_at"]) == FIXED_FETCHED_AT
         assert env["key"] == {
             "chamber": "house",
             "congress": 119,
