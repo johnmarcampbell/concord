@@ -273,6 +273,17 @@ def scrape_proceedings_command(
     safe: already-stored articles are detected by their granule ID and
     skipped without re-fetching.
     """
+    # Gate the API key upfront so a pure config error doesn't mint a Scrape Run
+    # or bootstrap the ledger DB (ADR 0021): the proceedings scraper builds its
+    # Client internally, so without this guard the failure would surface inside
+    # the scrape seam. Mirrors `run proceedings` and the Bills/Members wiring.
+    if not os.environ.get(ENV_API_KEY):
+        typer.echo(
+            f"error: {ENV_API_KEY} is not set; required for `concord scrape proceedings`",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     start = _parse_date(from_)
     end = _parse_date(to or _today())
 
