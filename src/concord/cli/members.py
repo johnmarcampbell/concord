@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.observability import scrape_run
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_members import load as load_members
 from concord.scraper import members as members_scraper
@@ -32,41 +33,48 @@ def _run_scrape_members(
     congresses: list[int],
     storage_path: Path,
     show_progress: bool,
+    db_path: Path,
+    command: str,
     skip_unchanged: bool = False,
 ) -> int:
+    # Construct (and validate) the client BEFORE the scrape seam so a pure
+    # config error (missing API key) doesn't mint a Scrape Run or bootstrap the
+    # ledger DB — the recorder is born where the network is (ADR 0021), matching
+    # the Bills wiring.
     try:
         api_client = Client()
     except ApiError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    progress = Progress(enabled=show_progress)
-    tracker = RateTracker()
+    with scrape_run(entity="members", command=command, db_path=db_path):
+        progress = Progress(enabled=show_progress)
+        tracker = RateTracker()
 
-    def _on_progress(event: members_scraper.ScrapeProgressEvent) -> None:
-        if not progress.interactive and not event.is_congress_done:
-            return
-        tracker.update_total(event.category_total)
-        label = f"  congress {event.congress:>3}  "
-        if event.is_congress_done:
-            progress.update(label + tracker.finish(event.written_in_congress))
+        def _on_progress(event: members_scraper.ScrapeProgressEvent) -> None:
+            if not progress.interactive and not event.is_congress_done:
+                return
+            tracker.update_total(event.category_total)
+            label = f"  congress {event.congress:>3}  "
+            if event.is_congress_done:
+                progress.update(label + tracker.finish(event.written_in_congress))
+                progress.commit()
+                tracker.reset()
+            else:
+                progress.update(label + tracker.tick(event.written_in_congress))
+
+        try:
+            with api_client:
+                stats = members_scraper.scrape(
+                    client=api_client,
+                    congresses=congresses,
+                    storage_path=storage_path,
+                    fetched_at=datetime.now(UTC),
+                    progress=_on_progress if show_progress else None,
+                    skip_unchanged=skip_unchanged,
+                )
+        finally:
             progress.commit()
-            tracker.reset()
-        else:
-            progress.update(label + tracker.tick(event.written_in_congress))
-
-    try:
-        with api_client:
-            stats = members_scraper.scrape(
-                client=api_client,
-                congresses=congresses,
-                storage_path=storage_path,
-                fetched_at=datetime.now(UTC),
-                progress=_on_progress if show_progress else None,
-                skip_unchanged=skip_unchanged,
-            )
-    finally:
-        progress.commit()
 
     suffix = f" ({stats.members_skipped} skipped)" if stats.members_skipped else ""
     typer.echo(
@@ -131,6 +139,16 @@ def scrape_members_command(
         Path,
         typer.Option("--storage", help="JSONL output file. Created if missing."),
     ] = DEFAULT_MEMBERS_JSONL,
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db",
+            help=(
+                "SQLite DB for the Scrape Run ledger (ADR 0021). Stage 0 still "
+                "writes entity data only to JSONL; this DB receives telemetry only."
+            ),
+        ),
+    ] = DEFAULT_DB,
     show_progress: Annotated[
         bool,
         typer.Option(
@@ -161,6 +179,8 @@ def scrape_members_command(
         congresses=parsed,
         storage_path=storage_path,
         show_progress=show_progress,
+        db_path=db_path,
+        command="scrape members",
         skip_unchanged=skip_unchanged,
     )
 
@@ -244,6 +264,8 @@ def run_members_command(
         congresses=parsed,
         storage_path=storage_path,
         show_progress=show_progress,
+        db_path=db_path,
+        command="run members",
     )
 
     typer.echo("→ Stage 1: load", err=True)

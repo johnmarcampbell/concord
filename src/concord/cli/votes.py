@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.observability import scrape_run
 from concord.pipeline.index_votes import index as index_votes
 from concord.pipeline.load_votes import load as load_votes
 from concord.scraper import votes as votes_scraper
@@ -63,7 +64,7 @@ def _parse_chambers(raw: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _run_scrape_votes(
+def _run_scrape_votes(  # noqa: PLR0913 — one kwarg per scrape knob; +db_path/command thread the Scrape Run
     *,
     congresses: list[int],
     sessions: list[int],
@@ -71,68 +72,82 @@ def _run_scrape_votes(
     storage_dir: Path,
     limit: int | None,
     show_progress: bool,
+    db_path: Path,
+    command: str,
     skip_unchanged: bool = False,
 ) -> int:
     fetched_at = datetime.now(UTC)
-    progress = Progress(enabled=show_progress)
-    tracker = RateTracker()
 
-    def _on_progress(event: votes_scraper.ScrapeProgressEvent) -> None:
-        if not progress.interactive and not event.is_pair_done:
-            return
-        tracker.update_total(event.category_total)
-        label = f"  {event.chamber} {event.congress}/{event.session}  "
-        if event.is_pair_done:
-            progress.update(label + tracker.finish(event.votes_written))
+    # Pre-construct the House client (config, not network) BEFORE the scrape
+    # seam so a missing API key doesn't mint a Scrape Run or bootstrap the
+    # ledger DB (ADR 0021), matching the Bills/Members wiring. The Senate LIS
+    # client needs no key, so it's constructed inside the run.
+    api_client = None
+    if "house" in chambers:
+        try:
+            api_client = Client()
+        except ApiError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
+    # A single Votes scrape can span both HTTP clients — api.congress.gov for
+    # House votes and senate.gov LIS XML for Senate — so its Scrape Run carries
+    # ``api:house-vote/*`` and/or ``senate:*`` buckets depending on --chambers.
+    with scrape_run(entity="votes", command=command, db_path=db_path):
+        progress = Progress(enabled=show_progress)
+        tracker = RateTracker()
+
+        def _on_progress(event: votes_scraper.ScrapeProgressEvent) -> None:
+            if not progress.interactive and not event.is_pair_done:
+                return
+            tracker.update_total(event.category_total)
+            label = f"  {event.chamber} {event.congress}/{event.session}  "
+            if event.is_pair_done:
+                progress.update(label + tracker.finish(event.votes_written))
+                progress.commit()
+                tracker.reset()
+            else:
+                progress.update(label + tracker.tick(event.votes_written))
+
+        total_votes = 0
+        total_positions = 0
+        total_skipped = 0
+        total_positions_skipped = 0
+
+        try:
+            if api_client is not None:
+                with api_client:
+                    stats = votes_scraper.scrape_house(
+                        client=api_client,
+                        congresses=congresses,
+                        storage_dir=storage_dir,
+                        fetched_at=fetched_at,
+                        sessions=tuple(sessions),
+                        limit=limit,
+                        progress=_on_progress if show_progress else None,
+                        skip_unchanged=skip_unchanged,
+                    )
+                total_votes += stats.votes_written
+                total_positions += stats.positions_written
+                total_skipped += stats.votes_skipped
+                total_positions_skipped += stats.positions_skipped
+
+            if "senate" in chambers:
+                with SenateClient() as senate_client:
+                    stats = votes_scraper.scrape_senate(
+                        client_xml=senate_client,
+                        congresses=congresses,
+                        storage_dir=storage_dir,
+                        fetched_at=fetched_at,
+                        sessions=tuple(sessions),
+                        limit=limit,
+                        progress=_on_progress if show_progress else None,
+                        skip_unchanged=skip_unchanged,
+                    )
+                total_votes += stats.votes_written
+                total_skipped += stats.votes_skipped
+        finally:
             progress.commit()
-            tracker.reset()
-        else:
-            progress.update(label + tracker.tick(event.votes_written))
-
-    total_votes = 0
-    total_positions = 0
-    total_skipped = 0
-    total_positions_skipped = 0
-
-    try:
-        if "house" in chambers:
-            try:
-                api_client = Client()
-            except ApiError as exc:
-                typer.echo(f"error: {exc}", err=True)
-                raise typer.Exit(code=2) from exc
-            with api_client:
-                stats = votes_scraper.scrape_house(
-                    client=api_client,
-                    congresses=congresses,
-                    storage_dir=storage_dir,
-                    fetched_at=fetched_at,
-                    sessions=tuple(sessions),
-                    limit=limit,
-                    progress=_on_progress if show_progress else None,
-                    skip_unchanged=skip_unchanged,
-                )
-            total_votes += stats.votes_written
-            total_positions += stats.positions_written
-            total_skipped += stats.votes_skipped
-            total_positions_skipped += stats.positions_skipped
-
-        if "senate" in chambers:
-            with SenateClient() as senate_client:
-                stats = votes_scraper.scrape_senate(
-                    client_xml=senate_client,
-                    congresses=congresses,
-                    storage_dir=storage_dir,
-                    fetched_at=fetched_at,
-                    sessions=tuple(sessions),
-                    limit=limit,
-                    progress=_on_progress if show_progress else None,
-                    skip_unchanged=skip_unchanged,
-                )
-            total_votes += stats.votes_written
-            total_skipped += stats.votes_skipped
-    finally:
-        progress.commit()
 
     skip_suffix = ""
     if total_skipped or total_positions_skipped:
@@ -226,6 +241,16 @@ def scrape_votes_command(
             help="Directory holding house_votes.jsonl + senate_votes.jsonl + sidecar files.",
         ),
     ] = DEFAULT_VOTES_STORAGE_DIR,
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db",
+            help=(
+                "SQLite DB for the Scrape Run ledger (ADR 0021). Stage 0 still "
+                "writes entity data only to JSONL; this DB receives telemetry only."
+            ),
+        ),
+    ] = DEFAULT_DB,
     limit: Annotated[
         int | None,
         typer.Option(
@@ -263,6 +288,8 @@ def scrape_votes_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        db_path=db_path,
+        command="scrape votes",
         skip_unchanged=skip_unchanged,
     )
 
@@ -373,6 +400,8 @@ def run_votes_command(
         storage_dir=storage_dir,
         limit=limit,
         show_progress=show_progress,
+        db_path=db_path,
+        command="run votes",
     )
 
     typer.echo("→ Stage 1: load", err=True)

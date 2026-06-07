@@ -95,9 +95,9 @@ _UNMATCHED_SUFFIX = ":unmatched"
 # routes must precede their prefixes (``…/articles`` before the list,
 # ``bill/{sub}`` before ``bill/detail`` before ``bill/list``).
 #
-# PR 1 (this slice) populates only ``"api"``; PR 2 adds ``"text"`` and
-# ``"senate"`` keys here and instruments their clients — the public shape
-# of this table is part of the contract those edits build on.
+# ``"api"`` covers api.congress.gov paths; ``"text"`` and ``"senate"`` cover
+# the full congress.gov / senate.gov URLs their clients fetch. The public
+# shape of this table is part of the recorder's contract.
 _ROUTES: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
     "api": (
         (
@@ -112,6 +112,25 @@ _ROUTES: dict[str, tuple[tuple[re.Pattern[str], str], ...]] = {
         (re.compile(r"^/?house-vote/\d+/\d+/\d+/members/?$"), "api:house-vote/members"),
         (re.compile(r"^/?house-vote/\d+/\d+/\d+/?$"), "api:house-vote/detail"),
         (re.compile(r"^/?house-vote/\d+/\d+/?$"), "api:house-vote/list"),
+    ),
+    # text.py fetches full congress.gov URLs (not api.congress.gov paths), so
+    # these routes match on the whole URL. The Congressional Record article
+    # tier serves one ``…/modified/CREC-*.htm`` shape — effectively the only
+    # endpoint — so a single ``text:article`` bucket suffices (ADR 0021).
+    "text": (
+        (
+            re.compile(r"^https?://(?:www\.)?congress\.gov/.+/modified/.+\.htm$"),
+            "text:article",
+        ),
+    ),
+    # senate_xml.py also fetches full URLs. The three LIS feeds map to three
+    # buckets keyed on their stable path shapes (see MENU_URL/DETAIL_URL/
+    # ROSTER_URL in senate_xml.py); concrete (congress, session, roll) values
+    # never enter the bucket, preserving aggregation.
+    "senate": (
+        (re.compile(r"^https?://.+/roll_call_lists/vote_menu_\d+_\d+\.xml$"), "senate:menu"),
+        (re.compile(r"^https?://.+/roll_call_votes/.+\.xml$"), "senate:detail"),
+        (re.compile(r"^https?://.+/senators_cfm\.xml$"), "senate:roster"),
     ),
 }
 
