@@ -1,6 +1,6 @@
 # 0018 — Pydantic validation at the load boundary
 
-**Status**: Proposed, 2026-05-29.
+**Status**: Accepted, 2026-05-29; amended 2026-06-06 (Rule 5 — scraper envelope serialization).
 
 ## Context
 
@@ -25,7 +25,7 @@ The rule for *what a model is, where it lives, what its constructor looks like, 
 
 ## Decision
 
-Four rules and a vocabulary.
+Five rules and a vocabulary.
 
 ### Rule 1 — Validation lives at the JSONL read boundary
 
@@ -79,10 +79,10 @@ The Senate vote wire shapes do need renames. The current `ParsedVoteDetail` and 
 The ADR 0006 envelope is implemented as a Pydantic generic:
 
 ```python
-class Snapshot(BaseModel, Generic[T]):
+class Snapshot[PayloadT](BaseModel):
     fetched_at: datetime
-    key: dict[str, Any]
-    payload: T
+    key: dict[str, str | int]
+    payload: PayloadT
 ```
 
 Loaders read JSONL via `Snapshot[BillDetail]`, `Snapshot[Cosponsor]`, `Snapshot[Member]`, etc. The existing `MemberSnapshot`, `BillSnapshot`, `VoteSnapshot`, and `VotePositionsSnapshot` classes are deleted, not aliased — `Snapshot[BillDetail]` carries its payload type at the import site, where an alias would silently bind one of six possible sub-endpoint snapshots to a single ambiguous name (`BillSnapshot`). The word "envelope" stays in prose to describe the on-disk shape; the class is `Snapshot[T]`.
@@ -105,6 +105,16 @@ logger.warning(
 ```
 
 WARN, not INFO: the cause is an upstream contract violation, and routine occurrence is signal a maintainer should notice.
+
+### Rule 5 — Scrapers serialize the envelope (not the payload) through `Snapshot`
+
+Scrapers construct and serialize the ADR 0006 envelope via `Snapshot[Any](...).model_dump_json()` through the shared `append_snapshot` helper in `scraper/_common.py`. The payload is typed `Any` (the generic is instantiated as `Snapshot[Any]`), so the payload *object* is passed through unchanged and never schema-validated — **Rule 1's payload contract is unchanged** (its JSON *rendering* follows Pydantic's encoder; see the value-level differences in consequences below). This makes `Snapshot` the single source of truth for the envelope shape on the write (scraper) and **loader** read sides, replacing the hand-rolled `json.dumps` that previously diverged across three scraper modules. (The scraper-side freshness scanners `load_freshness_map` / `load_bill_signal_map` deliberately stay on raw `json.loads` — they read only `key`/`fetched_at`, run on the hot path, and need softer per-line failure semantics; see that module's docstring.)
+
+The `concord.models` import is confined to `scraper/_common.py`; entity scraper modules call `append_snapshot` and stay model-free. Three consequences are accepted:
+
+1. A malformed envelope `key` (a non-`str | int` value) now raises `ValidationError` at scrape time rather than serializing silently — a fail-fast that never fires on current paths, since the scraper skip rule above already guarantees a well-formed scalar key by envelope-build time.
+2. `model_dump_json()` emits compact JSON and renders `fetched_at` as `…Z` rather than the `…+00:00` the previous `datetime.isoformat()` produced. Both are ISO-8601 UTC for the same instant and round-trip through `Snapshot[...].model_validate_json` and `datetime.fromisoformat`, so existing JSONL and freshness maps load unchanged; data files may carry a mix of both renderings across appends, which is harmless — mutable-entity JSONL has no byte-reproducibility contract (unlike `runs.jsonl`, [ADR 0019](./0019-mirror-tables-vs-record-tables.md)).
+3. Non-finite floats (`NaN`, `Infinity`, `-Infinity`) in a payload are rendered as JSON `null`, where the previous `json.dumps` (default `allow_nan=True`) emitted the bare `NaN`/`Infinity` tokens. This is lossy, but accepted: the upstream sources (api.congress.gov JSON, decoded Senate XML strings) never emit non-finite floats, so no scraper payload contains one; and unlike the old tokens — which are not strict-valid JSON — the `null` output keeps every line strict-JSON-parseable.
 
 ## Consequences
 

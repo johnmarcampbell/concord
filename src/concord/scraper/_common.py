@@ -1,12 +1,18 @@
-"""Shared helpers for staleness-aware re-scrape (ADR 0015).
+"""Shared scraper helpers — ADR 0006 snapshot-envelope read/write mechanics.
 
 This is a thin utility module — *not* a base class. Per
 [ADR 0007](../../../docs/adr/0007-parallel-pipelines-per-entity.md), each
 entity's scraper stays a standalone module; the helpers here only encode
-the JSONL freshness-map mechanics that every entity needs identically.
+the snapshot-envelope mechanics that every entity needs identically — both
+the *write* side (serialize one envelope line) and the ADR 0015 freshness-map
+*read* side (decide whether a record is already fresh enough to skip).
 
-The three exports are:
+The exports are:
 
+* :func:`append_snapshot` — serialize one ADR 0006 ``{fetched_at, key,
+  payload}`` envelope line through :class:`~concord.models.Snapshot`, the
+  same model the loaders parse with. Confining the ``concord.models`` import
+  to this module keeps the entity scrapers model-free (ADR 0018 Rule 5).
 * :func:`load_freshness_map` — read a JSONL file once and return
   ``{key_tuple: latest fetched_at}``.
 * :func:`parse_signal_timestamp` — parse the per-record ``updateDate``
@@ -15,15 +21,49 @@ The three exports are:
 * :func:`load_bill_signal_map` — Bills-specific helper that reads
   ``bills.jsonl`` and returns ``{key: max(updateDate, updateDateIncludingText)}``
   off each line's ``payload``; used to gate enrichment fetches.
+
+Note the deliberate asymmetry: :func:`append_snapshot` serializes through
+:class:`~concord.models.Snapshot`, but :func:`load_freshness_map` and
+:func:`load_bill_signal_map` parse the same envelope with raw ``json.loads``,
+*not* ``Snapshot``. That is intentional — these scanners read only ``key`` and
+``fetched_at`` (never ``payload``), run on the hot scrape path over files up to
+tens of thousands of lines, and need a softer per-line failure mode (warn-and-skip
+a malformed line, treat the record as stale) than ``Snapshot.model_validate_json``'s
+fail-fast. ``Snapshot`` is the single envelope vocabulary for the *write* (scraper)
+and *load* (Stage 1 loader, ADR 0018) sides; these freshness scanners are a third,
+intentionally lightweight reader. Don't "unify" them onto ``Snapshot`` — it would
+force eager full-payload validation on the hot path for no benefit.
 """
 
 import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
+
+from concord.models import Snapshot
 
 _log = logging.getLogger("concord.scraper._common")
+
+
+def append_snapshot(
+    fh: IO[str],
+    *,
+    fetched_at: datetime,
+    key: dict[str, str | int],
+    payload: Any,
+) -> None:
+    """Append one ADR 0006 snapshot envelope line to an open handle.
+
+    Serializes through :class:`~concord.models.Snapshot` so the envelope
+    shape is single-sourced across the scraper (write) and loader (read)
+    sides. ``payload`` is left as ``Any`` — written verbatim, never
+    schema-validated (ADR 0018 Rule 1). A ``key`` value that is not
+    ``str | int`` raises ``pydantic.ValidationError`` here rather than
+    serializing a malformed envelope silently (ADR 0018 Rule 5).
+    """
+    line = Snapshot[Any](fetched_at=fetched_at, key=key, payload=payload).model_dump_json()
+    fh.write(line + "\n")
 
 
 def _coerce_utc(dt: datetime) -> datetime:
@@ -168,6 +208,7 @@ def load_bill_signal_map(
 
 
 __all__ = [
+    "append_snapshot",
     "is_stub_unchanged",
     "load_bill_signal_map",
     "load_freshness_map",

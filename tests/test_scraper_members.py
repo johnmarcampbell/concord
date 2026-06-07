@@ -65,7 +65,7 @@ class TestScrape:
         lines = out.read_text().splitlines()
         assert len(lines) == 1
         envelope = json.loads(lines[0])
-        assert envelope["fetched_at"] == FIXED_FETCHED_AT.isoformat()
+        assert datetime.fromisoformat(envelope["fetched_at"]) == FIXED_FETCHED_AT
         assert envelope["key"] == {"bioguide_id": "O000172", "congress": 119}
         assert envelope["payload"]["bioguideId"] == "O000172"
 

@@ -85,7 +85,7 @@ class TestScrapeBasic:
         lines = out.read_text().splitlines()
         assert len(lines) == 2
         envelopes = [json.loads(line) for line in lines]
-        assert envelopes[0]["fetched_at"] == FIXED_FETCHED_AT.isoformat()
+        assert datetime.fromisoformat(envelopes[0]["fetched_at"]) == FIXED_FETCHED_AT
         # bill_type in key is lowercased.
         assert envelopes[0]["key"] == {"congress": 119, "bill_type": "hr", "bill_number": 1}
         assert envelopes[1]["key"]["bill_number"] == 22
@@ -252,7 +252,7 @@ class TestScrapeEnrichment:
             assert len(lines) == 1
             env = json.loads(lines[0])
             assert env["key"] == {"congress": 119, "bill_type": "hr", "bill_number": 1}
-            assert env["fetched_at"] == FIXED_FETCHED_AT.isoformat()
+            assert datetime.fromisoformat(env["fetched_at"]) == FIXED_FETCHED_AT
 
     def test_sections_subset_only_writes_listed_files(self, tmp_path: Path) -> None:
         client = _enrichment_client()

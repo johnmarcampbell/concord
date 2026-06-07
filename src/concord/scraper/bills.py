@@ -13,15 +13,15 @@ identity record per Bill plus the five tier-2 enrichment streams:
    per ADR 0009.
 """
 
-import json
 import logging
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import IO, Any, NamedTuple
 
 from concord.api import Client
 from concord.scraper._common import (
+    append_snapshot,
     is_stub_unchanged,
     load_freshness_map,
     parse_signal_timestamp,
@@ -114,8 +114,8 @@ def _scrape_basic_pair(  # noqa: PLR0913 — per-pair worker, all kwargs are sta
     client: Client,
     congress: int,
     bt: str,
-    fh: Any,
-    iso: str,
+    fh: IO[str],
+    fetched_at: datetime,
     remaining: float,
     skip_unchanged: bool,
     freshness: dict[tuple[Any, ...], datetime],
@@ -156,17 +156,16 @@ def _scrape_basic_pair(  # noqa: PLR0913 — per-pair worker, all kwargs are sta
             pair_skipped += 1
             continue
         detail = client.get_bill_detail(congress, bt, bill_number)
-        envelope = {
-            "fetched_at": iso,
-            "key": {
+        append_snapshot(
+            fh,
+            fetched_at=fetched_at,
+            key={
                 "congress": congress,
                 "bill_type": bt,
                 "bill_number": bill_number,
             },
-            "payload": detail,
-        }
-        fh.write(json.dumps(envelope, ensure_ascii=False))
-        fh.write("\n")
+            payload=detail,
+        )
         pair_written += 1
         if progress is not None:
             progress(
@@ -227,7 +226,6 @@ def scrape_basic(
     """
     storage_dir.mkdir(parents=True, exist_ok=True)
     out_path = storage_dir / BILLS_JSONL_NAME
-    iso = fetched_at.isoformat()
 
     types = tuple(bill_types) if bill_types is not None else DEFAULT_BILL_TYPES
     _limit: float = float("inf") if limit is None else limit
@@ -255,7 +253,7 @@ def scrape_basic(
                     congress=congress,
                     bt=bill_type.lower(),
                     fh=fh,
-                    iso=iso,
+                    fetched_at=fetched_at,
                     remaining=remaining,
                     skip_unchanged=skip_unchanged,
                     freshness=freshness,
@@ -316,8 +314,8 @@ def _enrich_one_bill(
     client: Client,
     bill_key: tuple[int, str, int],
     requested_sections: tuple[str, ...],
-    handles: dict[str, Any],
-    iso: str,
+    handles: dict[str, IO[str]],
+    fetched_at: datetime,
     skip_unchanged: bool,
     section_freshness: dict[str, dict[tuple[Any, ...], datetime]],
     signal: datetime | None,
@@ -353,17 +351,16 @@ def _enrich_one_bill(
             partial.append(section)
             failures += 1
             continue
-        envelope = {
-            "fetched_at": iso,
-            "key": {
+        append_snapshot(
+            handles[section],
+            fetched_at=fetched_at,
+            key={
                 "congress": congress,
                 "bill_type": bt,
                 "bill_number": bill_number,
             },
-            "payload": payload,
-        }
-        handles[section].write(json.dumps(envelope, ensure_ascii=False))
-        handles[section].write("\n")
+            payload=payload,
+        )
         written += 1
     return _BillEnrichResult(
         written=written, failures=failures, skipped=skipped, partial=tuple(partial)
@@ -405,7 +402,6 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
                 f"expected one of {', '.join(BILL_ENRICHMENT_SECTIONS)}"
             )
 
-    iso = fetched_at.isoformat()
     # Per-section freshness maps gate which sub-endpoint fetches we
     # skip when ``skip_unchanged`` is set (ADR 0015). Each section can
     # refresh independently — see ADR 0009.
@@ -419,7 +415,7 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
 
     # Open every requested section's file once; the per-bill loop writes
     # to whichever it just fetched.
-    handles: dict[str, Any] = {}
+    handles: dict[str, IO[str]] = {}
     try:
         for section in requested_sections:
             handles[section] = (storage_dir / enrichment_jsonl_name(section)).open(
@@ -444,7 +440,7 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
                 bill_key=bill_key,
                 requested_sections=requested_sections,
                 handles=handles,
-                iso=iso,
+                fetched_at=fetched_at,
                 skip_unchanged=skip_unchanged,
                 section_freshness=section_freshness,
                 signal=signal,
