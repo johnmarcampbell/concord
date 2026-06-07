@@ -51,6 +51,8 @@ from concord.api import (
     HTTP_SERVER_ERROR_MIN,
     HTTP_TOO_MANY_REQUESTS,
 )
+from concord.models import Attempt
+from concord.observability import Recorder, active_recorder
 
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential
 #: schedule and Retry-After values so a server-suggested 1-hour wait can't
@@ -216,6 +218,11 @@ def fetch_text(
     extractor.feed(response.text)
     text = extractor.text
     if not text:
+        # The HTTP fetch succeeded (counted above) but the body has no <pre>
+        # block — a structural failure distinct from any network error. Record
+        # it so "page fetched but unparseable" is visible in the Scrape Run,
+        # not silently dropped (ADR 0021). status_code is None for this class.
+        _record_structural_failure(active_recorder(), url)
         raise TextFetchError(f"no <pre> content found at {url}")
     return text
 
@@ -226,6 +233,15 @@ def _get_with_retry(
     throttle: AdaptiveThrottle,
     sleep: Callable[[float], None],
 ) -> httpx.Response:
+    # Observability (ADR 0021): mirror api.py's chokepoint. ``attempts``
+    # accumulates every non-success try — transport failure, 403/429 throttle
+    # (recorded as errors even though we retry them indefinitely), 5xx — so a
+    # resolved-on-retry fetch can report what it weathered. ``rec`` is None
+    # outside an active scrape, making the recording a no-op. Retry *behavior*
+    # is unchanged.
+    rec = active_recorder()
+    attempts: list[Attempt] = []
+
     # Proactively wait out any backoff carried over from earlier URLs before the
     # first attempt — congress.gov rate-limits per client, so hammering the next
     # URL immediately after a throttle just re-trips the limit.
@@ -235,7 +251,9 @@ def _get_with_retry(
         try:
             response = client.get(url, follow_redirects=True)
         except httpx.HTTPError as exc:
+            _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
             if transient_attempts >= MAX_5XX_RETRIES:
+                _record_failure(rec, url, attempts)
                 raise TextFetchError(
                     f"transport error fetching {url} "
                     f"(gave up after {MAX_5XX_RETRIES} attempts): {exc}"
@@ -254,6 +272,7 @@ def _get_with_retry(
             # Escalate the shared throttle and retry indefinitely. Throttle waits
             # do not increment transient_attempts — being blocked is a wait
             # condition, not a fault, and must not burn the 5xx budget.
+            _note_attempt(attempts, status=status, message=response.reason_phrase)
             delay = throttle.penalize(_retry_after_seconds(response))
             _log.warning(
                 "%d from %s (rate-limited?); backing off %.1fs before retry (level %d)",
@@ -265,7 +284,9 @@ def _get_with_retry(
             continue
 
         if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
+            _note_attempt(attempts, status=status, message=response.reason_phrase)
             if transient_attempts >= MAX_5XX_RETRIES:
+                _record_failure(rec, url, attempts)
                 raise TextFetchError(
                     f"{status} {response.reason_phrase} fetching {url} "
                     f"(gave up after {MAX_5XX_RETRIES} attempts)",
@@ -285,13 +306,76 @@ def _get_with_retry(
             continue
 
         if not response.is_success:
+            _note_attempt(attempts, status=status, message=response.reason_phrase)
+            _record_failure(rec, url, attempts)
             raise TextFetchError(
                 f"{status} {response.reason_phrase} fetching {url}",
                 status_code=status,
             )
 
         throttle.recover()
+        _record_success(rec, url, attempts)
         return response
+
+
+# -- observability helpers --------------------------------------------------
+#
+# Module-level (rather than inline blocks) so each recording stays one
+# statement in the retry loop, which is already at the project's complexity
+# ceiling. Source bucket is always ``"text"`` — the route table maps the full
+# URL to ``text:article``.
+
+#: Synthetic ``transport_class`` marker for the "fetched but no <pre> block"
+#: structural failure, which has no HTTP status of its own (the fetch was a 200).
+_NO_PRE_MARKER = "NoPreContent"
+
+
+def _note_attempt(
+    attempts: list[Attempt],
+    *,
+    status: int | None = None,
+    transport_class: str | None = None,
+    message: str,
+) -> None:
+    """Append one non-success :class:`Attempt`; ``n`` derives from list position."""
+    attempts.append(
+        Attempt(
+            n=len(attempts) + 1,
+            status=status,
+            transport_class=transport_class,
+            message=message,
+        )
+    )
+
+
+def _record_success(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
+    """Record a successful text fetch, plus a resolved Run Event if it retried."""
+    if rec is None:
+        return
+    rec.note_success("text", url)
+    if attempts:
+        rec.note_request_outcome("text", url, attempts, resolved=True)
+
+
+def _record_failure(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
+    """Record a terminal text fetch failure as a failed Run Event (no-op without a recorder)."""
+    if rec is not None:
+        rec.note_request_outcome("text", url, attempts, resolved=False)
+
+
+def _record_structural_failure(rec: Recorder | None, url: str) -> None:
+    """Record the HTTP-200-but-no-<pre> structural failure as a failed Run Event.
+
+    Distinct from the network failures above: the fetch succeeded (and was
+    counted as a success) but the body was unparseable. A single synthetic
+    attempt carries the :data:`_NO_PRE_MARKER` so the cause is legible.
+    """
+    if rec is None:
+        return
+    attempts = [
+        Attempt(n=1, status=None, transport_class=_NO_PRE_MARKER, message="no <pre> content")
+    ]
+    rec.note_request_outcome("text", url, attempts, resolved=False)
 
 
 def _backoff_seconds(attempt: int) -> float:

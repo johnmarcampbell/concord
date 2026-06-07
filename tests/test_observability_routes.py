@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from concord.observability import Recorder, normalize
+from concord.senate_xml import DETAIL_URL, MENU_URL, ROSTER_URL
 
 
 class TestNormalize:
@@ -56,6 +57,38 @@ class TestNormalize:
     def test_unknown_source_is_unmatched(self) -> None:
         assert normalize("text", "/anything") == ("text:unmatched", False)
         assert normalize("senate", "/anything") == ("senate:unmatched", False)
+
+    def test_congress_gov_article_url_maps_to_text_article(self) -> None:
+        url = (
+            "https://www.congress.gov/119/crec/2026/05/22/172/88/"
+            "modified/CREC-2026-05-22-pt1-PgD551-6.htm"
+        )
+        assert normalize("text", url) == ("text:article", True)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # a congress.gov URL that isn't an article-text page (no /modified/.htm)
+            "https://www.congress.gov/bill/119/hr/1234",
+            # the PDF sibling of an article, not the formatted-text .htm
+            "https://www.congress.gov/119/crec/2026/05/22/172/88/CREC-2026-05-22-pt1-PgD551-6.pdf",
+        ],
+    )
+    def test_unknown_congress_gov_text_url_is_unmatched(self, url: str) -> None:
+        assert normalize("text", url) == ("text:unmatched", False)
+
+    def test_senate_menu_detail_roster_urls_map_to_buckets(self) -> None:
+        menu = MENU_URL.format(congress=119, session=1)
+        detail = DETAIL_URL.format(congress=119, session=1, roll5=f"{42:05d}")
+        assert normalize("senate", menu) == ("senate:menu", True)
+        assert normalize("senate", detail) == ("senate:detail", True)
+        assert normalize("senate", ROSTER_URL) == ("senate:roster", True)
+
+    def test_unknown_senate_gov_url_is_unmatched(self) -> None:
+        assert normalize("senate", "https://www.senate.gov/something/else.html") == (
+            "senate:unmatched",
+            False,
+        )
 
 
 class TestUnmatchedSampling:

@@ -14,6 +14,7 @@ from concord.api import ENV_API_KEY
 from concord.chunking import Chunker
 from concord.embedding import Embedder
 from concord.models import Proceeding
+from concord.observability import scrape_run
 from concord.pipeline.index_proceedings import IndexResult, index
 from concord.pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
 from concord.pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
@@ -48,12 +49,18 @@ def _run_scrape_proceedings(
     storage_label: str,
     limit: int | None,
     show_progress: bool,
+    db_path: Path,
+    command: str,
 ) -> None:
-    """Wrap :func:`_run_pull` with a :class:`Progress` display.
+    """Wrap :func:`_run_pull` with a :class:`Progress` display and Scrape Run.
 
     Matches the ``_run_scrape_*`` pattern used by every other entity module:
     the CLI layer owns the ``Progress`` instance and passes a callback down
     to the scraper, keeping ``scraper.proceedings`` free of any CLI imports.
+
+    A single Proceedings scrape spans two HTTP clients — api.congress.gov for
+    issue/article metadata and congress.gov for article text — so its Scrape
+    Run (ADR 0021) carries both ``api:*`` and ``text:*`` buckets.
     """
     progress = Progress(enabled=show_progress)
 
@@ -69,17 +76,18 @@ def _run_scrape_proceedings(
             f"{event.total_failed})"
         )
 
-    try:
-        _run_pull(
-            start=start,
-            end=end,
-            storage=storage,
-            storage_label=storage_label,
-            limit=limit,
-            progress=_on_progress if show_progress else None,
-        )
-    finally:
-        progress.commit()
+    with scrape_run(entity="proceedings", command=command, db_path=db_path):
+        try:
+            _run_pull(
+                start=start,
+                end=end,
+                storage=storage,
+                storage_label=storage_label,
+                limit=limit,
+                progress=_on_progress if show_progress else None,
+            )
+        finally:
+            progress.commit()
 
 
 def _run_load(
@@ -237,6 +245,16 @@ def scrape_proceedings_command(
         Path,
         typer.Option("--storage", help="JSONL output file. Created if missing."),
     ] = DEFAULT_JSONL,
+    db_path: Annotated[
+        Path,
+        typer.Option(
+            "--db",
+            help=(
+                "SQLite DB for the Scrape Run ledger (ADR 0021). Stage 0 still "
+                "writes entity data only to JSONL; this DB receives telemetry only."
+            ),
+        ),
+    ] = DEFAULT_DB,
     limit: Annotated[
         int | None,
         typer.Option("--limit", help="Maximum number of new proceedings to write."),
@@ -255,6 +273,17 @@ def scrape_proceedings_command(
     safe: already-stored articles are detected by their granule ID and
     skipped without re-fetching.
     """
+    # Gate the API key upfront so a pure config error doesn't mint a Scrape Run
+    # or bootstrap the ledger DB (ADR 0021): the proceedings scraper builds its
+    # Client internally, so without this guard the failure would surface inside
+    # the scrape seam. Mirrors `run proceedings` and the Bills/Members wiring.
+    if not os.environ.get(ENV_API_KEY):
+        typer.echo(
+            f"error: {ENV_API_KEY} is not set; required for `concord scrape proceedings`",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     start = _parse_date(from_)
     end = _parse_date(to or _today())
 
@@ -265,6 +294,8 @@ def scrape_proceedings_command(
         storage_label=str(storage_path),
         limit=limit,
         show_progress=show_progress,
+        db_path=db_path,
+        command="scrape proceedings",
     )
 
 
@@ -401,6 +432,8 @@ def run_proceedings_command(
         storage_label=str(storage_path),
         limit=limit,
         show_progress=show_progress,
+        db_path=db_path,
+        command="run proceedings",
     )
 
     typer.echo("→ Stage 1: load", err=True)
