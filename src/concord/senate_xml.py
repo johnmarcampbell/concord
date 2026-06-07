@@ -27,20 +27,12 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from types import TracebackType
-from typing import TYPE_CHECKING
 
 import httpx
 
 from . import __version__
 from .models import Attempt
-
-if TYPE_CHECKING:
-    # Import-time only. ``concord.models.votes`` imports this module, and
-    # ``observability`` imports ``concord.models`` — so a top-level
-    # ``from .observability import Recorder`` would close a
-    # models<->senate_xml<->observability cycle. ``active_recorder`` is imported
-    # lazily inside ``_get_xml`` for the same reason; the type is annotation-only.
-    from .observability import Recorder
+from .observability import Recorder, active_recorder
 
 _log = logging.getLogger("concord.senate_xml")
 
@@ -159,10 +151,7 @@ class SenateClient:
         # accumulates every non-success try (transport failure, 5xx, the
         # non-200/HTML-trap terminal cases) so a resolved-on-retry fetch can
         # report what it weathered. ``rec`` is None outside an active scrape,
-        # making the recording a no-op. Retry *behavior* is unchanged. The
-        # import is lazy to avoid the models<->senate_xml<->observability cycle.
-        from .observability import active_recorder  # noqa: PLC0415 - breaks an import cycle
-
+        # making the recording a no-op. Retry *behavior* is unchanged.
         rec = active_recorder()
         attempts: list[Attempt] = []
 
@@ -251,7 +240,7 @@ def _note_attempt(
     )
 
 
-def _record_success(rec: "Recorder | None", url: str, attempts: list[Attempt]) -> None:
+def _record_success(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
     """Record a successful XML fetch, plus a resolved Run Event if it retried."""
     if rec is None:
         return
@@ -260,17 +249,25 @@ def _record_success(rec: "Recorder | None", url: str, attempts: list[Attempt]) -
         rec.note_request_outcome("senate", url, attempts, resolved=True)
 
 
-def _record_failure(rec: "Recorder | None", url: str, attempts: list[Attempt]) -> None:
+def _record_failure(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
     """Record a terminal XML fetch failure as a failed Run Event (no-op without a recorder)."""
     if rec is not None:
         rec.note_request_outcome("senate", url, attempts, resolved=False)
 
 
-def _record_html_trap(rec: "Recorder | None", url: str, attempts: list[Attempt]) -> None:
+def _record_html_trap(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
     """Record the HTML-as-200 trap as a failed Run Event.
 
     The HTTP status was 200, so a synthetic attempt carrying status 200 and the
     :data:`_HTML_TRAP_MARKER` makes the "looked OK, was an HTML 404" cause legible.
+
+    Note the deliberate asymmetry with ``text.py``'s "no <pre>" structural
+    failure: there the HTTP request is a genuine success (counted) *and* a
+    separate failed event records the unparseable body, because the content
+    check happens after the chokepoint returns. Here the content check lives
+    inside the chokepoint, so the trap is recorded as a failure *only* — never a
+    success. Both are correct given where each parse check sits; the success
+    counts mean "successful network requests", and an HTML 404 is not one.
     """
     if rec is None:
         return

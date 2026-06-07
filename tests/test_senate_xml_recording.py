@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from concord.observability import Recorder, _recorder
-from concord.senate_xml import SenateClient, SenateXmlError
+from concord.senate_xml import _HTML_TRAP_MARKER, SenateClient, SenateXmlError
 
 #: Minimal well-formed XML that the roster/menu parsers accept (empty result).
 _XML_BODY = b"<doc></doc>"
@@ -153,4 +153,4 @@ class TestHtmlTrapRecording:
         assert event.final_status == "failed"
         attempt = event.attempts[-1]
         assert attempt.status == 200
-        assert attempt.message == "html-not-xml"
+        assert attempt.message == _HTML_TRAP_MARKER

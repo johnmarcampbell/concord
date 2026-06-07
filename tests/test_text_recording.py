@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 from concord.observability import Recorder, _recorder
-from concord.text import AdaptiveThrottle, TextFetchError, fetch_text
+from concord.text import _NO_PRE_MARKER, AdaptiveThrottle, TextFetchError, fetch_text
 
 SAMPLE_URL = (
     "https://www.congress.gov/119/crec/2026/05/22/172/88/modified/CREC-2026-05-22-pt1-PgD551-6.htm"
@@ -161,4 +161,4 @@ class TestStructuralFailureRecording:
         assert event.final_status == "failed"
         attempt = event.attempts[0]
         assert attempt.status is None
-        assert attempt.transport_class == "NoPreContent"
+        assert attempt.transport_class == _NO_PRE_MARKER
