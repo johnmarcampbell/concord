@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from concord.api import Client
+from concord.errors import SenateXmlError
 from concord.scraper.votes import (
     HOUSE_VOTE_POSITIONS_JSONL_NAME,
     HOUSE_VOTES_JSONL_NAME,
@@ -18,7 +19,7 @@ from concord.scraper.votes import (
     scrape_house,
     scrape_senate,
 )
-from concord.senate_xml import SenateClient, SenateXmlError
+from concord.senate_xml import SenateClient
 
 FIXED_FETCHED_AT = datetime(2026, 5, 26, 14, 2, 11, tzinfo=UTC)
 VOTES_DIR = Path(__file__).parent / "fixtures" / "api" / "votes"
