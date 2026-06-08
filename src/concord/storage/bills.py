@@ -22,6 +22,7 @@ from concord.models.bills import (
     BillSummary,
     BillTitle,
 )
+from concord.storage._ddl import rebuild_table_add_not_null
 from concord.storage._sql import insert_sql, upsert_sql
 
 BILLS_SCHEMA = """
@@ -74,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_bills_congress
 CREATE TABLE IF NOT EXISTS bill_cosponsors (
     bill_id                     TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
     bioguide_id                 TEXT NOT NULL,
-    sponsorship_date            TEXT,
+    sponsorship_date            TEXT NOT NULL,
     sponsorship_withdrawn_date  TEXT,
     is_original_cosponsor       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (bill_id, bioguide_id)
@@ -87,8 +88,8 @@ CREATE TABLE IF NOT EXISTS bill_actions (
     ord            INTEGER NOT NULL,
     action_date    TEXT NOT NULL,
     action_text    TEXT NOT NULL,
-    action_code    TEXT,
-    source_system  TEXT,
+    action_code    TEXT NOT NULL,
+    source_system  TEXT NOT NULL,
     PRIMARY KEY (bill_id, ord)
 );
 CREATE INDEX IF NOT EXISTS idx_bill_actions_date
@@ -112,8 +113,8 @@ CREATE TABLE IF NOT EXISTS bill_titles (
 CREATE TABLE IF NOT EXISTS bill_summaries (
     bill_id        TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
     version_code   TEXT NOT NULL,
-    action_date    TEXT,
-    action_desc    TEXT,
+    action_date    TEXT NOT NULL,
+    action_desc    TEXT NOT NULL,
     summary_text   TEXT NOT NULL,
     PRIMARY KEY (bill_id, version_code)
 );
@@ -286,6 +287,24 @@ def m002_add_bill_briefs(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def m006_bill_children_not_null(conn: sqlite3.Connection) -> None:
+    """ADR 0024: tighten the bill child tables' columns to ``NOT NULL``.
+
+    Guarded table rebuilds — no-ops on fresh installs whose ``_BASE_SCHEMA``
+    already declares the constraints. Covers ``bill_cosponsors.sponsorship_date``,
+    ``bill_actions.{action_code,source_system}`` and
+    ``bill_summaries.{action_date,action_desc}``. Legacy rows holding a ``NULL`` in
+    any tightened column are dropped (derived state, rebuildable per ADR 0002);
+    each rebuild preserves the FK to ``bills``.
+    """
+    for table, columns in (
+        ("bill_cosponsors", ("sponsorship_date",)),
+        ("bill_actions", ("action_code", "source_system")),
+        ("bill_summaries", ("action_date", "action_desc")),
+    ):
+        rebuild_table_add_not_null(conn, table=table, not_null_columns=columns)
 
 
 def upsert_bill(conn: sqlite3.Connection, bill: BillDetail, *, fetched_at: str) -> None:

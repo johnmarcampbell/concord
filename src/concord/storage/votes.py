@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from concord.models.votes import Vote, VotePosition
+from concord.storage._ddl import rebuild_table_add_not_null
 from concord.storage._sql import upsert_sql
 
 VOTES_SCHEMA = """
@@ -59,8 +60,8 @@ CREATE TABLE IF NOT EXISTS vote_positions (
     vote_id      TEXT NOT NULL,
     bioguide_id  TEXT NOT NULL,
     position     TEXT NOT NULL,
-    vote_party   TEXT,
-    vote_state   TEXT,
+    vote_party   TEXT NOT NULL,
+    vote_state   TEXT NOT NULL,
     PRIMARY KEY (vote_id, bioguide_id)
 );
 
@@ -125,6 +126,20 @@ _VOTE_POSITION_INSERT_SQL = (
     + ", ".join("?" for _ in _VOTE_POSITION_COLUMNS)
     + ")"
 )
+
+
+def m007_vote_positions_not_null(conn: sqlite3.Connection) -> None:
+    """ADR 0024: tighten ``vote_positions.{vote_party,vote_state}`` to ``NOT NULL``.
+
+    Guarded table rebuild — a no-op on fresh installs whose ``_BASE_SCHEMA``
+    already declares the constraint. Any legacy row holding a ``NULL`` in these
+    columns is dropped (derived state, rebuildable from JSONL per ADR 0002).
+    ``vote_positions`` has no FK or CHECK, so the rebuild is a plain structural
+    copy.
+    """
+    rebuild_table_add_not_null(
+        conn, table="vote_positions", not_null_columns=("vote_party", "vote_state")
+    )
 
 
 def upsert_vote(conn: sqlite3.Connection, vote: Vote, *, fetched_at: str) -> None:

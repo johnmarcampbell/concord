@@ -115,8 +115,8 @@ class TestRunsRoundTrip:
 
 
 class TestSchemaVersion:
-    def test_head_is_four(self) -> None:
-        assert _HEAD == 4
+    def test_head_is_seven(self) -> None:
+        assert _HEAD == 7
 
     def test_fresh_db_has_runs_tables_at_head(self, tmp_path: Path) -> None:
         db_path = tmp_path / "ledger.db"
@@ -131,4 +131,4 @@ class TestSchemaVersion:
         finally:
             conn.close()
         assert {"runs", "run_events", "validation_failures"} <= tables
-        assert version == 4
+        assert version == _HEAD

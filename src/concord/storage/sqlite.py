@@ -215,6 +215,9 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (2, bills_storage.m002_add_bill_briefs),
     (3, runs_storage.m003_add_runs_tables),
     (4, validation_storage.m004_add_validation_failures),
+    (5, members_storage.m005_member_terms_not_null),
+    (6, bills_storage.m006_bill_children_not_null),
+    (7, votes_storage.m007_vote_positions_not_null),
 )
 _HEAD: int = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
 
