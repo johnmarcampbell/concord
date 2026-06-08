@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
+from concord.errors import SenateXmlError
 from concord.models._common import Chamber, SessionNumber, normalize_chamber
 from concord.models.bills import bill_id_from_components
 
@@ -356,17 +357,10 @@ class SenateVoteDetail(BaseModel):
         ``<en_bloc><matter>`` breakdown is preserved in the raw XML payload
         but not surfaced on the SQLite row in this phase.
 
-        Raises :exc:`concord.senate_xml.SenateXmlError` for malformed XML
+        Raises :exc:`concord.errors.SenateXmlError` for malformed XML
         or missing required date fields; raises ``pydantic.ValidationError``
         for any field that doesn't match the model's schema.
         """
-        # Lazy import: ``concord.senate_xml`` now records into the observability
-        # ledger, which imports ``concord.models`` — so a top-level import here
-        # would close a models<->senate_xml cycle. ``SenateXmlError`` lives with
-        # its client (project convention), and it's only needed inside this one
-        # parse path, so importing it lazily keeps senate_xml a clean dependency.
-        from concord.senate_xml import SenateXmlError  # noqa: PLC0415 - breaks an import cycle
-
         try:
             root = ET.fromstring(xml_bytes)  # noqa: S314 — senate.gov XML is trusted (no DTD, no external entities)
         except ET.ParseError as exc:

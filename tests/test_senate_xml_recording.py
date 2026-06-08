@@ -15,8 +15,9 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from concord.errors import SenateXmlError
 from concord.observability import Recorder, _recorder
-from concord.senate_xml import _HTML_TRAP_MARKER, SenateClient, SenateXmlError
+from concord.senate_xml import _HTML_TRAP_MARKER, SenateClient
 
 #: Minimal well-formed XML that the roster/menu parsers accept (empty result).
 _XML_BODY = b"<doc></doc>"

@@ -30,6 +30,8 @@ from types import TracebackType
 
 import httpx
 
+from concord.errors import SenateXmlError
+
 from . import __version__
 from .models import Attempt
 from .observability import Recorder, active_recorder
@@ -66,10 +68,6 @@ DETAIL_REQUEST_SLEEP_SECONDS = 0.1
 HTTP_OK = 200
 HTTP_SERVER_ERROR_MIN = 500
 HTTP_SERVER_ERROR_MAX = 600  # exclusive upper bound
-
-
-class SenateXmlError(Exception):
-    """Raised when senate.gov returns a non-XML response or a transport error."""
 
 
 class SenateClient:
@@ -344,7 +342,6 @@ __all__ = [
     "ROSTER_URL",
     "USER_AGENT",
     "SenateClient",
-    "SenateXmlError",
     "parse_senate_roster",
     "parse_vote_menu",
 ]
