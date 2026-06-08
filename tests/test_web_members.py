@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Member, Term
+from concord.models.members import Member, Term
 from concord.pipeline.index_members import index as index_members
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app

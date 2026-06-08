@@ -33,7 +33,8 @@ from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
-from concord.models import Member, Snapshot, Term
+from concord.models._common import Snapshot
+from concord.models.members import Member, Term
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_members")

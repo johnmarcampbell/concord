@@ -13,8 +13,7 @@ from concord.pipeline.load_bills import load as load_bills
 from concord.pipeline.load_bills import load_one
 from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
 from concord.storage.sqlite import SqliteStorage
-
-from ._snapshots import wrap_snapshot
+from tests._snapshots import wrap_snapshot
 
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 

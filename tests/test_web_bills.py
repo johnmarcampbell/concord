@@ -9,16 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import (
+from concord.models.bills import (
     BillAction,
     BillCosponsor,
     BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Member,
-    Term,
 )
+from concord.models.members import Member, Term
 from concord.pipeline.index_bills import index as index_bills
 from concord.scraper.bills import (
     BILL_ENRICHMENT_SECTIONS,

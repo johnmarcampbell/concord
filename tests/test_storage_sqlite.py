@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from concord.models import Article, Issue, Proceeding
-from concord.storage import SqliteStorage, Storage
-from concord.storage.sqlite import _BASE_SCHEMA, _HEAD, _MIGRATIONS, ensure_schema
+from concord.models.proceedings import Article, Issue, Proceeding
+from concord.storage.base import Storage
+from concord.storage.sqlite import _BASE_SCHEMA, _HEAD, _MIGRATIONS, SqliteStorage, ensure_schema
 
 DEFAULT_GRANULE = "CREC-2026-05-22-pt1-PgD551-6"
 

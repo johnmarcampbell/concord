@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from concord.models import SenateVoteDetail
+from concord.models.votes import SenateVoteDetail
 from concord.senate_xml import (
     DETAIL_URL,
     MENU_URL,

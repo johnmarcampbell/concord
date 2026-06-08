@@ -133,6 +133,12 @@ max-complexity = 10
 max-args = 8
 max-branches = 12
 
+[tool.ruff.lint.flake8-tidy-imports]
+# Absolute imports only (ADR 0022). Ruff's default "parents" still allows
+# single-dot relatives like `from .foo import bar`; "all" forbids them so the
+# submodule-direct / absolute-only convention can't silently re-drift.
+ban-relative-imports = "all"
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

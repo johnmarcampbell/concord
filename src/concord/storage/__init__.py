@@ -12,10 +12,7 @@ implements.
 The Mongo backend was removed in ADR-0013; the ``Storage`` Protocol remains
 as a seam for a future alternative raw-store implementation if one ever
 proves useful.
+
+Per ADR 0022 this package re-exports nothing — import from the defining
+submodule (``from concord.storage.sqlite import SqliteStorage``).
 """
-
-from .base import Storage
-from .jsonl import JsonlStorage
-from .sqlite import SqliteStorage, ensure_schema
-
-__all__ = ["JsonlStorage", "SqliteStorage", "Storage", "ensure_schema"]

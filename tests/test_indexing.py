@@ -5,9 +5,9 @@ from pathlib import Path
 
 from concord.chunking import Chunker, ChunkerConfig
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Article, Issue, Proceeding
+from concord.models.proceedings import Article, Issue, Proceeding
 from concord.pipeline.index_proceedings import IndexResult, ProgressEvent, index
-from concord.storage import SqliteStorage
+from concord.storage.sqlite import SqliteStorage
 
 
 def _make_proceeding(granule_id: str, text: str) -> Proceeding:

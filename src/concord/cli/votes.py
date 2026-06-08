@@ -8,15 +8,14 @@ from typing import Annotated
 import typer
 
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.cli._apps import index_app, load_app, run_app, scrape_app
+from concord.cli._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
 from concord.observability import scrape_run
 from concord.pipeline.index_votes import index as index_votes
 from concord.pipeline.load_votes import load as load_votes
 from concord.scraper import votes as votes_scraper
 from concord.scraper.votes import HOUSE_VOTES_JSONL_NAME, SENATE_VOTES_JSONL_NAME
 from concord.senate_xml import SenateClient
-
-from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
 
 DEFAULT_VOTES_STORAGE_DIR = Path("./data")
 

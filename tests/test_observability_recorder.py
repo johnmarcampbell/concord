@@ -3,7 +3,7 @@ resolved/failed Run Event classification (ADR 0021)."""
 
 from datetime import UTC, datetime
 
-from concord.models import Attempt
+from concord.models.runs import Attempt
 from concord.observability import Recorder
 
 

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from concord.models import Attempt, RunEvent, RunRecord
+from concord.models.runs import Attempt, RunEvent, RunRecord
 
 _log = logging.getLogger("concord.observability")
 

@@ -8,13 +8,12 @@ from typing import Annotated
 import typer
 
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.cli._apps import index_app, load_app, run_app, scrape_app
+from concord.cli._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses
 from concord.observability import scrape_run
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_members import load as load_members
 from concord.scraper import members as members_scraper
-
-from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses
 
 DEFAULT_MEMBERS_JSONL = Path("./data/members.jsonl")
 

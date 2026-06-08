@@ -16,8 +16,7 @@ from typing import Any
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_members import load as load_members
 from concord.storage.sqlite import SqliteStorage
-
-from ._snapshots import wrap_snapshot
+from tests._snapshots import wrap_snapshot
 
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from concord.models import Vote, VotePosition
+from concord.models.votes import Vote, VotePosition
 from concord.storage.sqlite import SqliteStorage
 
 

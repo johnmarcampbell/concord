@@ -7,18 +7,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from concord.models import (
+from concord.models._common import Snapshot
+from concord.models.bills import (
     BillAction,
     BillCosponsor,
     BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Snapshot,
     bill_id_from_components,
 )
-
-from ._snapshots import wrap_snapshot
+from tests._snapshots import wrap_snapshot
 
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 

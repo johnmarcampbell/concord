@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
-from concord.models import Snapshot
+from concord.models._common import Snapshot
 
 _log = logging.getLogger("concord.scraper._common")
 

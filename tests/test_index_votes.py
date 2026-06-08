@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from concord.models import Vote, VotePosition
+from concord.models.votes import Vote, VotePosition
 from concord.pipeline.index_votes import index
 from concord.storage.sqlite import SqliteStorage
 

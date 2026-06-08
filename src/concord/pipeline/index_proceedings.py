@@ -20,7 +20,7 @@ from typing import NamedTuple
 
 from concord.chunking import Chunk, Chunker
 from concord.embedding import Embedder
-from concord.models import Proceeding
+from concord.models.proceedings import Proceeding
 from concord.storage.sqlite import SqliteStorage
 
 

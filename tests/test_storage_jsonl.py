@@ -3,8 +3,9 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from concord.models import Article, Issue, Proceeding
-from concord.storage import JsonlStorage, Storage
+from concord.models.proceedings import Article, Issue, Proceeding
+from concord.storage.base import Storage
+from concord.storage.jsonl import JsonlStorage
 
 DEFAULT_GRANULE = "CREC-2026-05-22-pt1-PgD551-6"
 

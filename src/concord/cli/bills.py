@@ -9,15 +9,14 @@ from typing import Annotated
 import typer
 
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.cli._apps import index_app, load_app, run_app, scrape_app
+from concord.cli._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
 from concord.observability import scrape_run
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.load_bills import load as load_bills
 from concord.scraper import bills as bills_scraper
 from concord.scraper._common import load_bill_signal_map
 from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, BILLS_JSONL_NAME
-
-from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
 
 DEFAULT_BILLS_STORAGE_DIR = Path("./data")
 

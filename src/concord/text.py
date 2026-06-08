@@ -51,7 +51,7 @@ from concord.api import (
     HTTP_SERVER_ERROR_MIN,
     HTTP_TOO_MANY_REQUESTS,
 )
-from concord.models import Attempt
+from concord.models.runs import Attempt
 from concord.observability import Recorder, active_recorder
 
 #: Cap on a single backoff delay, in seconds. Applied to both the exponential

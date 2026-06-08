@@ -20,15 +20,16 @@ import uvicorn
 from typer.testing import CliRunner
 
 import concord.cli as cli_module
+import concord.cli._common as cli_common
 import concord.cli.proceedings as cli_proceedings_module
 import concord.scraper.proceedings as scraper_proceedings_module
 from concord.api import ENV_API_KEY, ApiError, Client
-from concord.models import Article, Issue, Proceeding
+from concord.models.proceedings import Article, Issue, Proceeding
 from concord.pipeline.index_proceedings import IndexResult
 from concord.pipeline.load_proceedings import PullResult
 from concord.scraper.votes import SENATE_ROSTER_JSONL_NAME, SENATE_VOTES_JSONL_NAME
 from concord.senate_xml import SenateClient
-from concord.storage import SqliteStorage
+from concord.storage.sqlite import SqliteStorage
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -572,7 +573,7 @@ class TestIndexCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        monkeypatch.setenv(cli_common.ENV_OPENAI_API_KEY, "sk-test")
         result = runner.invoke(
             cli_module.app,
             ["index", "proceedings", "--db", str(tmp_path / "missing.db")],
@@ -588,13 +589,13 @@ class TestIndexCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
+        monkeypatch.delenv(cli_common.ENV_OPENAI_API_KEY, raising=False)
         db = tmp_path / "out.db"
         _seed_db_for_index(db, ["CREC-2026-05-22-pt1-PgD551-1"])
         result = runner.invoke(cli_module.app, ["index", "proceedings", "--db", str(db)])
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
-        assert cli_module.ENV_OPENAI_API_KEY in plain
+        assert cli_common.ENV_OPENAI_API_KEY in plain
         assert "Traceback" not in plain
 
     def test_indexes_end_to_end(
@@ -603,7 +604,7 @@ class TestIndexCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        monkeypatch.setenv(cli_common.ENV_OPENAI_API_KEY, "sk-test")
         db = tmp_path / "out.db"
         _seed_db_for_index(db, ["CREC-2026-05-22-pt1-PgD551-1", "CREC-2026-05-22-pt1-PgD551-2"])
 
@@ -641,7 +642,7 @@ class TestServeCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Serve against a missing DB creates it on the fly (ADR 0012)."""
-        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        monkeypatch.setenv(cli_common.ENV_OPENAI_API_KEY, "sk-test")
         db = tmp_path / "missing.db"
 
         # Stub uvicorn so we don't actually bind a port; stub openai so the
@@ -666,13 +667,13 @@ class TestServeCommand:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
+        monkeypatch.delenv(cli_common.ENV_OPENAI_API_KEY, raising=False)
         db = tmp_path / "out.db"
         SqliteStorage(db).close()
         result = runner.invoke(cli_module.app, ["serve", "--db", str(db)])
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
-        assert cli_module.ENV_OPENAI_API_KEY in plain
+        assert cli_common.ENV_OPENAI_API_KEY in plain
         assert "Traceback" not in plain
 
     def test_wires_uvicorn_with_expected_args(
@@ -682,7 +683,7 @@ class TestServeCommand:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify the CLI's wiring up to ``uvicorn.run`` without actually starting a server."""
-        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        monkeypatch.setenv(cli_common.ENV_OPENAI_API_KEY, "sk-test")
         db = tmp_path / "out.db"
         SqliteStorage(db).close()
 
@@ -762,7 +763,7 @@ class TestRunCommand:
         tmp_path: Path,
     ) -> None:
         """`concord run` should call _run_pull, _run_load, _run_index in order."""
-        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        monkeypatch.setenv(cli_common.ENV_OPENAI_API_KEY, "sk-test")
         calls: list[str] = []
 
         def fake_pull(**_kw: Any) -> PullResult:
@@ -816,7 +817,7 @@ class TestRunCommand:
         tmp_path: Path,
     ) -> None:
         monkeypatch.delenv(ENV_API_KEY, raising=False)
-        monkeypatch.setenv(cli_module.ENV_OPENAI_API_KEY, "sk-test")
+        monkeypatch.setenv(cli_common.ENV_OPENAI_API_KEY, "sk-test")
         result = runner.invoke(
             cli_module.app,
             [
@@ -839,7 +840,7 @@ class TestRunCommand:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        monkeypatch.delenv(cli_module.ENV_OPENAI_API_KEY, raising=False)
+        monkeypatch.delenv(cli_common.ENV_OPENAI_API_KEY, raising=False)
         result = runner.invoke(
             cli_module.app,
             [
@@ -853,7 +854,7 @@ class TestRunCommand:
         )
         assert result.exit_code == 2
         plain = _strip(result.output) + _strip(result.stderr or "")
-        assert cli_module.ENV_OPENAI_API_KEY in plain
+        assert cli_common.ENV_OPENAI_API_KEY in plain
 
 
 # -- Progress helper ---------------------------------------------------------
@@ -892,7 +893,7 @@ class _FakeNonTTY:
 class TestProgress:
     def test_tty_overwrites_with_carriage_return(self) -> None:
         s = _FakeTTY()
-        p = cli_module.Progress(enabled=True, stream=s)
+        p = cli_common.Progress(enabled=True, stream=s)
         p.update("first")
         p.update("second")
         p.commit()
@@ -902,7 +903,7 @@ class TestProgress:
 
     def test_non_tty_falls_back_to_per_line(self) -> None:
         s = _FakeNonTTY()
-        p = cli_module.Progress(enabled=True, stream=s)
+        p = cli_common.Progress(enabled=True, stream=s)
         p.update("first")
         p.update("second")
         p.commit()
@@ -912,7 +913,7 @@ class TestProgress:
 
     def test_disabled_writes_nothing(self) -> None:
         s = _FakeTTY()
-        p = cli_module.Progress(enabled=False, stream=s)
+        p = cli_common.Progress(enabled=False, stream=s)
         p.update("first")
         p.update("second")
         p.commit()
@@ -922,13 +923,13 @@ class TestProgress:
         # On a non-TTY, commit shouldn't emit a trailing newline because
         # there's no in-place line that needs ending.
         s = _FakeNonTTY()
-        p = cli_module.Progress(enabled=True, stream=s)
+        p = cli_common.Progress(enabled=True, stream=s)
         p.commit()  # no prior update — must be a no-op
         assert s.getvalue() == ""
 
     def test_context_manager_commits_on_exit(self) -> None:
         s = _FakeTTY()
-        with cli_module.Progress(enabled=True, stream=s) as p:
+        with cli_common.Progress(enabled=True, stream=s) as p:
             p.update("only update")
         # Exit calls commit -> newline.
         assert s.getvalue().endswith("\n")
