@@ -50,6 +50,3 @@ def parse_or_record[T](
         )
         log.warning("skipping %s %s after parse failure: %s", entity, entity_key, exc)
         return None
-
-
-__all__ = ["parse_or_record"]
