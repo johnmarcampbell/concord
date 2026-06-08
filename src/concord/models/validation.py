@@ -52,6 +52,3 @@ class ValidationFailure(BaseModel):
             field_path=field_path,
             payload=payload,
         )
-
-
-__all__ = ["ValidationFailure"]

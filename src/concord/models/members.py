@@ -242,6 +242,3 @@ def _term_item_for_congress(items: list[dict[str, Any]], congress: int) -> dict[
             continue
         match = item
     return match
-
-
-__all__ = ["Member", "Term", "normalize_state"]
