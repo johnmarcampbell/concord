@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from concord.models.proceedings import Article, Issue, Proceeding
+from concord.storage._ddl import _inject_not_null
 from concord.storage.base import Storage
 from concord.storage.sqlite import _BASE_SCHEMA, _HEAD, _MIGRATIONS, SqliteStorage, ensure_schema
 
@@ -863,7 +864,7 @@ class TestNotNullRebuildMigration:
                     "(bioguide_id, congress, chamber, party, state, start_date, end_date) "
                     "VALUES ('M1', 120, 'bogus', 'D', 'VT', '2025-01-03', '2027-01-03')"
                 )
-            with pytest.raises(sqlite3.IntegrityError):
+            with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
                 storage.connection.execute(
                     "INSERT INTO bill_cosponsors "
                     "(bill_id, bioguide_id, sponsorship_date, is_original_cosponsor) "
@@ -871,3 +872,16 @@ class TestNotNullRebuildMigration:
                 )
         finally:
             storage.close()
+
+
+class TestInjectNotNullIdempotent:
+    """ADR 0024: _inject_not_null is safe to call on an already-constrained column."""
+
+    def test_injects_once_then_is_a_no_op(self) -> None:
+        ddl = "CREATE TABLE t (\n    party TEXT,\n    state TEXT NOT NULL\n)"
+        once = _inject_not_null(ddl, "party")
+        assert "party TEXT NOT NULL" in once
+        # A second call on the now-constrained column must not double-inject.
+        twice = _inject_not_null(once, "party")
+        assert twice == once
+        assert "NOT NULL NOT NULL" not in twice

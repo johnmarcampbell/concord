@@ -21,8 +21,11 @@ The helper assumes the unquoted-identifier DDL this project writes (no
 it cannot locate the table declaration or a column definition.
 """
 
+import logging
 import re
 import sqlite3
+
+_log = logging.getLogger(__name__)
 
 # SQLite's storage-class keywords, enough to anchor the end of a column's type
 # token so ``NOT NULL`` is appended right after it.
@@ -42,7 +45,19 @@ def _swap_table_name(create_sql: str, old: str, new: str) -> str:
 
 
 def _inject_not_null(create_sql: str, column: str) -> str:
-    """Append ``NOT NULL`` to ``column``'s definition (after its type token)."""
+    """Ensure ``column``'s definition carries ``NOT NULL`` (idempotent).
+
+    Appends ``NOT NULL`` immediately after the column's type token. If the column
+    is already ``NOT NULL`` (the constraint already follows its type), returns the
+    DDL unchanged — so the helper is safe to call regardless of the column's
+    current state. Assumes this project's DDL shape, where ``NOT NULL`` directly
+    follows the type token.
+    """
+    already = re.compile(
+        r"\b" + re.escape(column) + r"\b\s+" + _TYPE + r"\s+NOT\s+NULL\b", re.IGNORECASE
+    )
+    if already.search(create_sql):
+        return create_sql
     pattern = re.compile(r"(\b" + re.escape(column) + r"\b\s+" + _TYPE + r")\b", re.IGNORECASE)
     injected, n = pattern.subn(r"\1 NOT NULL", create_sql, count=1)
     if n != 1:
@@ -62,8 +77,8 @@ def rebuild_table_add_not_null(
     already ``NOT NULL`` — the fresh-install case, where ``_BASE_SCHEMA`` already
     declares them — this is a no-op returning ``0``. Otherwise the table is
     rebuilt and any row holding a ``NULL`` in a target column is dropped (derived
-    state, rebuildable from JSONL per ADR 0002); the dropped-row count is returned
-    so the caller can log it.
+    state, rebuildable from JSONL per ADR 0002) and logged at ``WARNING``; the
+    dropped-row count is also returned.
 
     Runs inside the migration runner's transaction with ``foreign_keys`` left ON.
     That is safe because none of the tightened tables is a foreign-key *target* —
@@ -99,8 +114,7 @@ def rebuild_table_add_not_null(
     tmp = f"{table}__new"
     new_sql = _swap_table_name(create_sql, table, tmp)
     for col in not_null_columns:
-        if notnull_by_name[col] != 1:
-            new_sql = _inject_not_null(new_sql, col)
+        new_sql = _inject_not_null(new_sql, col)
 
     columns = ", ".join(str(row[1]) for row in info)
     not_null_filter = " AND ".join(f"{c} IS NOT NULL" for c in not_null_columns)
@@ -119,4 +133,12 @@ def rebuild_table_add_not_null(
     for idx_sql in index_sqls:
         conn.execute(idx_sql)
 
-    return rows_before - inserted
+    dropped = rows_before - inserted
+    if dropped:
+        _log.warning(
+            "rebuild_table_add_not_null: dropped %d row(s) from %s with NULL in %s",
+            dropped,
+            table,
+            not_null_columns,
+        )
+    return dropped

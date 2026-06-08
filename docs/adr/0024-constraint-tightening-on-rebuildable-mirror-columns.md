@@ -41,13 +41,33 @@ rebuildable — will reasonably ask "why bother?"
 ## Decision
 
 **Tighten via a guarded table-rebuild migration, not a bare `_BASE_SCHEMA` edit.**
-We converge existing DBs so `user_version` stays an honest identity of the schema,
-upholding ADR 0017 rather than carving an exception into it. Concretely, issue #90
-edits `_BASE_SCHEMA` (the head snapshot) *and* adds three append-only migrations —
-`m005` (`member_terms`), `m006` (the three `bill_*` child tables), `m007`
-(`vote_positions`) — bumping `_HEAD` 4 → 7. Three module-local entries preserve the
-"each domain module owns its tables' migrations" convention; all delegate to one
-shared helper, `concord.storage._ddl.rebuild_table_add_not_null`.
+We converge existing DBs so `user_version` stays an honest identity of the schema.
+Concretely, issue #90 edits `_BASE_SCHEMA` (the head snapshot) *and* adds three
+append-only migrations — `m005` (`member_terms`), `m006` (the three `bill_*` child
+tables), `m007` (`vote_positions`) — bumping `_HEAD` 4 → 7. Three module-local
+entries preserve the "each domain module owns its tables' migrations" convention;
+all delegate to one shared helper, `concord.storage._ddl.rebuild_table_add_not_null`.
+
+**Why convergence is worth it here — and why it's a judgment, not a commandment.**
+The honest case for converging rather than a bare `_BASE_SCHEMA` edit is *not* that
+`user_version` honesty is inviolable. This `NOT NULL` is defense-in-depth over a
+contract the post-#89 models already enforce: the ten fields are non-optional `str`,
+so Pydantic validation prevents a NULL from ever reaching these columns on a normal
+`concord load`. The cross-install divergence a bare edit would create is therefore
+latent — a nullable-but-NULL-free column reads and writes identically to a `NOT NULL`
+one, and nothing in the codebase can write a violating row. (`user_version` is itself
+only a *fingerprint* identity, not byte-identical-schema: ADR 0017 drops `cid` and the
+fingerprint is blind to CHECK/FK. We're protecting a fingerprint this change happens
+to be visible to, not a pristine invariant.) We converge for two concrete reasons:
+(1) `rebuild_table_add_not_null` is reusable infrastructure for the SQLite gap
+(`ALTER COLUMN … SET NOT NULL`), and constraint-tightening is recurring here — PR #89
+was a ten-field audit, and this PR's own per-field policy anticipates more — so the
+helper amortizes across future tightenings; (2) it keeps the just-established ADR 0017
+precedent intact at a maintenance cost we judge affordable. This is a cost-benefit
+call, and it is reversible: if the rebuild helper stops paying rent (e.g. the derived
+schema effectively freezes), tightening via a bare base edit plus a one-paragraph ADR
+— existing DBs reconverge on the next full load per ADR 0002 — is a legitimate future
+position, not a violation of this one.
 
 The pattern for any future constraint-tightening on a rebuildable mirror column is:
 
@@ -111,11 +131,12 @@ prior failed, un-versioned attempt.
 ## Rejected: bare `_BASE_SCHEMA` edit, lean on ADR 0002
 
 Edit the DDL, add no migration, let the one wild demo DB get rebuilt from JSONL. The
-schema-equivalence test would even stay green (both sides run the edited base).
-Rejected because it reintroduces the silent fresh-vs-migrated divergence at equal
-`user_version` that ADR 0017 was created to eliminate — trading a one-time rebuild
-cost for a standing correctness gap. Viable for a throwaway store; not worth the
-erosion of the versioning invariant now that one exists.
+schema-equivalence test would even stay green (both sides run the edited base). The
+divergence it reintroduces at equal `user_version` is latent rather than dangerous
+(see the Decision — the model contract already prevents a violating row), so this is
+a defensible position, not a wrong one. Not chosen here because converging amortizes
+the reusable rebuild helper and keeps the fresh ADR 0017 precedent intact at a cost we
+judge affordable — but it remains the right call the day that cost stops paying rent.
 
 ## Rejected: `writable_schema` hack to rewrite the stored DDL in place
 

@@ -10,7 +10,6 @@ transaction boundary; the helpers here are pure SQL over a connection, except
 :func:`upsert_bill`, whose single-row write owns its own commit.
 """
 
-import logging
 import sqlite3
 from collections.abc import Sequence
 from typing import Any
@@ -25,8 +24,6 @@ from concord.models.bills import (
 )
 from concord.storage._ddl import rebuild_table_add_not_null
 from concord.storage._sql import insert_sql, upsert_sql
-
-_log = logging.getLogger(__name__)
 
 BILLS_SCHEMA = """
 -- Bills (Phase 2a). Identity record per Bill — sponsor goes here too
@@ -299,18 +296,15 @@ def m006_bill_children_not_null(conn: sqlite3.Connection) -> None:
     already declares the constraints. Covers ``bill_cosponsors.sponsorship_date``,
     ``bill_actions.{action_code,source_system}`` and
     ``bill_summaries.{action_date,action_desc}``. Legacy rows holding a ``NULL`` in
-    any tightened column are dropped (derived state, rebuildable per ADR 0002) and
-    the count logged; each rebuild preserves the FK to ``bills``.
+    any tightened column are dropped (derived state, rebuildable per ADR 0002);
+    each rebuild preserves the FK to ``bills``.
     """
-    targets: tuple[tuple[str, tuple[str, ...]], ...] = (
+    for table, columns in (
         ("bill_cosponsors", ("sponsorship_date",)),
         ("bill_actions", ("action_code", "source_system")),
         ("bill_summaries", ("action_date", "action_desc")),
-    )
-    for table, columns in targets:
-        dropped = rebuild_table_add_not_null(conn, table=table, not_null_columns=columns)
-        if dropped:
-            _log.warning("m006: dropped %d %s row(s) with NULL in %s", dropped, table, columns)
+    ):
+        rebuild_table_add_not_null(conn, table=table, not_null_columns=columns)
 
 
 def upsert_bill(conn: sqlite3.Connection, bill: BillDetail, *, fetched_at: str) -> None:

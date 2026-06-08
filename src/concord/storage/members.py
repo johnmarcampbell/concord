@@ -7,7 +7,6 @@ these and owns the transaction boundary; the write helper here that needs
 member+terms atomicity manages its own self-contained BEGIN/COMMIT.
 """
 
-import logging
 import sqlite3
 from collections.abc import Sequence
 from typing import Any
@@ -15,8 +14,6 @@ from typing import Any
 from concord.models.members import Member, Term
 from concord.storage._ddl import rebuild_table_add_not_null
 from concord.storage._sql import insert_sql, upsert_sql
-
-_log = logging.getLogger(__name__)
 
 MEMBERS_SCHEMA = """
 -- Members (Phase 1). Per-person identity fields; per-Term records the
@@ -97,17 +94,13 @@ def m005_member_terms_not_null(conn: sqlite3.Connection) -> None:
 
     Guarded table rebuild — a no-op on fresh installs whose ``_BASE_SCHEMA``
     already declares the constraint. Any legacy row holding a ``NULL`` in these
-    columns is dropped (derived state, rebuildable from JSONL per ADR 0002) and
-    the count logged. The rebuild preserves the chamber CHECK and the FK to
-    ``members`` by injecting ``NOT NULL`` into the live DDL.
+    columns is dropped (derived state, rebuildable from JSONL per ADR 0002). The
+    rebuild preserves the chamber CHECK and the FK to ``members`` by injecting
+    ``NOT NULL`` into the live DDL.
     """
-    dropped = rebuild_table_add_not_null(
+    rebuild_table_add_not_null(
         conn, table="member_terms", not_null_columns=("party", "start_date", "end_date")
     )
-    if dropped:
-        _log.warning(
-            "m005: dropped %d member_terms row(s) with NULL party/start_date/end_date", dropped
-        )
 
 
 def upsert_member(
