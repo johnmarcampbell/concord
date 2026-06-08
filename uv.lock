@@ -191,7 +191,7 @@ wheels = [
 
 [[package]]
 name = "congress-concord"
-version = "0.6.0"
+version = "0.7.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
