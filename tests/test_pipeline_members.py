@@ -219,6 +219,68 @@ class TestLoadMembers:
         assert stats.terms_written == 0
 
 
+class TestLoadValidationFailures:
+    """Class-(b) model-parse failures land in validation_failures (ADR 0023)."""
+
+    def test_term_and_member_failures_recorded(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "members.jsonl"
+        db = tmp_path / "test.db"
+        aoc = _fixture("current_house.json")["members"][0]  # O000172
+        sanders = _fixture("current_senate.json")["members"][0]  # S000033
+        # AOC queried for Congress 102 (1991) — no terms.item covers it, so
+        # Term.from_congress_api raises ValueError; her Member identity still parses.
+        term_fail = _envelope_for(aoc, congress=102)
+        # Sanders payload with directOrderName stripped — Member.from_congress_api
+        # raises KeyError; the Term half still parses (and is dropped with the member).
+        sanders_broken = {k: v for k, v in sanders.items() if k != "directOrderName"}
+        member_fail = _envelope_for(sanders_broken, congress=119)
+        _write_jsonl(jsonl, [term_fail, member_fail])
+
+        stats = load_members(jsonl_path=jsonl, db_path=db)
+        # AOC's identity is written; Sanders is dropped on the member failure.
+        assert stats.members_written == 1
+        # Both class-(b) failures flow into malformed (option C).
+        assert stats.malformed == 2
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            rows = storage.connection.execute(
+                "SELECT entity, entity_key, source_file, field_path FROM validation_failures "
+                "ORDER BY entity"
+            ).fetchall()
+        assert [(r["entity"], r["entity_key"]) for r in rows] == [
+            ("member", "S000033"),
+            ("term", "O000172/102"),
+        ]
+        assert {r["source_file"] for r in rows} == {"members.jsonl"}
+
+    def test_failures_are_idempotent(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "members.jsonl"
+        db = tmp_path / "test.db"
+        aoc = _fixture("current_house.json")["members"][0]
+        _write_jsonl(jsonl, [_envelope_for(aoc, congress=102)])
+
+        load_members(jsonl_path=jsonl, db_path=db)
+        load_members(jsonl_path=jsonl, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 1
+
+    def test_clean_reload_converges_away_stale_rows(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "members.jsonl"
+        db = tmp_path / "test.db"
+        aoc = _fixture("current_house.json")["members"][0]
+        # First load: a term failure (Congress 102).
+        _write_jsonl(jsonl, [_envelope_for(aoc, congress=102)])
+        load_members(jsonl_path=jsonl, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 1
+        # Re-scrape fixed the data: now a Congress the terms cover. The mirror
+        # table must converge to zero rows.
+        _write_jsonl(jsonl, [_envelope_for(aoc, congress=119)])
+        load_members(jsonl_path=jsonl, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 0
+
+
 class TestIndexMembers:
     def test_populates_fts(self, tmp_path: Path) -> None:
         jsonl = tmp_path / "members.jsonl"

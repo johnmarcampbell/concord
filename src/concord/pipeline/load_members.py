@@ -35,6 +35,7 @@ from pydantic import ValidationError
 
 from concord.models._common import Snapshot
 from concord.models.members import Member, Term
+from concord.models.validation import ValidationFailure
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_members")
@@ -62,6 +63,7 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
 
     snapshots_read = 0
     malformed = 0
+    failures: list[ValidationFailure] = []
 
     with jsonl_path.open("r", encoding="utf-8") as fh:
         for line_no, raw in enumerate(fh, 1):
@@ -91,21 +93,9 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
                 latest_per_member[bioguide_id] = (snap.fetched_at, snap.payload)
 
     # Project each (bioguide_id, congress) snapshot into one Term row.
-    terms_by_member: dict[str, list[Term]] = {}
-    for (bioguide_id, congress), (_, payload) in latest_per_cell.items():
-        try:
-            term = Term.from_congress_api(payload, congress=congress)
-        except (KeyError, ValueError, ValidationError) as exc:
-            malformed += 1
-            _log.warning(
-                "skipping term %s/%d after parse failure: %s; payload=%r",
-                bioguide_id,
-                congress,
-                exc,
-                payload,
-            )
-            continue
-        terms_by_member.setdefault(bioguide_id, []).append(term)
+    terms_by_member = _project_terms(
+        latest_per_cell, source_file=jsonl_path.name, failures=failures
+    )
 
     members_written = 0
     terms_written = 0
@@ -116,18 +106,28 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
             try:
                 member = Member.from_congress_api(payload)
             except (KeyError, ValueError, ValidationError) as exc:
-                malformed += 1
-                _log.warning(
-                    "skipping member %s after parse failure: %s; payload=%r",
-                    bioguide_id,
-                    exc,
-                    payload,
+                failures.append(
+                    ValidationFailure.from_exc(
+                        entity="member",
+                        entity_key=bioguide_id,
+                        source_file=jsonl_path.name,
+                        exc=exc,
+                        payload=payload,
+                    )
                 )
+                _log.warning("skipping member %s after parse failure: %s", bioguide_id, exc)
                 continue
             terms = terms_by_member.get(bioguide_id, [])
             storage.upsert_member(member, terms, fetched_at=fetched_at.isoformat())
             members_written += 1
             terms_written += len(terms)
+
+        # Replace-on-load the model-parse failures for this family (ADR 0023).
+        # Called unconditionally so a now-clean load converges away stale rows;
+        # malformed counts every class-(b) failure here, plus envelope corruption
+        # (class (a)) counted inline above.
+        storage.replace_validation_failures(failures, entities=("member", "term"))
+        malformed += len(failures)
     finally:
         storage.close()
 
@@ -137,6 +137,38 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
         snapshots_read=snapshots_read,
         malformed=malformed,
     )
+
+
+def _project_terms(
+    latest_per_cell: dict[tuple[str, int], tuple[datetime, dict[str, Any]]],
+    *,
+    source_file: str,
+    failures: list[ValidationFailure],
+) -> dict[str, list[Term]]:
+    """Project each ``(bioguide_id, congress)`` snapshot into one Term row.
+
+    A row that fails :meth:`Term.from_congress_api` appends a
+    :class:`ValidationFailure` keyed on ``"{bioguide_id}/{congress}"`` (ADR 0023)
+    and is skipped; the rest group by ``bioguide_id``.
+    """
+    terms_by_member: dict[str, list[Term]] = {}
+    for (bioguide_id, congress), (_, payload) in latest_per_cell.items():
+        try:
+            term = Term.from_congress_api(payload, congress=congress)
+        except (KeyError, ValueError, ValidationError) as exc:
+            failures.append(
+                ValidationFailure.from_exc(
+                    entity="term",
+                    entity_key=f"{bioguide_id}/{congress}",
+                    source_file=source_file,
+                    exc=exc,
+                    payload=payload,
+                )
+            )
+            _log.warning("skipping term %s/%d after parse failure: %s", bioguide_id, congress, exc)
+            continue
+        terms_by_member.setdefault(bioguide_id, []).append(term)
+    return terms_by_member
 
 
 __all__ = ["LoadStats", "load"]

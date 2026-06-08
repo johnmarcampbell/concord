@@ -466,6 +466,71 @@ class TestSenateLoad:
             storage.close()
 
 
+class TestValidationFailures:
+    """Class-(b) model-parse failures land in validation_failures (ADR 0023)."""
+
+    def test_house_senate_and_position_failures_recorded(self, tmp_path: Path) -> None:
+        ts = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+        db = tmp_path / "db.sqlite"
+        # A house vote whose payload can't parse (empty → KeyError on congress).
+        _write_envelopes(tmp_path / HOUSE_VOTES_JSONL_NAME, [_envelope({}, 900, ts)])
+        # A house positions payload with one row missing a bioguide → ValueError.
+        _write_envelopes(
+            tmp_path / HOUSE_VOTE_POSITIONS_JSONL_NAME,
+            [
+                _envelope(
+                    {"results": [{"voteCast": "Yea", "voteParty": "D", "voteState": "NY"}]}, 901, ts
+                )
+            ],
+        )
+        # A Senate vote whose XML body is garbage — the envelope key still pins
+        # the vote_id (the loader iterates .items() precisely to recover it).
+        _write_envelopes(
+            tmp_path / SENATE_VOTES_JSONL_NAME,
+            [
+                {
+                    "fetched_at": ts.isoformat(),
+                    "key": {"chamber": "senate", "congress": 119, "session": 1, "roll_number": 902},
+                    "payload": "<not-valid-senate-xml/>",
+                }
+            ],
+        )
+
+        stats = load(storage_dir=tmp_path, db_path=db)
+        # All three are class (b); the position failure was uncounted before (option C).
+        assert stats.malformed == 3
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            rows = storage.connection.execute(
+                "SELECT entity, entity_key, source_file FROM validation_failures "
+                "ORDER BY entity, entity_key"
+            ).fetchall()
+        triples = [(r["entity"], r["entity_key"], r["source_file"]) for r in rows]
+        assert triples == [
+            ("vote", "house-119-1-900", HOUSE_VOTES_JSONL_NAME),
+            # Recovered from the envelope key despite the unparseable XML body.
+            ("vote", "senate-119-1-902", SENATE_VOTES_JSONL_NAME),
+            ("vote_position", "house-119-1-901", HOUSE_VOTE_POSITIONS_JSONL_NAME),
+        ]
+
+    def test_failures_are_idempotent_and_converge(self, tmp_path: Path) -> None:
+        ts = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+        db = tmp_path / "db.sqlite"
+        _write_envelopes(tmp_path / HOUSE_VOTES_JSONL_NAME, [_envelope({}, 900, ts)])
+        load(storage_dir=tmp_path, db_path=db)
+        load(storage_dir=tmp_path, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 1
+        # Re-scrape fixed the vote: a real payload now parses, so the row clears.
+        _write_envelopes(
+            tmp_path / HOUSE_VOTES_JSONL_NAME,
+            [_envelope(_fixture("detail_house_119_1_240.json")["houseRollCallVote"], 900, ts)],
+        )
+        load(storage_dir=tmp_path, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 0
+
+
 def _fixture_kind(roll: int) -> str:
     return {
         1: "cloture",

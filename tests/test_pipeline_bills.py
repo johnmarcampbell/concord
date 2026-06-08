@@ -290,6 +290,116 @@ class TestLoadBillsTier2:
             assert len(cosponsors) == 3
 
 
+class TestLoadBillsValidationFailures:
+    """Class-(b) model-parse failures land in validation_failures (ADR 0023)."""
+
+    def _write_cosponsors(
+        self, storage_dir: Path, bill_key: tuple[int, str, int], rows: list[dict[str, Any]]
+    ) -> None:
+        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+            json.dumps(_envelope_for_section({"cosponsors": rows}, bill_key=bill_key)) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_tier1_and_tier2_failures_recorded(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        # hr-1 is valid (so its tier-2 parent exists); hr-22 has an invalid
+        # originChamber so BillDetail.from_congress_api raises ValidationError.
+        good = _detail_payload("detail_119_hr_1.json")
+        broken = {**_detail_payload("detail_119_hr_22.json"), "originChamber": "Moon"}
+        _write_jsonl(storage_dir, [_envelope_for(good), _envelope_for(broken)])
+        # A cosponsor row missing bioguideId → BillCosponsor.from_congress_api raises.
+        self._write_cosponsors(
+            storage_dir,
+            (119, "hr", 1),
+            [{"sponsorshipDate": "2025-01-03", "isOriginalCosponsor": True}],
+        )
+
+        stats = load_bills(storage_dir=storage_dir, db_path=db)
+        assert stats.bills_written == 1  # only hr-1
+        # malformed counts both class-(b) failures (the tier-2 cosponsor was
+        # silently uncounted before ADR 0023 — option C closes that gap).
+        assert stats.malformed == 2
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            rows = storage.connection.execute(
+                "SELECT entity, entity_key, source_file, field_path FROM validation_failures "
+                "ORDER BY entity"
+            ).fetchall()
+        assert [(r["entity"], r["entity_key"]) for r in rows] == [
+            ("bill", "119-hr-22"),
+            ("cosponsor", "119-hr-1"),
+        ]
+        by_entity = {r["entity"]: r for r in rows}
+        # Pydantic Literal rejection on origin_chamber yields a dotted field_path.
+        assert by_entity["bill"]["field_path"] == "origin_chamber"
+        assert by_entity["bill"]["source_file"] == BILLS_JSONL_NAME
+        # The cosponsor row failed on a ValueError (no Pydantic loc).
+        assert by_entity["cosponsor"]["field_path"] is None
+        assert by_entity["cosponsor"]["source_file"] == enrichment_jsonl_name("cosponsors")
+
+    def test_failures_are_idempotent(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        broken = {**_detail_payload("detail_119_hr_1.json"), "originChamber": "Moon"}
+        _write_jsonl(storage_dir, [_envelope_for(broken)])
+        load_bills(storage_dir=storage_dir, db_path=db)
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 1
+
+    def test_clean_reload_converges_away_stale_rows(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        broken = {**_detail_payload("detail_119_hr_1.json"), "originChamber": "Moon"}
+        _write_jsonl(storage_dir, [_envelope_for(broken)])
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 1
+        # Re-scrape fixed the payload; the mirror table must drop the stale row.
+        _write_jsonl(storage_dir, [_envelope_for(_detail_payload("detail_119_hr_1.json"))])
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 0
+
+    def test_load_one_scopes_the_delete_to_one_bill(self, tmp_path: Path) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        good = _detail_payload("detail_119_hr_1.json")
+        broken = {**_detail_payload("detail_119_hr_22.json"), "originChamber": "Moon"}
+        _write_jsonl(storage_dir, [_envelope_for(good), _envelope_for(broken)])
+        self._write_cosponsors(
+            storage_dir,
+            (119, "hr", 1),
+            [{"sponsorshipDate": "2025-01-03", "isOriginalCosponsor": True}],
+        )
+        load_bills(storage_dir=storage_dir, db_path=db)
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.count_validation_failures() == 2
+
+        # Fix hr-1's cosponsors and re-load just that bill. load_one narrows the
+        # delete to entity_key=119-hr-1, so hr-22's bill failure must survive.
+        self._write_cosponsors(
+            storage_dir,
+            (119, "hr", 1),
+            [
+                {
+                    "bioguideId": "S001176",
+                    "sponsorshipDate": "2025-01-03",
+                    "isOriginalCosponsor": True,
+                }
+            ],
+        )
+        load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-1")
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            rows = storage.connection.execute(
+                "SELECT entity, entity_key FROM validation_failures"
+            ).fetchall()
+        assert [(r["entity"], r["entity_key"]) for r in rows] == [("bill", "119-hr-22")]
+
+
 class TestIndexBills:
     def test_repopulates_fts(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"

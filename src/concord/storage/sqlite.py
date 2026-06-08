@@ -42,10 +42,12 @@ from concord.models.bills import (
 from concord.models.members import Member, Term
 from concord.models.proceedings import Proceeding
 from concord.models.runs import RunEvent, RunRecord
+from concord.models.validation import ValidationFailure
 from concord.models.votes import Vote, VotePosition
 from concord.storage import bills as bills_storage
 from concord.storage import members as members_storage
 from concord.storage import runs as runs_storage
+from concord.storage import validation as validation_storage
 from concord.storage import votes as votes_storage
 
 # Columns in the exact order they appear in the INSERT statement. Keeping
@@ -152,6 +154,7 @@ _BASE_SCHEMA += "".join(
         bills_storage.BILLS_SCHEMA,
         votes_storage.VOTES_SCHEMA,
         runs_storage.RUNS_SCHEMA,
+        validation_storage.VALIDATION_FAILURES_SCHEMA,
     )
 )
 
@@ -211,6 +214,7 @@ _MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, bills_storage.m001_add_bill_last_enrichment_error),
     (2, bills_storage.m002_add_bill_briefs),
     (3, runs_storage.m003_add_runs_tables),
+    (4, validation_storage.m004_add_validation_failures),
 )
 _HEAD: int = _MIGRATIONS[-1][0] if _MIGRATIONS else 0
 
@@ -554,6 +558,31 @@ class SqliteStorage:
     def list_run_events(self, run_id: str) -> list[sqlite3.Row]:
         """Return every ``run_events`` row for ``run_id``, ordered by ``seq``."""
         return runs_storage.list_run_events(self._conn, run_id)
+
+    # -- Load Validation Failures (mirror table — ADR 0023) ---------------
+
+    def replace_validation_failures(
+        self,
+        failures: Sequence[ValidationFailure],
+        *,
+        entities: Sequence[str],
+        entity_key: str | None = None,
+    ) -> None:
+        """Replace-on-load the validation_failures rows for a load scope (ADR 0023).
+
+        A mirror-table write (ADR 0019): DELETE the ``entities`` family (narrowed
+        to ``entity_key`` for the ``load_one`` path), then INSERT the current
+        ``failures``. Always called by each loader — even with an empty list — so
+        a now-clean load converges away stale rows.
+        """
+        with self._maybe_transaction():
+            validation_storage.replace_validation_failures(
+                self._conn, failures, entities=entities, entity_key=entity_key
+            )
+
+    def count_validation_failures(self, *, entity: str | None = None) -> int:
+        """Count ``validation_failures`` rows, optionally filtered to one ``entity``."""
+        return validation_storage.count_validation_failures(self._conn, entity=entity)
 
     # -- Votes (Phase 3a) -------------------------------------------------
 
