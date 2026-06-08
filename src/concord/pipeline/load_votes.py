@@ -28,14 +28,17 @@ import logging
 import re
 import sqlite3
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
+from concord.errors import SenateXmlError
 from concord.models._common import Snapshot
 from concord.models.validation import ValidationFailure
 from concord.models.votes import SenateVoteDetail, Vote, VotePosition, vote_id_from_components
+from concord.pipeline._failures import parse_or_record
 from concord.scraper.votes import (
     HOUSE_VOTE_POSITIONS_JSONL_NAME,
     HOUSE_VOTES_JSONL_NAME,
@@ -65,6 +68,21 @@ class LoadStats(NamedTuple):
     malformed: int
 
 
+class _ChamberStats(NamedTuple):
+    """Internal per-chamber sub-loader result.
+
+    ``envelope_failures`` is named for exactly what it counts — class-(a)
+    envelope/JSONL corruption — so it can't be mistaken for the public
+    :class:`LoadStats.malformed` (which is envelope + model-parse). Model-parse
+    failures are appended to the shared ``failures`` list, not counted here.
+    """
+
+    votes_written: int
+    positions_written: int
+    snapshots_read: int
+    envelope_failures: int
+
+
 def load(
     *,
     storage_dir: Path,
@@ -76,55 +94,38 @@ def load(
     Reads up to four JSONL files under ``storage_dir``. Missing files
     are a no-op for that chamber. ``limit`` caps the *total* vote rows
     UPSERTed across both chambers.
+
+    ``--limit`` is a non-converging smoke-test mode: it does **not** touch the
+    ``validation_failures`` mirror table (a partial load would erase real
+    failure rows for entities it never looked at — ADR 0023). The per-run
+    ``malformed`` diagnostic is still reported.
     """
     storage = SqliteStorage(db_path, load_vec=False)
-    votes_written = 0
-    positions_written = 0
-    snapshots_read = 0
-    malformed = 0
     # One shared collector across both chambers so the mirror-table replace
-    # runs exactly once for the whole load (ADR 0023). The sub-loaders append
-    # class-(b) failures here and DON'T fold them into their own ``malformed``;
-    # the single ``malformed += len(failures)`` below is the only class-(b) count.
+    # runs exactly once for the whole load (ADR 0023).
     failures: list[ValidationFailure] = []
     try:
         with storage.transaction():
-            house_stats = _load_house(
-                storage,
-                storage_dir,
-                limit=limit,
-                failures=failures,
-            )
-            votes_written += house_stats.votes_written
-            positions_written += house_stats.positions_written
-            snapshots_read += house_stats.snapshots_read
-            malformed += house_stats.malformed
+            house = _load_house(storage, storage_dir, limit=limit, failures=failures)
 
-            remaining = None if limit is None else max(0, limit - votes_written)
-            senate_stats = _load_senate(
-                storage,
-                storage_dir,
-                limit=remaining,
-                failures=failures,
-            )
-            votes_written += senate_stats.votes_written
-            positions_written += senate_stats.positions_written
-            snapshots_read += senate_stats.snapshots_read
-            malformed += senate_stats.malformed
+            remaining = None if limit is None else max(0, limit - house.votes_written)
+            senate = _load_senate(storage, storage_dir, limit=remaining, failures=failures)
 
-            # Joins the open transaction() batch (replace's _maybe_transaction is
-            # a no-op while _in_tx). Called unconditionally so a now-clean load
-            # converges away stale rows.
-            storage.replace_validation_failures(failures, entities=("vote", "vote_position"))
-            malformed += len(failures)
+            # A full load converges the family; a limited load must not (it only
+            # processed a subset, so a family-wide replace would drop real rows).
+            if limit is None:
+                storage.replace_validation_failures(failures, entities=("vote", "vote_position"))
     finally:
         storage.close()
 
+    # malformed is derived, not assembled: envelope/JSONL corruption (class (a))
+    # from each chamber plus every model-parse failure (class (b)). See ADR 0023.
+    envelope_failures = house.envelope_failures + senate.envelope_failures
     return LoadStats(
-        votes_written=votes_written,
-        positions_written=positions_written,
-        snapshots_read=snapshots_read,
-        malformed=malformed,
+        votes_written=house.votes_written + senate.votes_written,
+        positions_written=house.positions_written + senate.positions_written,
+        snapshots_read=house.snapshots_read + senate.snapshots_read,
+        malformed=envelope_failures + len(failures),
     )
 
 
@@ -134,30 +135,30 @@ def _load_house(
     *,
     limit: int | None,
     failures: list[ValidationFailure],
-) -> LoadStats:
+) -> _ChamberStats:
     """House branch — JSON payloads from api.congress.gov.
 
     Appends model-parse rejections (votes + positions) to the shared
-    ``failures`` collector (ADR 0023); the returned ``malformed`` carries
-    only class-(a) envelope corruption from the ingest helpers.
+    ``failures`` collector (ADR 0023); the returned ``envelope_failures``
+    carries only class-(a) envelope corruption from the ingest helpers.
     """
     votes_path = storage_dir / HOUSE_VOTES_JSONL_NAME
     positions_path = storage_dir / HOUSE_VOTE_POSITIONS_JSONL_NAME
 
     snapshots_read = 0
-    malformed = 0
+    envelope_failures = 0
 
     latest_votes: dict[VoteKey, tuple[datetime, dict[str, Any]]] = {}
     if votes_path.exists():
         read, bad = _ingest_envelopes(votes_path, latest_votes)
         snapshots_read += read
-        malformed += bad
+        envelope_failures += bad
 
     latest_positions: dict[VoteKey, tuple[datetime, dict[str, Any]]] = {}
     if positions_path.exists():
         read, bad = _ingest_envelopes(positions_path, latest_positions)
         snapshots_read += read
-        malformed += bad
+        envelope_failures += bad
 
     votes_written = 0
     positions_written = 0
@@ -167,19 +168,16 @@ def _load_house(
         # it explicitly rather than letting the parser guess.
         chamber = key[0]
         vote_id = vote_id_from_components(*key)
-        try:
-            vote = Vote.from_congress_api(payload, chamber=chamber)
-        except (KeyError, ValueError, ValidationError) as exc:
-            failures.append(
-                ValidationFailure.from_exc(
-                    entity="vote",
-                    entity_key=vote_id,
-                    source_file=HOUSE_VOTES_JSONL_NAME,
-                    exc=exc,
-                    payload=payload,
-                )
-            )
-            _log.warning("skipping house vote %s after parse failure: %s", vote_id, exc)
+        vote = parse_or_record(
+            failures,
+            partial(Vote.from_congress_api, payload, chamber=chamber),
+            entity="vote",
+            entity_key=vote_id,
+            source_file=HOUSE_VOTES_JSONL_NAME,
+            payload=payload,
+            log=_log,
+        )
+        if vote is None:
             continue
         storage.upsert_vote(vote, fetched_at=fetched_at.isoformat())
         votes_written += 1
@@ -194,11 +192,11 @@ def _load_house(
         count = storage.upsert_vote_positions(vote_id, positions)
         positions_written += count
 
-    return LoadStats(
+    return _ChamberStats(
         votes_written=votes_written,
         positions_written=positions_written,
         snapshots_read=snapshots_read,
-        malformed=malformed,
+        envelope_failures=envelope_failures,
     )
 
 
@@ -208,19 +206,19 @@ def _load_senate(
     *,
     limit: int | None,
     failures: list[ValidationFailure],
-) -> LoadStats:
+) -> _ChamberStats:
     """Senate branch — raw XML payloads from senate.gov LIS feeds.
 
     Appends XML-body parse rejections to the shared ``failures`` collector
-    (ADR 0023); the returned ``malformed`` carries only class-(a) envelope
-    corruption. The roster parse and the LIS→Bioguide resolution skips stay
-    plain warnings — they're not model-contract violations.
+    (ADR 0023); the returned ``envelope_failures`` carries only class-(a)
+    envelope corruption. The roster parse and the LIS→Bioguide resolution skips
+    stay plain warnings — they're not model-contract violations.
     """
     votes_path = storage_dir / SENATE_VOTES_JSONL_NAME
     roster_path = storage_dir / SENATE_ROSTER_JSONL_NAME
 
     snapshots_read = 0
-    malformed = 0
+    envelope_failures = 0
 
     # Empty bridge if no roster file — historical fallback via members table
     # still works.
@@ -230,22 +228,22 @@ def _load_senate(
         if roster_xml is not None:
             try:
                 bridge = parse_senate_roster(roster_xml.encode("utf-8"))
-            except Exception as exc:
+            except SenateXmlError as exc:
                 _log.warning("could not parse senators_cfm roster: %s", exc)
         snapshots_read += _count_lines(roster_path)
 
     if not votes_path.exists():
-        return LoadStats(
+        return _ChamberStats(
             votes_written=0,
             positions_written=0,
             snapshots_read=snapshots_read,
-            malformed=malformed,
+            envelope_failures=envelope_failures,
         )
 
     latest_votes: dict[VoteKey, tuple[datetime, str]] = {}
     read, bad = _ingest_string_envelopes(votes_path, latest_votes)
     snapshots_read += read
-    malformed += bad
+    envelope_failures += bad
 
     votes_written = 0
     positions_written = 0
@@ -253,21 +251,21 @@ def _load_senate(
     for vote_key, (fetched_at, xml_payload) in latest_votes.items():
         # Recover the vote_id from the envelope key so a failed XML body parse
         # still gets a validation_failures row (ADR 0023) — the XML didn't
-        # parse, but the envelope key pins the identity.
+        # parse, but the envelope key pins the identity. ``catching`` is
+        # SenateXmlError, not bare Exception, so a real internal bug surfaces
+        # instead of being mislabelled as upstream drift.
         vote_id = vote_id_from_components(*vote_key)
-        try:
-            detail = SenateVoteDetail.from_senate_xml(xml_payload.encode("utf-8"))
-        except Exception as exc:
-            failures.append(
-                ValidationFailure.from_exc(
-                    entity="vote",
-                    entity_key=vote_id,
-                    source_file=SENATE_VOTES_JSONL_NAME,
-                    exc=exc,
-                    payload=xml_payload,
-                )
-            )
-            _log.warning("skipping senate vote %s after parse failure: %s", vote_id, exc)
+        detail = parse_or_record(
+            failures,
+            partial(SenateVoteDetail.from_senate_xml, xml_payload.encode("utf-8")),
+            entity="vote",
+            entity_key=vote_id,
+            source_file=SENATE_VOTES_JSONL_NAME,
+            payload=xml_payload,
+            log=_log,
+            catching=(SenateXmlError,),
+        )
+        if detail is None:
             continue
         vote = _vote_from_senate_detail(detail)
         storage.upsert_vote(vote, fetched_at=fetched_at.isoformat())
@@ -284,11 +282,11 @@ def _load_senate(
         if limit is not None and votes_written >= limit:
             break
 
-    return LoadStats(
+    return _ChamberStats(
         votes_written=votes_written,
         positions_written=positions_written,
         snapshots_read=snapshots_read,
-        malformed=malformed,
+        envelope_failures=envelope_failures,
     )
 
 
@@ -313,21 +311,17 @@ def _parse_position_rows(
     for row in results:
         if not isinstance(row, dict):
             continue
-        try:
-            position = VotePosition.from_congress_api(row)
-        except (KeyError, ValueError, ValidationError) as exc:
-            failures.append(
-                ValidationFailure.from_exc(
-                    entity="vote_position",
-                    entity_key=vote_id,
-                    source_file=source_file,
-                    exc=exc,
-                    payload=row,
-                )
-            )
-            _log.warning("skipping position row for %s: %s", vote_id, exc)
-            continue
-        by_bioguide[position.bioguide_id] = position
+        position = parse_or_record(
+            failures,
+            partial(VotePosition.from_congress_api, row),
+            entity="vote_position",
+            entity_key=vote_id,
+            source_file=source_file,
+            payload=row,
+            log=_log,
+        )
+        if position is not None:
+            by_bioguide[position.bioguide_id] = position
     return list(by_bioguide.values())
 
 

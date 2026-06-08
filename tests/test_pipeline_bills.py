@@ -70,6 +70,15 @@ def _envelope_for_section(
     )
 
 
+def _failure_rows(db: Path) -> list[tuple[str, str]]:
+    """Read ``(entity, entity_key)`` from the production validation_failures table."""
+    with SqliteStorage(db, load_vec=False) as storage:
+        cursor = storage.connection.execute(
+            "SELECT entity, entity_key FROM validation_failures ORDER BY entity, entity_key"
+        )
+        return [(r["entity"], r["entity_key"]) for r in cursor.fetchall()]
+
+
 class TestLoadBills:
     def test_basic_load(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"
@@ -346,8 +355,8 @@ class TestLoadBillsValidationFailures:
         _write_jsonl(storage_dir, [_envelope_for(broken)])
         load_bills(storage_dir=storage_dir, db_path=db)
         load_bills(storage_dir=storage_dir, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 1
+        # Re-running does not double the row (replace-on-load, not append).
+        assert _failure_rows(db) == [("bill", "119-hr-1")]
 
     def test_clean_reload_converges_away_stale_rows(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"
@@ -355,13 +364,11 @@ class TestLoadBillsValidationFailures:
         broken = {**_detail_payload("detail_119_hr_1.json"), "originChamber": "Moon"}
         _write_jsonl(storage_dir, [_envelope_for(broken)])
         load_bills(storage_dir=storage_dir, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 1
+        assert _failure_rows(db) == [("bill", "119-hr-1")]
         # Re-scrape fixed the payload; the mirror table must drop the stale row.
         _write_jsonl(storage_dir, [_envelope_for(_detail_payload("detail_119_hr_1.json"))])
         load_bills(storage_dir=storage_dir, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 0
+        assert _failure_rows(db) == []
 
     def test_load_one_scopes_the_delete_to_one_bill(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"
@@ -375,8 +382,7 @@ class TestLoadBillsValidationFailures:
             [{"sponsorshipDate": "2025-01-03", "isOriginalCosponsor": True}],
         )
         load_bills(storage_dir=storage_dir, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 2
+        assert _failure_rows(db) == [("bill", "119-hr-22"), ("cosponsor", "119-hr-1")]
 
         # Fix hr-1's cosponsors and re-load just that bill. load_one narrows the
         # delete to entity_key=119-hr-1, so hr-22's bill failure must survive.
@@ -393,11 +399,30 @@ class TestLoadBillsValidationFailures:
         )
         load_one(storage_dir=storage_dir, db_path=db, bill_id="119-hr-1")
 
-        with SqliteStorage(db, load_vec=False) as storage:
-            rows = storage.connection.execute(
-                "SELECT entity, entity_key FROM validation_failures"
-            ).fetchall()
-        assert [(r["entity"], r["entity_key"]) for r in rows] == [("bill", "119-hr-22")]
+        assert _failure_rows(db) == [("bill", "119-hr-22")]
+
+    def test_limit_load_does_not_touch_failure_table(self, tmp_path: Path) -> None:
+        """A ``--limit`` load is non-converging: it must not erase rows for bills
+        it never (fully) processed (ADR 0023 / review task 4)."""
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        # A full load records a bill failure.
+        broken = {**_detail_payload("detail_119_hr_1.json"), "originChamber": "Moon"}
+        _write_jsonl(storage_dir, [_envelope_for(broken)])
+        load_bills(storage_dir=storage_dir, db_path=db)
+        assert _failure_rows(db) == [("bill", "119-hr-1")]
+
+        # The JSONL is now clean. A LIMITED load would, if it touched the table,
+        # converge it to empty (no failures) — the guard keeps the stale row.
+        _write_jsonl(storage_dir, [_envelope_for(_detail_payload("detail_119_hr_22.json"))])
+        stats = load_bills(storage_dir=storage_dir, db_path=db, limit=1)
+        assert stats.bills_written == 1
+        assert _failure_rows(db) == [("bill", "119-hr-1")]  # untouched
+
+        # The contrast: a full (non-limited) load over the same clean JSONL
+        # *does* converge the stale row away.
+        load_bills(storage_dir=storage_dir, db_path=db)
+        assert _failure_rows(db) == []
 
 
 class TestIndexBills:

@@ -41,6 +41,15 @@ def _envelope(payload: dict[str, Any], roll: int, fetched_at: datetime) -> dict[
     }
 
 
+def _failure_rows(db: Path) -> list[tuple[str, str]]:
+    """Read ``(entity, entity_key)`` from the production validation_failures table."""
+    with SqliteStorage(db, load_vec=False) as storage:
+        cursor = storage.connection.execute(
+            "SELECT entity, entity_key FROM validation_failures ORDER BY entity, entity_key"
+        )
+        return [(r["entity"], r["entity_key"]) for r in cursor.fetchall()]
+
+
 class TestLoad:
     def test_loads_bill_vote(self, tmp_path: Path) -> None:
         # Uses the real spike capture (roll 240, HR 3424, ~430 Members).
@@ -519,16 +528,40 @@ class TestValidationFailures:
         _write_envelopes(tmp_path / HOUSE_VOTES_JSONL_NAME, [_envelope({}, 900, ts)])
         load(storage_dir=tmp_path, db_path=db)
         load(storage_dir=tmp_path, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 1
+        # Re-running does not double the row (replace-on-load, not append).
+        assert _failure_rows(db) == [("vote", "house-119-1-900")]
         # Re-scrape fixed the vote: a real payload now parses, so the row clears.
         _write_envelopes(
             tmp_path / HOUSE_VOTES_JSONL_NAME,
             [_envelope(_fixture("detail_house_119_1_240.json")["houseRollCallVote"], 900, ts)],
         )
         load(storage_dir=tmp_path, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 0
+        assert _failure_rows(db) == []
+
+    def test_limit_load_does_not_touch_failure_table(self, tmp_path: Path) -> None:
+        """A ``--limit`` votes load is non-converging: it must not erase rows for
+        votes it never processed (ADR 0023 / review task 4)."""
+        ts = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+        db = tmp_path / "db.sqlite"
+        # A full load records a house-vote failure (empty payload → KeyError).
+        _write_envelopes(tmp_path / HOUSE_VOTES_JSONL_NAME, [_envelope({}, 900, ts)])
+        load(storage_dir=tmp_path, db_path=db)
+        assert _failure_rows(db) == [("vote", "house-119-1-900")]
+
+        # The JSONL is now clean. A LIMITED load would, if it touched the table,
+        # converge it to empty — the guard keeps the stale row.
+        _write_envelopes(
+            tmp_path / HOUSE_VOTES_JSONL_NAME,
+            [_envelope(_fixture("detail_house_119_1_240.json")["houseRollCallVote"], 240, ts)],
+        )
+        stats = load(storage_dir=tmp_path, db_path=db, limit=1)
+        assert stats.votes_written == 1
+        assert _failure_rows(db) == [("vote", "house-119-1-900")]  # untouched
+
+        # The contrast: a full (non-limited) load over the same clean JSONL
+        # *does* converge the stale row away.
+        load(storage_dir=tmp_path, db_path=db)
+        assert _failure_rows(db) == []
 
 
 def _fixture_kind(roll: int) -> str:

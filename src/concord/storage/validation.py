@@ -85,17 +85,6 @@ def replace_validation_failures(
         conn.executemany(_VF_INSERT_SQL, [_row_from_failure(f) for f in failures])
 
 
-def count_validation_failures(conn: sqlite3.Connection, *, entity: str | None = None) -> int:
-    """Row count, optionally filtered to one ``entity`` — for tests/diagnostics."""
-    if entity is None:
-        return int(conn.execute("SELECT COUNT(*) FROM validation_failures").fetchone()[0])
-    return int(
-        conn.execute(
-            "SELECT COUNT(*) FROM validation_failures WHERE entity = ?", (entity,)
-        ).fetchone()[0]
-    )
-
-
 def _row_from_failure(f: ValidationFailure) -> tuple[Any, ...]:
     """Project a :class:`ValidationFailure` into the column tuple; payload is
     dumped with sorted keys for a byte-stable row (matches runs storage)."""
