@@ -622,17 +622,3 @@ def _extract_vote_party_totals(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _is_election_vote(party_totals: list[dict[str, Any]]) -> bool:
     """Detect election-vote shape: any party-total entry carries `candidate`."""
     return any("candidate" in entry for entry in party_totals)
-
-
-__all__ = [
-    "HouseVoteMembers",
-    "SenateVoteDetail",
-    "SenateVotePosition",
-    "Vote",
-    "VoteKind",
-    "VotePosition",
-    "VoteThreshold",
-    "amendment_id_from_components",
-    "parse_vote_threshold",
-    "vote_id_from_components",
-]

@@ -209,6 +209,3 @@ class Proceeding(BaseModel):
             text=text,
             fetched_at=fetched_at,
         )
-
-
-__all__ = ["Article", "Issue", "Proceeding", "parse_granule_id"]
