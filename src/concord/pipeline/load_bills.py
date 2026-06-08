@@ -33,6 +33,7 @@ from concord.models.bills import (
     BillSummary,
     BillTitle,
 )
+from concord.models.validation import ValidationFailure
 from concord.scraper.bills import (
     BILL_ENRICHMENT_SECTIONS,
     BILLS_JSONL_NAME,
@@ -41,6 +42,11 @@ from concord.scraper.bills import (
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_bills")
+
+#: The Bill entity family for the validation_failures mirror table (ADR 0023):
+#: the tier-1 bill plus its five tier-2 child sections. A full ``load`` clears
+#: this whole family before re-inserting; ``load_one`` narrows by ``bill_id``.
+_BILL_ENTITIES: tuple[str, ...] = ("bill", "cosponsor", "action", "subject", "title", "summary")
 
 
 class LoadStats(NamedTuple):
@@ -71,6 +77,7 @@ def load(
     bills_written = 0
     snapshots_read = 0
     malformed = 0
+    failures: list[ValidationFailure] = []
 
     jsonl_path = storage_dir / BILLS_JSONL_NAME
     latest_per_key: dict[tuple[int, str, int], tuple[datetime, dict[str, Any]]] = {}
@@ -83,8 +90,16 @@ def load(
             try:
                 bill = BillDetail.from_congress_api(payload)
             except (KeyError, ValueError, ValidationError) as exc:
-                malformed += 1
-                _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
+                failures.append(
+                    ValidationFailure.from_exc(
+                        entity="bill",
+                        entity_key=f"{_c}-{_t}-{_n}",
+                        source_file=BILLS_JSONL_NAME,
+                        exc=exc,
+                        payload=payload,
+                    )
+                )
+                _log.warning("skipping bill %s-%s-%s after parse failure: %s", _c, _t, _n, exc)
                 continue
             storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
             bills_written += 1
@@ -100,11 +115,19 @@ def load(
         # paid the fsync cost per section per bill now pays it once.
         with storage.transaction():
             for section in BILL_ENRICHMENT_SECTIONS:
-                t2 = _load_tier2_section(storage_dir, section, storage)
+                t2 = _load_tier2_section(storage_dir, section, storage, failures)
                 tier2_snapshots_read += t2["snapshots_read"]
                 tier2_bills_updated += t2["bills_updated"]
                 tier2_orphans_skipped += t2["orphans_skipped"]
                 malformed += t2["malformed"]
+
+        # Replace-on-load the model-parse failures for the bill family (ADR 0023).
+        # Outside the transaction() block so it gets its own BEGIN/COMMIT; called
+        # unconditionally so a now-clean load converges away stale rows. malformed
+        # counts every class-(b) failure here (envelope corruption is class (a),
+        # counted inline above and in the tier-2 counters).
+        storage.replace_validation_failures(failures, entities=_BILL_ENTITIES)
+        malformed += len(failures)
     finally:
         storage.close()
 
@@ -146,6 +169,7 @@ def load_one(
     bills_written = 0
     snapshots_read = 0
     malformed = 0
+    failures: list[ValidationFailure] = []
 
     jsonl_path = storage_dir / BILLS_JSONL_NAME
     latest: tuple[datetime, dict[str, Any]] | None = None
@@ -161,19 +185,32 @@ def load_one(
                 storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
                 bills_written = 1
             except (KeyError, ValueError, ValidationError) as exc:
-                malformed += 1
-                _log.warning("skipping bill after parse failure: %s; payload=%r", exc, payload)
+                failures.append(
+                    ValidationFailure.from_exc(
+                        entity="bill",
+                        entity_key=bill_id,
+                        source_file=BILLS_JSONL_NAME,
+                        exc=exc,
+                        payload=payload,
+                    )
+                )
+                _log.warning("skipping bill %s after parse failure: %s", bill_id, exc)
 
         tier2_snapshots_read = 0
         tier2_bills_updated = 0
         tier2_orphans_skipped = 0
         with storage.transaction():
             for section in BILL_ENRICHMENT_SECTIONS:
-                t2 = _load_tier2_section_for_bill(storage_dir, section, storage, bill_id)
+                t2 = _load_tier2_section_for_bill(storage_dir, section, storage, bill_id, failures)
                 tier2_snapshots_read += t2["snapshots_read"]
                 tier2_bills_updated += t2["bills_updated"]
                 tier2_orphans_skipped += t2["orphans_skipped"]
                 malformed += t2["malformed"]
+
+        # Narrow the replace to this one bill (ADR 0016/0023): the per-bill
+        # enrichment flow must not disturb other bills' failure rows.
+        storage.replace_validation_failures(failures, entities=_BILL_ENTITIES, entity_key=bill_id)
+        malformed += len(failures)
     finally:
         storage.close()
 
@@ -227,6 +264,7 @@ def _load_tier2_section_for_bill(
     section: str,
     storage: SqliteStorage,
     bill_id: str,
+    failures: list[ValidationFailure],
 ) -> dict[str, int]:
     """Per-bill twin of :func:`_load_tier2_section`."""
     counters = {
@@ -271,7 +309,7 @@ def _load_tier2_section_for_bill(
         )
         return counters
     fetched_at, payload = latest
-    _project_section(storage, section, bill_id, payload, fetched_at.isoformat())
+    _project_section(storage, section, bill_id, payload, fetched_at.isoformat(), failures)
     counters["bills_updated"] = 1
     return counters
 
@@ -309,6 +347,7 @@ def _load_tier2_section(
     storage_dir: Path,
     section: str,
     storage: SqliteStorage,
+    failures: list[ValidationFailure],
 ) -> dict[str, int]:
     """Project one tier-2 JSONL file into its child table.
 
@@ -358,21 +397,26 @@ def _load_tier2_section(
                 section,
             )
             continue
-        _project_section(storage, section, bill_id, payload, fetched_at.isoformat())
+        _project_section(storage, section, bill_id, payload, fetched_at.isoformat(), failures)
         counters["bills_updated"] += 1
     return counters
 
 
 # Per-section projection: extract the array from the payload, parse each
-# row via the model layer, and call the matching storage method.
+# row via the model layer, and call the matching storage method. ``source_file``
+# is the tier-2 JSONL the rows came from; it + ``failures`` thread down to
+# ``_parsed_rows`` so each dropped child row becomes a validation_failures row
+# keyed on the parent ``bill_id`` (ADR 0023).
 def _project_section(
     storage: SqliteStorage,
     section: str,
     bill_id: str,
     payload: dict[str, Any],
     fetched_at: str,
+    failures: list[ValidationFailure],
 ) -> None:
-    _SECTION_PROJECTORS[section](storage, bill_id, payload, fetched_at)
+    source_file = enrichment_jsonl_name(section)
+    _SECTION_PROJECTORS[section](storage, bill_id, payload, fetched_at, source_file, failures)
 
 
 def _parsed_rows[T](
@@ -380,8 +424,15 @@ def _parsed_rows[T](
     parse: Callable[[dict[str, Any]], T],
     bill_id: str,
     row_label: str,
+    source_file: str,
+    failures: list[ValidationFailure],
 ) -> Iterator[T]:
-    """Yield parsed rows; log + skip any that raise on ``parse``."""
+    """Yield parsed rows; record + skip any that raise on ``parse``.
+
+    ``row_label`` is the entity name (``"cosponsor"`` / ``"action"`` / …);
+    each failed row appends a :class:`ValidationFailure` keyed on the parent
+    ``bill_id`` (ADR 0023) and keeps a trimmed warning heartbeat.
+    """
     if not isinstance(rows, list):
         return
     for row in rows:
@@ -390,16 +441,35 @@ def _parsed_rows[T](
         try:
             yield parse(row)
         except (KeyError, ValueError, ValidationError) as exc:
-            _log.warning("skipping %s row for %s: %s; payload=%r", row_label, bill_id, exc, row)
+            failures.append(
+                ValidationFailure.from_exc(
+                    entity=row_label,
+                    entity_key=bill_id,
+                    source_file=source_file,
+                    exc=exc,
+                    payload=row,
+                )
+            )
+            _log.warning("skipping %s row for %s: %s", row_label, bill_id, exc)
 
 
 def _project_cosponsors(
-    storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
+    storage: SqliteStorage,
+    bill_id: str,
+    payload: dict[str, Any],
+    fetched_at: str,
+    source_file: str,
+    failures: list[ValidationFailure],
 ) -> None:
     cosponsors: list[BillCosponsor] = []
     seen_bioguides: set[str] = set()
     for parsed in _parsed_rows(
-        payload.get("cosponsors") or [], BillCosponsor.from_congress_api, bill_id, "cosponsor"
+        payload.get("cosponsors") or [],
+        BillCosponsor.from_congress_api,
+        bill_id,
+        "cosponsor",
+        source_file,
+        failures,
     ):
         if parsed.bioguide_id in seen_bioguides:
             continue
@@ -409,44 +479,89 @@ def _project_cosponsors(
 
 
 def _project_actions(
-    storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
+    storage: SqliteStorage,
+    bill_id: str,
+    payload: dict[str, Any],
+    fetched_at: str,
+    source_file: str,
+    failures: list[ValidationFailure],
 ) -> None:
     actions = list(
-        _parsed_rows(payload.get("actions") or [], BillAction.from_congress_api, bill_id, "action")
+        _parsed_rows(
+            payload.get("actions") or [],
+            BillAction.from_congress_api,
+            bill_id,
+            "action",
+            source_file,
+            failures,
+        )
     )
     storage.replace_bill_actions(bill_id, actions, fetched_at=fetched_at)
 
 
 def _project_subjects(
-    storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
+    storage: SqliteStorage,
+    bill_id: str,
+    payload: dict[str, Any],
+    fetched_at: str,
+    source_file: str,
+    failures: list[ValidationFailure],
 ) -> None:
     subjects_obj = payload.get("subjects") or {}
     raw = subjects_obj.get("legislativeSubjects", []) if isinstance(subjects_obj, dict) else []
-    subjects = list(_parsed_rows(raw, BillSubject.from_congress_api, bill_id, "subject"))
+    subjects = list(
+        _parsed_rows(raw, BillSubject.from_congress_api, bill_id, "subject", source_file, failures)
+    )
     storage.replace_bill_subjects(bill_id, subjects, fetched_at=fetched_at)
 
 
 def _project_titles(
-    storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
+    storage: SqliteStorage,
+    bill_id: str,
+    payload: dict[str, Any],
+    fetched_at: str,
+    source_file: str,
+    failures: list[ValidationFailure],
 ) -> None:
     titles = list(
-        _parsed_rows(payload.get("titles") or [], BillTitle.from_congress_api, bill_id, "title")
+        _parsed_rows(
+            payload.get("titles") or [],
+            BillTitle.from_congress_api,
+            bill_id,
+            "title",
+            source_file,
+            failures,
+        )
     )
     storage.replace_bill_titles(bill_id, titles, fetched_at=fetched_at)
 
 
 def _project_summaries(
-    storage: SqliteStorage, bill_id: str, payload: dict[str, Any], fetched_at: str
+    storage: SqliteStorage,
+    bill_id: str,
+    payload: dict[str, Any],
+    fetched_at: str,
+    source_file: str,
+    failures: list[ValidationFailure],
 ) -> None:
     summaries = list(
         _parsed_rows(
-            payload.get("summaries") or [], BillSummary.from_congress_api, bill_id, "summary"
+            payload.get("summaries") or [],
+            BillSummary.from_congress_api,
+            bill_id,
+            "summary",
+            source_file,
+            failures,
         )
     )
     storage.replace_bill_summaries(bill_id, summaries, fetched_at=fetched_at)
 
 
-_SECTION_PROJECTORS: dict[str, Callable[[SqliteStorage, str, dict[str, Any], str], None]] = {
+_SectionProjector = Callable[
+    [SqliteStorage, str, dict[str, Any], str, str, list[ValidationFailure]], None
+]
+
+_SECTION_PROJECTORS: dict[str, _SectionProjector] = {
     "cosponsors": _project_cosponsors,
     "actions": _project_actions,
     "subjects": _project_subjects,
