@@ -572,17 +572,14 @@ class SqliteStorage:
 
         A mirror-table write (ADR 0019): DELETE the ``entities`` family (narrowed
         to ``entity_key`` for the ``load_one`` path), then INSERT the current
-        ``failures``. Always called by each loader — even with an empty list — so
-        a now-clean load converges away stale rows.
+        ``failures``. Called by each converging load — even with an empty list, so
+        a now-clean load clears stale rows. A ``--limit`` load skips it (it only
+        processed a subset, so a family-wide replace would drop real rows).
         """
         with self._maybe_transaction():
             validation_storage.replace_validation_failures(
                 self._conn, failures, entities=entities, entity_key=entity_key
             )
-
-    def count_validation_failures(self, *, entity: str | None = None) -> int:
-        """Count ``validation_failures`` rows, optionally filtered to one ``entity``."""
-        return validation_storage.count_validation_failures(self._conn, entity=entity)
 
     # -- Votes (Phase 3a) -------------------------------------------------
 

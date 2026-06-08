@@ -46,6 +46,15 @@ def _envelope_for(
     )
 
 
+def _failure_rows(db: Path) -> list[tuple[str, str]]:
+    """Read ``(entity, entity_key)`` from the production validation_failures table."""
+    with SqliteStorage(db, load_vec=False) as storage:
+        cursor = storage.connection.execute(
+            "SELECT entity, entity_key FROM validation_failures ORDER BY entity, entity_key"
+        )
+        return [(r["entity"], r["entity_key"]) for r in cursor.fetchall()]
+
+
 class TestLoadMembers:
     def test_one_snapshot_yields_one_term(self, tmp_path: Path) -> None:
         jsonl = tmp_path / "members.jsonl"
@@ -261,8 +270,8 @@ class TestLoadValidationFailures:
 
         load_members(jsonl_path=jsonl, db_path=db)
         load_members(jsonl_path=jsonl, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 1
+        # Re-running does not double the row (replace-on-load, not append).
+        assert _failure_rows(db) == [("term", "O000172/102")]
 
     def test_clean_reload_converges_away_stale_rows(self, tmp_path: Path) -> None:
         jsonl = tmp_path / "members.jsonl"
@@ -271,14 +280,12 @@ class TestLoadValidationFailures:
         # First load: a term failure (Congress 102).
         _write_jsonl(jsonl, [_envelope_for(aoc, congress=102)])
         load_members(jsonl_path=jsonl, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 1
+        assert _failure_rows(db) == [("term", "O000172/102")]
         # Re-scrape fixed the data: now a Congress the terms cover. The mirror
         # table must converge to zero rows.
         _write_jsonl(jsonl, [_envelope_for(aoc, congress=119)])
         load_members(jsonl_path=jsonl, db_path=db)
-        with SqliteStorage(db, load_vec=False) as storage:
-            assert storage.count_validation_failures() == 0
+        assert _failure_rows(db) == []
 
 
 class TestIndexMembers:

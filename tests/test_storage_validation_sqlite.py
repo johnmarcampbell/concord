@@ -44,14 +44,21 @@ def storage(tmp_path: Path) -> Iterator[SqliteStorage]:
     s.close()
 
 
+def _rows(storage: SqliteStorage) -> list[tuple[str, str]]:
+    """Read ``(entity, entity_key)`` directly from the production table."""
+    cursor = storage.connection.execute(
+        "SELECT entity, entity_key FROM validation_failures ORDER BY entity, entity_key"
+    )
+    return [(r["entity"], r["entity_key"]) for r in cursor.fetchall()]
+
+
 class TestReplaceValidationFailures:
-    def test_insert_and_count(self, storage: SqliteStorage) -> None:
+    def test_insert_records_rows(self, storage: SqliteStorage) -> None:
         storage.replace_validation_failures(
             [_failure(), _failure(entity="action", field_path="actionDate")],
             entities=_BILL_ENTITIES,
         )
-        assert storage.count_validation_failures() == 2
-        assert storage.count_validation_failures(entity="cosponsor") == 1
+        assert _rows(storage) == [("action", "119-hr-1"), ("cosponsor", "119-hr-1")]
 
     def test_replace_clears_whole_family_then_reinserts(self, storage: SqliteStorage) -> None:
         storage.replace_validation_failures(
@@ -60,16 +67,14 @@ class TestReplaceValidationFailures:
         )
         # A second full-family load with a single failure must not accumulate.
         storage.replace_validation_failures([_failure(entity="title")], entities=_BILL_ENTITIES)
-        assert storage.count_validation_failures() == 1
-        assert storage.count_validation_failures(entity="title") == 1
-        assert storage.count_validation_failures(entity="cosponsor") == 0
+        assert _rows(storage) == [("title", "119-hr-1")]
 
     def test_empty_failures_clears_stale_rows(self, storage: SqliteStorage) -> None:
         storage.replace_validation_failures([_failure()], entities=_BILL_ENTITIES)
-        assert storage.count_validation_failures() == 1
+        assert _rows(storage) == [("cosponsor", "119-hr-1")]
         # A re-load that now parses cleanly passes an empty list — convergence.
         storage.replace_validation_failures([], entities=_BILL_ENTITIES)
-        assert storage.count_validation_failures() == 0
+        assert _rows(storage) == []
 
     def test_entity_key_narrows_the_delete(self, storage: SqliteStorage) -> None:
         # Two bills' failures present.
@@ -82,8 +87,7 @@ class TestReplaceValidationFailures:
         )
         # load_one for bill 1 re-loads cleanly: only bill 1's rows clear.
         storage.replace_validation_failures([], entities=_BILL_ENTITIES, entity_key="119-hr-1")
-        rows = storage.connection.execute("SELECT entity_key FROM validation_failures").fetchall()
-        assert [r["entity_key"] for r in rows] == ["119-hr-2"]
+        assert _rows(storage) == [("cosponsor", "119-hr-2")]
 
     def test_replace_does_not_touch_other_families(self, storage: SqliteStorage) -> None:
         storage.replace_validation_failures(
@@ -92,8 +96,7 @@ class TestReplaceValidationFailures:
         )
         # A bill-family replace must leave the member-family row intact.
         storage.replace_validation_failures([_failure()], entities=_BILL_ENTITIES)
-        assert storage.count_validation_failures(entity="member") == 1
-        assert storage.count_validation_failures(entity="cosponsor") == 1
+        assert _rows(storage) == [("cosponsor", "119-hr-1"), ("member", "O000172")]
 
     def test_payload_round_trips_as_sorted_json(self, storage: SqliteStorage) -> None:
         storage.replace_validation_failures(
