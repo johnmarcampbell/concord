@@ -8,7 +8,7 @@ This document covers the **recurring** release workflow — what to do every tim
 | ---- | ----- | ------ |
 | 1. Bump `[project].version` in `pyproject.toml` to e.g. `0.3.0rc1` | PR + merge | Pyproject now reflects the next dry-run version |
 | 2. Create a GitHub Release tagged `v0.3.0rc1`, **"Set as a pre-release" ✅** | GitHub UI | Fires `publish-testpypi` only — TestPyPI gets the wheel |
-| 3. Smoke-test the TestPyPI wheel (see [recipe](#testpypi-smoke-test-recipe)) | Your machine | Confirms install + import + CLI work |
+| 3. Smoke-test the TestPyPI wheel — run [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) (or the [manual recipe](#testpypi-smoke-test-recipe)) | Your machine | Confirms install + import + CLI work |
 | 4. Bump `[project].version` to the real version, e.g. `0.3.0` | PR + merge | Drops the `rc1` suffix |
 | 5. Create a GitHub Release tagged `v0.3.0`, pre-release **❌ unchecked** | GitHub UI | Fires `publish-pypi` + Docker→GHCR; real PyPI gets the wheel |
 | 6. Verify on https://pypi.org/project/congress-concord/ | PyPI page | Eyeball the release page, README rendering, classifiers |
@@ -31,6 +31,8 @@ If you forget to bump `pyproject.toml`, the symptoms depend on the situation:
 Easiest discipline: the bump-PR's title should match the GitHub release's tag (e.g. PR titled "Bump to 0.3.0" pairs with release `v0.3.0`).
 
 ## TestPyPI smoke-test recipe
+
+> **Shortcut:** [`scripts/smoke-test-release.sh`](../scripts/smoke-test-release.sh) runs this whole recipe for you in a throwaway venv — `scripts/smoke-test-release.sh [version] [testpypi|pypi]`, where `version` defaults to `pyproject.toml`'s and the index defaults to TestPyPI. Use it for step 3 (`scripts/smoke-test-release.sh`) and as a final check after step 5 (`scripts/smoke-test-release.sh X.Y.Z pypi`). It is scoped to the smoke test only — it does not bump, tag, or release, since those steps are human-gated by design (see the footgun and checkbox sections). The manual recipe below explains *why* it works the way it does.
 
 The pattern most tutorials suggest — `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ <package>` — **is unsafe** for our use case. Here's why, and what to do instead.
 
