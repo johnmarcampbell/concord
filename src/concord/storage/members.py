@@ -7,12 +7,16 @@ these and owns the transaction boundary; the write helper here that needs
 member+terms atomicity manages its own self-contained BEGIN/COMMIT.
 """
 
+import logging
 import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
 from concord.models.members import Member, Term
+from concord.storage._ddl import rebuild_table_add_not_null
 from concord.storage._sql import insert_sql, upsert_sql
+
+_log = logging.getLogger(__name__)
 
 MEMBERS_SCHEMA = """
 -- Members (Phase 1). Per-person identity fields; per-Term records the
@@ -35,11 +39,11 @@ CREATE TABLE IF NOT EXISTS member_terms (
     bioguide_id TEXT NOT NULL REFERENCES members(bioguide_id) ON DELETE CASCADE,
     congress    INTEGER NOT NULL,
     chamber     TEXT NOT NULL CHECK (chamber IN ('house', 'senate')),
-    party       TEXT,
+    party       TEXT NOT NULL,
     state       TEXT NOT NULL,
     district    INTEGER,
-    start_date  TEXT,
-    end_date    TEXT,
+    start_date  TEXT NOT NULL,
+    end_date    TEXT NOT NULL,
     PRIMARY KEY (bioguide_id, congress, chamber)
 );
 
@@ -86,6 +90,24 @@ _TERM_COLUMNS: tuple[str, ...] = (
 
 _MEMBER_UPSERT_SQL = upsert_sql("members", _MEMBER_COLUMNS, conflict=("bioguide_id",))
 _TERM_INSERT_SQL = insert_sql("member_terms", _TERM_COLUMNS)
+
+
+def m005_member_terms_not_null(conn: sqlite3.Connection) -> None:
+    """ADR 0024: tighten ``member_terms.{party,start_date,end_date}`` to ``NOT NULL``.
+
+    Guarded table rebuild — a no-op on fresh installs whose ``_BASE_SCHEMA``
+    already declares the constraint. Any legacy row holding a ``NULL`` in these
+    columns is dropped (derived state, rebuildable from JSONL per ADR 0002) and
+    the count logged. The rebuild preserves the chamber CHECK and the FK to
+    ``members`` by injecting ``NOT NULL`` into the live DDL.
+    """
+    dropped = rebuild_table_add_not_null(
+        conn, table="member_terms", not_null_columns=("party", "start_date", "end_date")
+    )
+    if dropped:
+        _log.warning(
+            "m005: dropped %d member_terms row(s) with NULL party/start_date/end_date", dropped
+        )
 
 
 def upsert_member(

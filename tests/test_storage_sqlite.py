@@ -641,3 +641,233 @@ class TestSchemaMigrations:
             "  - _BASE_SCHEMA has something the migrations don't.\n"
             "Update _BASE_SCHEMA (or the migration) so they describe the same head."
         )
+
+
+# The ten derived mirror columns tightened to NOT NULL in issue #90 / ADR 0024.
+_NOT_NULL_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("member_terms", "party"),
+    ("member_terms", "start_date"),
+    ("member_terms", "end_date"),
+    ("bill_cosponsors", "sponsorship_date"),
+    ("bill_actions", "action_code"),
+    ("bill_actions", "source_system"),
+    ("bill_summaries", "action_date"),
+    ("bill_summaries", "action_desc"),
+    ("vote_positions", "vote_party"),
+    ("vote_positions", "vote_state"),
+)
+
+
+class TestDerivedColumnsNotNull:
+    """Issue #90 / ADR 0024: the ten derived mirror columns are NOT NULL on a fresh DB."""
+
+    @pytest.mark.parametrize(("table", "column"), _NOT_NULL_COLUMNS)
+    def test_column_is_not_null(self, tmp_path: Path, table: str, column: str) -> None:
+        db_path = tmp_path / "fresh.db"
+        ensure_schema(db_path)
+        conn = sqlite3.connect(db_path)
+        try:
+            notnull = {row[1]: row[3] for row in conn.execute(f"PRAGMA table_info({table})")}
+        finally:
+            conn.close()
+        assert notnull[column] == 1, f"{table}.{column} should be NOT NULL"
+
+
+# Pre-#90 nullable DDL for the five tightened tables — identical to the head
+# schema except the ten columns lack NOT NULL. Used to build a DB that predates
+# the constraint so migrations 5-7 have real work to do.
+_LEGACY_NULLABLE_SCHEMA = """
+CREATE TABLE member_terms (
+    bioguide_id TEXT NOT NULL REFERENCES members(bioguide_id) ON DELETE CASCADE,
+    congress    INTEGER NOT NULL,
+    chamber     TEXT NOT NULL CHECK (chamber IN ('house', 'senate')),
+    party       TEXT,
+    state       TEXT NOT NULL,
+    district    INTEGER,
+    start_date  TEXT,
+    end_date    TEXT,
+    PRIMARY KEY (bioguide_id, congress, chamber)
+);
+CREATE INDEX idx_member_terms_congress ON member_terms (congress);
+CREATE INDEX idx_member_terms_state ON member_terms (state);
+
+CREATE TABLE bill_cosponsors (
+    bill_id                     TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    bioguide_id                 TEXT NOT NULL,
+    sponsorship_date            TEXT,
+    sponsorship_withdrawn_date  TEXT,
+    is_original_cosponsor       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (bill_id, bioguide_id)
+);
+CREATE INDEX idx_bill_cosponsors_bioguide ON bill_cosponsors (bioguide_id);
+
+CREATE TABLE bill_actions (
+    bill_id        TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    ord            INTEGER NOT NULL,
+    action_date    TEXT NOT NULL,
+    action_text    TEXT NOT NULL,
+    action_code    TEXT,
+    source_system  TEXT,
+    PRIMARY KEY (bill_id, ord)
+);
+CREATE INDEX idx_bill_actions_date ON bill_actions (action_date DESC);
+
+CREATE TABLE bill_summaries (
+    bill_id        TEXT NOT NULL REFERENCES bills(bill_id) ON DELETE CASCADE,
+    version_code   TEXT NOT NULL,
+    action_date    TEXT,
+    action_desc    TEXT,
+    summary_text   TEXT NOT NULL,
+    PRIMARY KEY (bill_id, version_code)
+);
+
+CREATE TABLE vote_positions (
+    vote_id      TEXT NOT NULL,
+    bioguide_id  TEXT NOT NULL,
+    position     TEXT NOT NULL,
+    vote_party   TEXT,
+    vote_state   TEXT,
+    PRIMARY KEY (vote_id, bioguide_id)
+);
+CREATE INDEX idx_vote_positions_member ON vote_positions (bioguide_id);
+"""
+
+# Seed rows for the legacy DB: one valid row per table plus one row that holds a
+# NULL in a now-tightened column (which the rebuild must drop). Parents (M1, the
+# bill) exist so the valid rows survive the rebuild's FK re-check; the NULL rows
+# are filtered out before that check.
+_LEGACY_SEED_SQL = """
+INSERT INTO members (bioguide_id, first_name, last_name, display_name, fetched_at)
+VALUES ('M1', 'F', 'L', 'F L', 't'), ('M2', 'G', 'H', 'G H', 't');
+
+INSERT INTO bills
+    (bill_id, congress, bill_type, bill_number, origin_chamber, title, update_date, fetched_at)
+VALUES ('119-hr-1', 119, 'hr', 1, 'House', 'A Bill', '2025-01-09', 't');
+
+INSERT INTO member_terms
+    (bioguide_id, congress, chamber, party, state, district, start_date, end_date)
+VALUES
+    ('M1', 119, 'house', 'D', 'VT', 1, '2025-01-03', '2027-01-03'),
+    ('M2', 119, 'senate', NULL, 'CA', NULL, '2025-01-03', '2027-01-03');
+
+INSERT INTO bill_cosponsors
+    (bill_id, bioguide_id, sponsorship_date, sponsorship_withdrawn_date, is_original_cosponsor)
+VALUES
+    ('119-hr-1', 'M1', '2025-01-09', NULL, 1),
+    ('119-hr-1', 'M2', NULL, NULL, 0);
+
+INSERT INTO bill_actions
+    (bill_id, ord, action_date, action_text, action_code, source_system)
+VALUES
+    ('119-hr-1', 0, '2025-01-09', 'Introduced', 'E40000', 'House'),
+    ('119-hr-1', 1, '2025-01-10', 'Referred', NULL, NULL);
+
+INSERT INTO bill_summaries
+    (bill_id, version_code, action_date, action_desc, summary_text)
+VALUES
+    ('119-hr-1', '00', '2025-01-09', 'Introduced in House', 'Summary'),
+    ('119-hr-1', '01', NULL, NULL, 'Other');
+
+INSERT INTO vote_positions
+    (vote_id, bioguide_id, position, vote_party, vote_state)
+VALUES
+    ('senate-119-1-1', 'M1', 'Yea', 'D', 'VT'),
+    ('senate-119-1-1', 'M2', 'Nay', NULL, NULL);
+"""
+
+
+_LEGACY_TABLES: tuple[str, ...] = (
+    "member_terms",
+    "bill_cosponsors",
+    "bill_actions",
+    "bill_summaries",
+    "vote_positions",
+)
+
+
+def _build_legacy_nullable_db(db_path: Path) -> None:
+    """Write a pre-#90 DB: the head schema but the five tightened tables nullable, at version 4."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(_BASE_SCHEMA)  # full head schema (target tables NOT NULL)
+        for table in _LEGACY_TABLES:
+            conn.execute(f"DROP TABLE {table}")
+        conn.executescript(_LEGACY_NULLABLE_SCHEMA)  # recreate the five nullable
+        conn.executescript(_LEGACY_SEED_SQL)
+        conn.execute("PRAGMA user_version = 4")  # the pre-#90 _HEAD
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestNotNullRebuildMigration:
+    """ADR 0024: migrations 5-7 converge a legacy nullable DB to the NOT NULL head."""
+
+    def test_legacy_db_converges_and_drops_null_rows(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "legacy.db"
+        _build_legacy_nullable_db(db_path)
+
+        ensure_schema(db_path)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == _HEAD
+            # Every tightened column is now NOT NULL.
+            for table, column in _NOT_NULL_COLUMNS:
+                notnull = {r[1]: r[3] for r in conn.execute(f"PRAGMA table_info({table})")}
+                assert notnull[column] == 1, f"{table}.{column} not tightened"
+            # The NULL-violating row was dropped; the valid row survived.
+            for table in _LEGACY_TABLES:
+                rows = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                assert rows == 1, f"{table} should have exactly the one valid row"
+            assert conn.execute("SELECT bioguide_id FROM member_terms").fetchone()[0] == "M1"
+        finally:
+            conn.close()
+
+    def test_rebuilt_schema_matches_fresh(self, tmp_path: Path) -> None:
+        """The converged DB is structurally identical to a fresh head DB.
+
+        Pins what the schema-equivalence fingerprint *can* see (columns,
+        notnull, pk, indexes); CHECK/FK preservation is covered separately
+        below since the fingerprint is blind to them.
+        """
+        legacy = tmp_path / "legacy.db"
+        _build_legacy_nullable_db(legacy)
+        ensure_schema(legacy)
+
+        # Build the reference the same way (ensure_schema, not bare _BASE_SCHEMA) so
+        # both carry sqlite-vec's chunks_vec shadow tables and the comparison is
+        # apples-to-apples.
+        fresh = tmp_path / "fresh.db"
+        ensure_schema(fresh)
+
+        fresh_conn = sqlite3.connect(fresh)
+        migrated_conn = sqlite3.connect(legacy)
+        try:
+            assert _schema_fingerprint(migrated_conn) == _schema_fingerprint(fresh_conn)
+        finally:
+            fresh_conn.close()
+            migrated_conn.close()
+
+    def test_rebuild_preserves_check_and_fk(self, tmp_path: Path) -> None:
+        """The rebuild keeps member_terms' chamber CHECK and the bill_* FK alive."""
+        db_path = tmp_path / "legacy.db"
+        _build_legacy_nullable_db(db_path)
+        ensure_schema(db_path)
+
+        storage = SqliteStorage(db_path, load_vec=False)  # connection has foreign_keys ON
+        try:
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+                storage.connection.execute(
+                    "INSERT INTO member_terms "
+                    "(bioguide_id, congress, chamber, party, state, start_date, end_date) "
+                    "VALUES ('M1', 120, 'bogus', 'D', 'VT', '2025-01-03', '2027-01-03')"
+                )
+            with pytest.raises(sqlite3.IntegrityError):
+                storage.connection.execute(
+                    "INSERT INTO bill_cosponsors "
+                    "(bill_id, bioguide_id, sponsorship_date, is_original_cosponsor) "
+                    "VALUES ('no-such-bill', 'M1', '2025-01-09', 0)"
+                )
+        finally:
+            storage.close()

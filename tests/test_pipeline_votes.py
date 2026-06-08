@@ -236,7 +236,7 @@ def _seed_member(
     *,
     chamber: str = "senate",
     start_date: str = "2023-01-03",
-    end_date: str | None = None,
+    end_date: str = "2027-01-03",
 ) -> None:
     storage = SqliteStorage(db, load_vec=False)
     try:

@@ -7,12 +7,16 @@ persistence/query helpers. ``SqliteStorage`` composes these and owns the
 transaction boundary; the helpers here are pure SQL over a connection.
 """
 
+import logging
 import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
 from concord.models.votes import Vote, VotePosition
+from concord.storage._ddl import rebuild_table_add_not_null
 from concord.storage._sql import upsert_sql
+
+_log = logging.getLogger(__name__)
 
 VOTES_SCHEMA = """
 -- Votes (Phase 3a). One row per recorded roll-call decision in a chamber.
@@ -59,8 +63,8 @@ CREATE TABLE IF NOT EXISTS vote_positions (
     vote_id      TEXT NOT NULL,
     bioguide_id  TEXT NOT NULL,
     position     TEXT NOT NULL,
-    vote_party   TEXT,
-    vote_state   TEXT,
+    vote_party   TEXT NOT NULL,
+    vote_state   TEXT NOT NULL,
     PRIMARY KEY (vote_id, bioguide_id)
 );
 
@@ -125,6 +129,24 @@ _VOTE_POSITION_INSERT_SQL = (
     + ", ".join("?" for _ in _VOTE_POSITION_COLUMNS)
     + ")"
 )
+
+
+def m007_vote_positions_not_null(conn: sqlite3.Connection) -> None:
+    """ADR 0024: tighten ``vote_positions.{vote_party,vote_state}`` to ``NOT NULL``.
+
+    Guarded table rebuild — a no-op on fresh installs whose ``_BASE_SCHEMA``
+    already declares the constraint. Any legacy row holding a ``NULL`` in these
+    columns is dropped (derived state, rebuildable from JSONL per ADR 0002) and the
+    count logged. ``vote_positions`` has no FK or CHECK, so the rebuild is a plain
+    structural copy.
+    """
+    dropped = rebuild_table_add_not_null(
+        conn, table="vote_positions", not_null_columns=("vote_party", "vote_state")
+    )
+    if dropped:
+        _log.warning(
+            "m007: dropped %d vote_positions row(s) with NULL vote_party/vote_state", dropped
+        )
 
 
 def upsert_vote(conn: sqlite3.Connection, vote: Vote, *, fetched_at: str) -> None:

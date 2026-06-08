@@ -133,11 +133,15 @@ class TestUpsertMember:
             "VALUES (?, ?, ?, ?, ?)",
             ("X000001", "X", "Y", "X Y", "2026-05-25T00:00:00+00:00"),
         )
-        with pytest.raises(sqlite3.IntegrityError):
+        # Supply the NOT NULL columns (party/start_date/end_date) so the *only*
+        # constraint this row violates is the chamber CHECK — otherwise a NOT NULL
+        # trip could mask it and the test would pass for the wrong reason.
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
             storage.connection.execute(
-                "INSERT INTO member_terms (bioguide_id, congress, chamber, state) "
-                "VALUES (?, ?, ?, ?)",
-                ("X000001", 119, "bogus", "VT"),
+                "INSERT INTO member_terms "
+                "(bioguide_id, congress, chamber, party, state, start_date, end_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("X000001", 119, "bogus", "D", "VT", "2025-01-03", "2027-01-03"),
             )
 
 
