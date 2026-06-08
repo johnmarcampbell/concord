@@ -88,6 +88,23 @@ PyPI rejects re-uploads of a version that's already been published, even after a
 
 Yanking hides broken releases from the dependency resolver but does not free up the version number. There is no way to "redo" a version on PyPI.
 
+## Recovery: `publish-pypi` failed during attestation (Sigstore 5xx)
+
+`gh-action-pypi-publish` signs the artifact and records a PEP 740 attestation in Sigstore's Rekor transparency log **before** it uploads to PyPI. Rekor occasionally returns a transient `5xx`, which fails the job partway through with something like:
+
+```
+requests.exceptions.HTTPError: 502 Server Error: Bad Gateway for url: https://rekor.sigstore.dev/api/v1/log/entries
+sigstore._internal.rekor.RekorClientError: Rekor returned an unknown error with HTTP 502
+```
+
+This is **not** a problem with your package, version, or trusted-publisher config — it's a Sigstore outage. Because attestation runs *before* the upload, nothing reached PyPI, so unlike the rejected-upload case above the version is still free. To recover:
+
+1. **Confirm the version didn't land.** `curl -s https://pypi.org/pypi/congress-concord/json | python3 -c "import sys, json; print('X.Y.Z' in json.load(sys.stdin)['releases'])"`. If it prints `True`, the upload actually succeeded and the failure was a post-upload hiccup — **stop**, treat it as already-published (see the rejected-upload recovery above), and do *not* re-run.
+2. **Check Sigstore is healthy again** before retrying: `curl -s -o /dev/null -w "%{http_code}\n" https://rekor.sigstore.dev/api/v1/log` should be `200` (status page: https://status.sigstore.dev/).
+3. **Re-run only the failed job** so the Docker build doesn't repeat: `gh run rerun <run-id> --failed`. The skipped `publish-testpypi` and the already-green `build-and-push` are preserved; only `publish-pypi` runs again.
+
+If Rekor is flapping badly and you must ship, you can disable attestations for one run by setting `attestations: false` on the `pypa/gh-action-pypi-publish` step in `release.yml` — but prefer waiting out the outage, since the attestation is what lets installers verify the wheel's provenance.
+
 ## Recovery: the workflow didn't fire
 
 If you cut a GitHub Release and nothing happened, common causes:
