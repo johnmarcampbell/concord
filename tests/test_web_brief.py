@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 
 from concord.brief import Briefer
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import BillCosponsor, BillSummary, Member, Term
-from concord.models.bills import BillDetail
+from concord.models.bills import BillCosponsor, BillDetail, BillSummary
+from concord.models.members import Member, Term
 from concord.pipeline.index_bills import index as index_bills
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app

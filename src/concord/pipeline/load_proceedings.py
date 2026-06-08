@@ -29,7 +29,7 @@ from datetime import UTC, date, datetime
 from typing import NamedTuple
 
 from concord.api import Client
-from concord.models import Issue, Proceeding
+from concord.models.proceedings import Issue, Proceeding
 from concord.storage.base import Storage
 from concord.text import TextFetchError
 

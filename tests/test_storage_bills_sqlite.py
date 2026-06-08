@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from concord.models import (
+from concord.models.bills import (
     BillAction,
     BillCosponsor,
     BillDetail,

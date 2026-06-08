@@ -6,17 +6,15 @@ from typing import Any
 
 import pytest
 
-from concord.models import (
+from concord.models.votes import (
     Vote,
     VotePosition,
-    amendment_id_from_components,
-    parse_vote_threshold,
-    vote_id_from_components,
-)
-from concord.models.votes import (
     _build_senate_amendment_id,
     _build_senate_bill_id_from_amendment_target,
     _parse_senate_date,
+    amendment_id_from_components,
+    parse_vote_threshold,
+    vote_id_from_components,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "api" / "votes"

@@ -24,14 +24,14 @@ from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
-from concord.models import (
+from concord.models._common import Snapshot
+from concord.models.bills import (
     BillAction,
     BillCosponsor,
     BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Snapshot,
 )
 from concord.scraper.bills import (
     BILL_ENRICHMENT_SECTIONS,

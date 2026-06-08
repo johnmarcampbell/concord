@@ -13,8 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Article, Issue, Proceeding
-from concord.storage import SqliteStorage
+from concord.models.proceedings import Article, Issue, Proceeding
+from concord.storage.sqlite import SqliteStorage
 from concord.web import _deps
 from concord.web.app import create_app
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from concord.models import Attempt
+from concord.models.runs import Attempt
 from concord.observability import active_recorder, current_run_id, scrape_run
 from concord.storage.sqlite import SqliteStorage
 

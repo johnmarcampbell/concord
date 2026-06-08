@@ -14,7 +14,7 @@ from concord.brief import (
     build_facts,
     facts_hash,
 )
-from concord.models import BillDetail
+from concord.models.bills import BillDetail
 from concord.storage.sqlite import SqliteStorage
 
 _NEUTRAL_JSON = '{"executive_summary": "A neutral summary of the bill."}'

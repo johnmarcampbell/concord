@@ -30,11 +30,10 @@ from types import TracebackType
 
 import httpx
 
+from concord import __version__
 from concord.errors import SenateXmlError
-
-from . import __version__
-from .models import Attempt
-from .observability import Recorder, active_recorder
+from concord.models.runs import Attempt
+from concord.observability import Recorder, active_recorder
 
 _log = logging.getLogger("concord.senate_xml")
 

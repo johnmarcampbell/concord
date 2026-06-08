@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
-from concord.models import Member, Term
+from concord.models.members import Member, Term
 from concord.storage._sql import insert_sql, upsert_sql
 
 MEMBERS_SCHEMA = """

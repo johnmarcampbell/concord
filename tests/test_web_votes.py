@@ -6,7 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import BillDetail, Member, Term, Vote, VotePosition
+from concord.models.bills import BillDetail
+from concord.models.members import Member, Term
+from concord.models.votes import Vote, VotePosition
 from concord.pipeline.index_votes import index as index_votes
 from concord.storage.sqlite import SqliteStorage
 from concord.web.app import create_app

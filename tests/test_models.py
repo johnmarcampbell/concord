@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 import pytest
 from pydantic import ValidationError
 
-from concord.models import Article, Issue, Proceeding, parse_granule_id
+from concord.models.proceedings import Article, Issue, Proceeding, parse_granule_id
 
 # Realistic sample URLs captured from the api.congress.gov spike on 2026-05-22.
 SAMPLE_TEXT_URL = (

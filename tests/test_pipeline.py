@@ -16,9 +16,9 @@ import httpx
 import pytest
 
 from concord.api import Client
-from concord.models import Article, Issue, Proceeding
+from concord.models.proceedings import Article, Issue, Proceeding
 from concord.pipeline.load_proceedings import pull
-from concord.storage import JsonlStorage
+from concord.storage.jsonl import JsonlStorage
 from concord.text import TextFetchError, fetch_text
 
 FIXED_NOW = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)

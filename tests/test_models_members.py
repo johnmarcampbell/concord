@@ -17,15 +17,9 @@ from typing import Any
 
 import pytest
 
-from concord.models import (
-    Member,
-    Snapshot,
-    Term,
-    normalize_state,
-)
-from concord.models._common import normalize_chamber
-
-from ._snapshots import wrap_snapshot
+from concord.models._common import Snapshot, normalize_chamber
+from concord.models.members import Member, Term, normalize_state
+from tests._snapshots import wrap_snapshot
 
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 

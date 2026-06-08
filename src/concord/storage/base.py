@@ -9,7 +9,7 @@ over articles without ever checking — though it's still expected to call
 
 from typing import Protocol
 
-from concord.models import Proceeding
+from concord.models.proceedings import Proceeding
 
 
 class Storage(Protocol):

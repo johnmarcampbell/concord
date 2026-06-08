@@ -29,21 +29,11 @@ scriptable.
 
 import typer
 
-from concord.observability import configure_logging
-
 # Side-effectful: each module decorates its commands onto the stage apps.
-from . import bills, members, proceedings, votes  # noqa: F401
-from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import DEFAULT_DB, ENV_OPENAI_API_KEY, Progress
-from .members import DEFAULT_MEMBERS_JSONL
-from .proceedings import (
-    DEFAULT_JSONL,
-    index_proceedings_command,
-    load_proceedings_command,
-    run_proceedings_command,
-    scrape_proceedings_command,
-)
-from .serve import serve_command
+from concord.cli import bills, members, proceedings, votes  # noqa: F401
+from concord.cli._apps import index_app, load_app, run_app, scrape_app
+from concord.cli.serve import serve_command
+from concord.observability import configure_logging
 
 # ---------------------------------------------------------------------------
 # Root app
@@ -91,19 +81,3 @@ def main() -> None:  # pragma: no cover - entry point shim
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-
-
-__all__ = [
-    "DEFAULT_DB",
-    "DEFAULT_JSONL",
-    "DEFAULT_MEMBERS_JSONL",
-    "ENV_OPENAI_API_KEY",
-    "Progress",
-    "app",
-    "index_proceedings_command",
-    "load_proceedings_command",
-    "main",
-    "run_proceedings_command",
-    "scrape_proceedings_command",
-    "serve_command",
-]

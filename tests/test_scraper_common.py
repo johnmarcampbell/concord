@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from concord.models import Snapshot
+from concord.models._common import Snapshot
 from concord.scraper._common import (
     append_snapshot,
     is_stub_unchanged,

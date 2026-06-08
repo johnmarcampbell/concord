@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import concord
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Member, Term
+from concord.models.members import Member, Term
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.index_votes import index as index_votes

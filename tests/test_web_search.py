@@ -8,8 +8,8 @@ import pytest
 import sqlite_vec  # type: ignore[import-untyped]
 
 from concord.embedding import EMBEDDING_DIM, Embedder
-from concord.models import Article, Issue, Proceeding
-from concord.storage import SqliteStorage
+from concord.models.proceedings import Article, Issue, Proceeding
+from concord.storage.sqlite import SqliteStorage
 from concord.web.search import get_proceeding, search
 from concord.web.snippets import keyword_snippet, semantic_snippet
 

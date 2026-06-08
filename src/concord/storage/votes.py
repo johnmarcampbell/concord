@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
-from concord.models import Vote, VotePosition
+from concord.models.votes import Vote, VotePosition
 from concord.storage._sql import upsert_sql
 
 VOTES_SCHEMA = """

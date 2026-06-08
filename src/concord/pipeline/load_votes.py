@@ -33,13 +33,8 @@ from typing import Any, NamedTuple
 
 from pydantic import ValidationError
 
-from concord.models import (
-    SenateVoteDetail,
-    Snapshot,
-    Vote,
-    VotePosition,
-    vote_id_from_components,
-)
+from concord.models._common import Snapshot
+from concord.models.votes import SenateVoteDetail, Vote, VotePosition, vote_id_from_components
 from concord.scraper.votes import (
     HOUSE_VOTE_POSITIONS_JSONL_NAME,
     HOUSE_VOTES_JSONL_NAME,

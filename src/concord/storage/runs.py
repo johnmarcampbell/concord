@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Sequence
 from typing import Any
 
-from concord.models import RunEvent, RunRecord
+from concord.models.runs import RunEvent, RunRecord
 from concord.storage._sql import insert_sql
 
 RUNS_SCHEMA = """

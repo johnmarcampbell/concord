@@ -26,63 +26,8 @@ Sub-modules:
 - :mod:`.bills` — BillDetail and the five tier-2 child models.
 - :mod:`.votes` — Vote, VotePosition (domain models for House);
   HouseVoteMembers, SenateVoteDetail, SenateVotePosition (wire shapes).
+
+Per ADR 0022 this package intentionally re-exports nothing — import each
+symbol from the submodule that defines it
+(``from concord.models.votes import Vote``), not from ``concord.models``.
 """
-
-from concord.models._common import Chamber, SessionNumber, Snapshot
-from concord.models.bills import (
-    BillAction,
-    BillCosponsor,
-    BillDetail,
-    BillSubject,
-    BillSummary,
-    BillTitle,
-    bill_id_from_components,
-)
-from concord.models.members import Member, Term, normalize_state
-from concord.models.proceedings import Article, Issue, Proceeding, parse_granule_id
-from concord.models.runs import Attempt, RunEvent, RunRecord
-from concord.models.votes import (
-    HouseVoteMembers,
-    SenateVoteDetail,
-    SenateVotePosition,
-    Vote,
-    VoteKind,
-    VotePosition,
-    VoteThreshold,
-    amendment_id_from_components,
-    parse_vote_threshold,
-    vote_id_from_components,
-)
-
-__all__ = [
-    "Article",
-    "Attempt",
-    "BillAction",
-    "BillCosponsor",
-    "BillDetail",
-    "BillSubject",
-    "BillSummary",
-    "BillTitle",
-    "Chamber",
-    "HouseVoteMembers",
-    "Issue",
-    "Member",
-    "Proceeding",
-    "RunEvent",
-    "RunRecord",
-    "SenateVoteDetail",
-    "SenateVotePosition",
-    "SessionNumber",
-    "Snapshot",
-    "Term",
-    "Vote",
-    "VoteKind",
-    "VotePosition",
-    "VoteThreshold",
-    "amendment_id_from_components",
-    "bill_id_from_components",
-    "normalize_state",
-    "parse_granule_id",
-    "parse_vote_threshold",
-    "vote_id_from_components",
-]

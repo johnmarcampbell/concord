@@ -5,7 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from concord.models import Attempt, RunEvent, RunRecord
+from concord.models.runs import Attempt, RunEvent, RunRecord
 from concord.storage.sqlite import _HEAD, SqliteStorage, ensure_schema
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from concord.models import Member, Term
+from concord.models.members import Member, Term
 from concord.storage.sqlite import SqliteStorage
 
 

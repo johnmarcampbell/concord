@@ -31,21 +31,18 @@ from typing import Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 
-from concord.models import (
+from concord.models.bills import (
     BillAction,
     BillCosponsor,
     BillDetail,
     BillSubject,
     BillSummary,
     BillTitle,
-    Member,
-    Proceeding,
-    RunEvent,
-    RunRecord,
-    Term,
-    Vote,
-    VotePosition,
 )
+from concord.models.members import Member, Term
+from concord.models.proceedings import Proceeding
+from concord.models.runs import RunEvent, RunRecord
+from concord.models.votes import Vote, VotePosition
 from concord.storage import bills as bills_storage
 from concord.storage import members as members_storage
 from concord.storage import runs as runs_storage

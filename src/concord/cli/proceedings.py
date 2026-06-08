@@ -12,17 +12,8 @@ from pydantic import ValidationError
 
 from concord.api import ENV_API_KEY
 from concord.chunking import Chunker
-from concord.embedding import Embedder
-from concord.models import Proceeding
-from concord.observability import scrape_run
-from concord.pipeline.index_proceedings import IndexResult, index
-from concord.pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
-from concord.pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
-from concord.scraper.proceedings import scrape as _run_pull
-from concord.storage import JsonlStorage, SqliteStorage
-
-from ._apps import index_app, load_app, run_app, scrape_app
-from ._common import (
+from concord.cli._apps import index_app, load_app, run_app, scrape_app
+from concord.cli._common import (
     DEFAULT_DB,
     LOAD_PROGRESS_EVERY,
     Progress,
@@ -30,6 +21,15 @@ from ._common import (
     _require_openai_key,
     _today,
 )
+from concord.embedding import Embedder
+from concord.models.proceedings import Proceeding
+from concord.observability import scrape_run
+from concord.pipeline.index_proceedings import IndexResult, index
+from concord.pipeline.index_proceedings import ProgressEvent as IndexProgressEvent
+from concord.pipeline.load_proceedings import ProgressEvent as ScrapeProgressEvent
+from concord.scraper.proceedings import scrape as _run_pull
+from concord.storage.jsonl import JsonlStorage
+from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.cli.proceedings")
 

@@ -30,9 +30,10 @@ from typing import Any
 
 import httpx
 
-from . import __version__
-from .models import Article, Attempt, Issue
-from .observability import Recorder, active_recorder
+from concord import __version__
+from concord.models.proceedings import Article, Issue
+from concord.models.runs import Attempt
+from concord.observability import Recorder, active_recorder
 
 API_BASE = "https://api.congress.gov/v3"
 USER_AGENT = f"concord/{__version__}"
