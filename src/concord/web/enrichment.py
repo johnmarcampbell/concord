@@ -45,39 +45,48 @@ def read_enrichment_flag(raw: str | None) -> bool:
     return raw.strip().lower() in _ENRICHMENT_FLAG_TRUTHY
 
 
+#: Template partial rendered for each enrichment state token.
+STATE_PARTIALS: dict[str, str] = {
+    "in_flight": "_enrichment_in_flight",
+    "done": "_enrichment_done",
+    "failed": "_enrichment_failed",
+    "button": "_enrichment_button",
+}
+
+
 def compute_enrichment_state(
     app: FastAPI,
     bill: dict[str, Any],
     bill_id: str,
 ) -> tuple[str | None, str | None]:
-    """Pick the partial-name and error string for the profile page's button.
+    """The single enrichment state machine, shared by profile and status poll.
 
-    Returns ``(state_partial, error)`` where ``state_partial`` is the
-    template basename to include (or ``None`` when the button shouldn't
-    render — disabled, or fully enriched and no error). ``error`` is the
-    last failure message when state is ``"_enrichment_failed"``, else
-    ``None``.
+    Returns ``(state, error)`` where ``state`` is a :data:`STATE_PARTIALS`
+    token (``"in_flight"`` / ``"done"`` / ``"failed"`` / ``"button"``) or
+    ``None`` when enrichment is disabled. ``error`` is the last failure
+    message when state is ``"failed"``, else ``None``.
+
+    Precedence: in-flight first; then every Bill section's *_fetched_at
+    column populated wins over any recorded error — an error from a prior
+    attempt is "stale" once a later success (via the button, the CLI, or
+    any other load/index pass) fills in every section. The fetched_at
+    columns are the actual source of truth for what's loaded;
+    ``last_enrichment_error`` is an annotation on top.
     """
     if not app.state.enrichment_enabled:
         return None, None
     if bill_id in app.state.enrichment_in_flight:
-        return "_enrichment_in_flight", None
-    # Every Bill section's *_fetched_at column populated wins over any
-    # recorded error: an error from a prior attempt is "stale" once a
-    # later success (via the button, the CLI, or any other load/index
-    # pass) fills in every section. The fetched_at columns are the actual
-    # source of truth for what's loaded; ``last_enrichment_error`` is
-    # an annotation on top.
+        return "in_flight", None
     any_missing = any(bill.get(section.fetched_at_column) is None for section in BILL_SECTIONS)
     if not any_missing:
-        return None, None
+        return "done", None
     last_error = bill.get("last_enrichment_error")
     if last_error:
-        return "_enrichment_failed", last_error
-    return "_enrichment_button", None
+        return "failed", last_error
+    return "button", None
 
 
-def register(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
+def register(app: FastAPI) -> None:
     """Register the two web-initiated enrichment routes (ADR 0016)."""
     templates: Jinja2Templates = app.state.templates
 
@@ -132,38 +141,26 @@ def register(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
         if bt not in VALID_BILL_TYPES:
             raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
         bill_id = f"{congress}-{bt}-{bill_number}"
-        context = {
+        context: dict[str, Any] = {
             "bill": {"congress": congress, "bill_type": bt, "bill_number": bill_number},
         }
-        if bill_id in request.app.state.enrichment_in_flight:
-            return templates.TemplateResponse(request, "bills/_enrichment_in_flight.html", context)
-        # Read the bill row and key off (a) each Bill section's
-        # *_fetched_at column, then (b) any recorded error. All populated
-        # wins over a stale error: a later success via the CLI or any
-        # other out-of-band load pass fills in the columns but leaves any
-        # prior error annotation in place, and we don't want that
-        # annotation to override the observable "this bill is fully
-        # enriched" state.
         row = db.execute(_ENRICHMENT_STATUS_SQL, (bill_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"unknown bill: {bill_id}")
-        any_missing = any(row[s.fetched_at_column] is None for s in BILL_SECTIONS)
-        if not any_missing:
-            return templates.TemplateResponse(request, "bills/_enrichment_done.html", context)
-        last_error = row["last_enrichment_error"]
-        if last_error:
-            return templates.TemplateResponse(
-                request,
-                "bills/_enrichment_failed.html",
-                {**context, "enrichment_error": last_error},
-            )
-        # No error recorded but not all sections populated — the
-        # background task either hasn't started yet (race against this
-        # poll), crashed without recording (shouldn't happen given the
-        # outer try/finally; harmless if it does), or the process
-        # restarted mid-job. Either way: show the button again so the
-        # user can retry the still-NULL sections.
-        return templates.TemplateResponse(request, "bills/_enrichment_button.html", context)
+        # ``state`` covers the whole decision: in-flight, done (every
+        # section populated wins over a stale error), failed, or — with
+        # no error and sections still NULL (poll race, crash without
+        # recording, mid-job restart) — the button again so the user can
+        # retry the still-NULL sections.
+        state, error = compute_enrichment_state(request.app, dict(row), bill_id)
+        if state is None:
+            # Unreachable through routing — register() only runs when the
+            # enrichment gates pass — but kept explicit so the disabled
+            # case has a defined answer if that ever changes.
+            raise HTTPException(status_code=404, detail="enrichment is disabled")
+        if error:
+            context = {**context, "enrichment_error": error}
+        return templates.TemplateResponse(request, f"bills/{STATE_PARTIALS[state]}.html", context)
 
 
 def _bill_row_exists(db_path: Path, bill_id: str) -> bool:

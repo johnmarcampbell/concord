@@ -59,17 +59,8 @@
     </details>
   {% endif %}
 {%- endmacro -%}
-{# Compute the most recent fetched_at across tier-1 + tier-2 sections. #}
-{%- set tier2_stamps = [bill.cosponsors_fetched_at, bill.actions_fetched_at,
-                        bill.subjects_fetched_at, bill.titles_fetched_at,
-                        bill.summaries_fetched_at] -%}
-{%- set updated_at = bill.fetched_at -%}
-{%- for stamp in tier2_stamps -%}
-  {%- if stamp and stamp > updated_at -%}{%- set updated_at = stamp -%}{%- endif -%}
-{%- endfor -%}
-{%- set any_missing = (bill.cosponsors_fetched_at is none or bill.actions_fetched_at is none
-                       or bill.subjects_fetched_at is none or bill.titles_fetched_at is none
-                       or bill.summaries_fetched_at is none) -%}
+{# updated_at / any_missing come from the route, computed over the Bill
+   section catalogue — the template never names individual sections. #}
 <article class="grid grid-cols-1 md:grid-cols-4 gap-6">
   <aside class="md:col-span-1 text-sm text-stone-600 space-y-3">
     <div>

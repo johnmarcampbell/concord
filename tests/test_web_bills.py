@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -329,6 +329,24 @@ class TestBillProfile:
         assert "Pipelines" in body
         # Summary's HTML body is rendered (safe).
         assert "Intro summary" in body
+
+
+class TestProfileUpdatedStamp:
+    def test_updated_uses_newest_section_stamp(self, client: TestClient) -> None:
+        """'Updated' reflects the newest fetched_at across tier-1 + Bill sections.
+
+        Pins the fix for the dead Jinja loop: ``{% set %}`` inside
+        ``{% for %}`` never escaped the loop scope, so the page always
+        rendered the tier-1 stamp (2026-05-25 in the seed) no matter how
+        recent the section stamps were.
+        """
+        db_path = client.app.state.db_path
+        newer = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=newer)
+        resp = client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        assert "Updated 2 days ago" in resp.text
 
 
 class TestFederatedBillsSearch:

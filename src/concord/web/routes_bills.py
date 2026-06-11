@@ -12,11 +12,12 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from concord.models.bills import BILL_SECTIONS
 from concord.web import search as search_mod
 from concord.web._deps import VALID_BILL_TYPES, get_db
 from concord.web._helpers import resolve_top_bills
 from concord.web.brief import assemble_facts, cached_view
-from concord.web.enrichment import compute_enrichment_state
+from concord.web.enrichment import STATE_PARTIALS, compute_enrichment_state
 
 #: Page size for the ``/bills`` browse-only index.
 BILLS_PAGE_SIZE = 50
@@ -98,7 +99,17 @@ def register(app: FastAPI) -> None:
         titles = search_mod.titles_for_bill(db, bill_id)
         summaries = search_mod.summaries_for_bill(db, bill_id)
         vote_history = search_mod.vote_history_for_bill(db, bill_id)
-        enrichment_state, enrichment_error = compute_enrichment_state(request.app, bill, bill_id)
+        # Page completeness, computed from the Bill section catalogue. In
+        # Python rather than Jinja: the template can't be drift-checked
+        # against the catalogue, and Jinja's loop-scoped {% set %} can't
+        # accumulate a max anyway. ISO-8601 strings compare lexically.
+        section_stamps = [bill.get(s.fetched_at_column) for s in BILL_SECTIONS]
+        updated_at = max([bill["fetched_at"], *(s for s in section_stamps if s)])
+        any_missing = any(s is None for s in section_stamps)
+        state, enrichment_error = compute_enrichment_state(request.app, bill, bill_id)
+        # "done" renders nothing on the profile — the per-section content
+        # speaks for itself; every other token gets its fragment.
+        enrichment_state = STATE_PARTIALS[state] if state is not None and state != "done" else None
         brief_enabled = request.app.state.brief_enabled
         brief_facts = None
         brief_view = None
@@ -121,6 +132,8 @@ def register(app: FastAPI) -> None:
             "bills/profile.html",
             {
                 "bill": bill,
+                "updated_at": updated_at,
+                "any_missing": any_missing,
                 "cosponsors": cosponsors,
                 "actions": actions,
                 "subjects": subjects,

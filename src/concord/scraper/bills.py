@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import IO, Any, NamedTuple
 
 from concord.api import Client
-from concord.models.bills import BILL_SECTION_NAMES, BILL_SECTIONS_BY_NAME
+from concord.models.bills import (
+    BILL_SECTION_NAMES,
+    BILL_SECTIONS,
+    BILL_SECTIONS_BY_NAME,
+    BillSection,
+)
 from concord.scraper._common import (
     append_snapshot,
     is_stub_unchanged,
@@ -299,7 +304,7 @@ def _enrich_one_bill(
     *,
     client: Client,
     bill_key: tuple[int, str, int],
-    requested_sections: tuple[str, ...],
+    requested_sections: tuple[BillSection, ...],
     handles: dict[str, IO[str]],
     fetched_at: datetime,
     skip_unchanged: bool,
@@ -316,13 +321,13 @@ def _enrich_one_bill(
     partial: list[str] = []
     for section in requested_sections:
         if skip_unchanged and is_stub_unchanged(
-            freshness=section_freshness[section],
+            freshness=section_freshness[section.name],
             key=normalized_key,
             signal=signal,
         ):
             skipped += 1
             continue
-        fetcher = _ENRICHMENT_FETCHERS[section]
+        fetcher = _ENRICHMENT_FETCHERS[section.name]
         try:
             payload = fetcher(client, congress, bt, bill_number)
         except Exception as exc:
@@ -331,14 +336,14 @@ def _enrich_one_bill(
                 congress,
                 bt,
                 bill_number,
-                section,
+                section.name,
                 exc,
             )
-            partial.append(section)
+            partial.append(section.name)
             failures += 1
             continue
         append_snapshot(
-            handles[section],
+            handles[section.name],
             fetched_at=fetched_at,
             key={
                 "congress": congress,
@@ -380,12 +385,18 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
     into SQLite.
     """
     storage_dir.mkdir(parents=True, exist_ok=True)
-    requested_sections = tuple(sections) if sections is not None else BILL_SECTION_NAMES
-    for s in requested_sections:
-        if s not in _ENRICHMENT_FETCHERS:
+    # Resolve names to catalogue records once at the seam; everything
+    # below trades in BillSection.
+    if sections is None:
+        requested_sections = BILL_SECTIONS
+    else:
+        try:
+            requested_sections = tuple(BILL_SECTIONS_BY_NAME[s] for s in sections)
+        except KeyError as exc:
             raise ValueError(
-                f"unknown Bill section {s!r}; expected one of {', '.join(BILL_SECTION_NAMES)}"
-            )
+                f"unknown Bill section {exc.args[0]!r}; "
+                f"expected one of {', '.join(BILL_SECTION_NAMES)}"
+            ) from exc
 
     # Per-section freshness maps gate which sub-endpoint fetches we
     # skip when ``skip_unchanged`` is set (ADR 0015). Each section can
@@ -393,8 +404,8 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
     section_freshness: dict[str, dict[tuple[Any, ...], datetime]] = {}
     if skip_unchanged:
         for section in requested_sections:
-            section_freshness[section] = load_freshness_map(
-                storage_dir / BILL_SECTIONS_BY_NAME[section].jsonl_name,
+            section_freshness[section.name] = load_freshness_map(
+                storage_dir / section.jsonl_name,
                 ("congress", "bill_type", "bill_number"),
             )
 
@@ -403,9 +414,7 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
     handles: dict[str, IO[str]] = {}
     try:
         for section in requested_sections:
-            handles[section] = (storage_dir / BILL_SECTIONS_BY_NAME[section].jsonl_name).open(
-                "a", encoding="utf-8"
-            )
+            handles[section.name] = (storage_dir / section.jsonl_name).open("a", encoding="utf-8")
 
         bills_enriched = 0
         snapshots_written = 0

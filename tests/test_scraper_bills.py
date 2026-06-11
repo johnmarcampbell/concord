@@ -21,6 +21,11 @@ from concord.scraper.bills import (
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
 
 
+def _section_jsonl(section: str) -> str:
+    """The catalogue's JSONL filename for one Bill section."""
+    return BILL_SECTIONS_BY_NAME[section].jsonl_name
+
+
 def _fixture(name: str) -> dict[str, Any]:
     here = Path(__file__).parent / "fixtures" / "api" / "bills"
     return json.loads((here / name).read_text())
@@ -265,8 +270,8 @@ class TestScrapeEnrichment:
             )
         files = {p.name for p in tmp_path.iterdir()}
         assert files == {
-            BILL_SECTIONS_BY_NAME["cosponsors"].jsonl_name,
-            BILL_SECTIONS_BY_NAME["actions"].jsonl_name,
+            _section_jsonl("cosponsors"),
+            _section_jsonl("actions"),
         }
 
     def test_partial_failure_leaves_other_sections_intact(self, tmp_path: Path) -> None:
@@ -283,8 +288,8 @@ class TestScrapeEnrichment:
         # Four sections written, one failed.
         assert stats.snapshots_written == 4
         assert stats.section_failures == 1
-        assert (tmp_path / BILL_SECTIONS_BY_NAME["cosponsors"].jsonl_name).exists()
-        assert (tmp_path / BILL_SECTIONS_BY_NAME["summaries"].jsonl_name).read_text() == ""
+        assert (tmp_path / _section_jsonl("cosponsors")).exists()
+        assert (tmp_path / _section_jsonl("summaries")).read_text() == ""
         assert events[0].partial_failures == ("summaries",)
 
     def test_limit_caps_bills(self, tmp_path: Path) -> None:
@@ -309,9 +314,7 @@ class TestScrapeEnrichment:
                 fetched_at=FIXED_FETCHED_AT,
                 sections=["cosponsors"],
             )
-        env = json.loads(
-            (tmp_path / BILL_SECTIONS_BY_NAME["cosponsors"].jsonl_name).read_text().splitlines()[0]
-        )
+        env = json.loads((tmp_path / _section_jsonl("cosponsors")).read_text().splitlines()[0])
         assert env["key"]["bill_type"] == "hr"
 
     def test_unknown_section_raises(self, tmp_path: Path) -> None:
@@ -518,7 +521,7 @@ class TestScrapeBasicSkipUnchanged:
 class TestScrapeEnrichmentSkipUnchanged:
     def test_per_section_freshness(self, tmp_path: Path) -> None:
         # cosponsors was fetched fresh; the other four are missing → fetch them.
-        existing_cosponsors = tmp_path / BILL_SECTIONS_BY_NAME["cosponsors"].jsonl_name
+        existing_cosponsors = tmp_path / _section_jsonl("cosponsors")
         existing_cosponsors.write_text(
             json.dumps(
                 {
@@ -551,7 +554,7 @@ class TestScrapeEnrichmentSkipUnchanged:
         assert len(existing_cosponsors.read_text().splitlines()) == 1
 
     def test_flag_off_fetches_all(self, tmp_path: Path) -> None:
-        existing_cosponsors = tmp_path / BILL_SECTIONS_BY_NAME["cosponsors"].jsonl_name
+        existing_cosponsors = tmp_path / _section_jsonl("cosponsors")
         existing_cosponsors.write_text(
             json.dumps(
                 {
@@ -575,7 +578,7 @@ class TestScrapeEnrichmentSkipUnchanged:
 
     def test_no_signal_lookup_falls_through(self, tmp_path: Path) -> None:
         # skip_unchanged set but no signal lookup → can't decide, fetch.
-        existing_cosponsors = tmp_path / BILL_SECTIONS_BY_NAME["cosponsors"].jsonl_name
+        existing_cosponsors = tmp_path / _section_jsonl("cosponsors")
         existing_cosponsors.write_text(
             json.dumps(
                 {
