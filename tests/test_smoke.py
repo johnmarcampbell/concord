@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import concord
 from concord.embedding import EMBEDDING_DIM, Embedder
+from concord.models.bills import BILL_SECTIONS_BY_NAME
 from concord.models.members import Member, Term
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_members import index as index_members
@@ -15,7 +16,7 @@ from concord.pipeline.index_votes import index as index_votes
 from concord.pipeline.load_bills import load as load_bills
 from concord.pipeline.load_members import load as load_members
 from concord.pipeline.load_votes import load as load_votes
-from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
+from concord.scraper.bills import BILLS_JSONL_NAME
 from concord.scraper.votes import (
     HOUSE_VOTE_POSITIONS_JSONL_NAME,
     HOUSE_VOTES_JSONL_NAME,
@@ -205,7 +206,7 @@ def test_bills_tier2_end_to_end(tmp_path: Path) -> None:
     }
     for section, name in section_fixtures.items():
         payload = json.loads((fixtures / name).read_text())
-        (storage_dir / enrichment_jsonl_name(section)).write_text(
+        (storage_dir / BILL_SECTIONS_BY_NAME[section].jsonl_name).write_text(
             _envelope(payload, {"congress": 119, "bill_type": "hr", "bill_number": 1}),
             encoding="utf-8",
         )

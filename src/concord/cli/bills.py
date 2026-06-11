@@ -11,12 +11,13 @@ import typer
 from concord.api import ENV_API_KEY, ApiError, Client
 from concord.cli._apps import index_app, load_app, run_app, scrape_app
 from concord.cli._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
+from concord.models.bills import BILL_SECTION_NAMES
 from concord.observability import scrape_run
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.load_bills import load as load_bills
 from concord.scraper import bills as bills_scraper
 from concord.scraper._common import load_bill_signal_map
-from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS, BILLS_JSONL_NAME
+from concord.scraper.bills import BILLS_JSONL_NAME
 
 DEFAULT_BILLS_STORAGE_DIR = Path("./data")
 
@@ -28,9 +29,6 @@ DEFAULT_BILL_CONGRESSES = (117, 118, 119)
 #: ``concord scrape bills --bill-types`` default and as the validator
 #: for the ``/bills/{...}/{bill_type}/...`` URL segment.
 DEFAULT_BILL_TYPES = ("hr", "hres", "hjres", "hconres", "s", "sres", "sjres", "sconres")
-
-#: Tier-2 sub-endpoint names that ``concord scrape bills enrich`` defaults to.
-DEFAULT_BILL_SECTIONS = ("cosponsors", "actions", "subjects", "titles", "summaries")
 
 #: Default cap on the auto-selected enrichment batch when --bill-ids is
 #: not given. Operators tweak via ``--limit N``.
@@ -92,11 +90,10 @@ def _parse_bill_ids(raw: str) -> list[tuple[int, str, int]]:
 def _parse_sections(raw: str) -> list[str]:
     """Parse ``--sections cosponsors,actions`` into a validated list."""
     parsed = _parse_csv(raw, name="sections", coerce=str.lower)
-    unknown = [s for s in parsed if s not in BILL_ENRICHMENT_SECTIONS]
+    unknown = [s for s in parsed if s not in BILL_SECTION_NAMES]
     if unknown:
         raise typer.BadParameter(
-            f"unknown section(s): {', '.join(unknown)}. "
-            f"Valid: {', '.join(BILL_ENRICHMENT_SECTIONS)}"
+            f"unknown section(s): {', '.join(unknown)}. Valid: {', '.join(BILL_SECTION_NAMES)}"
         )
     return parsed
 
@@ -407,9 +404,9 @@ def scrape_bills_enrich_command(
         str,
         typer.Option(
             "--sections",
-            help="Comma-separated sub-endpoint sections to fetch.",
+            help="Comma-separated Bill sections to fetch.",
         ),
-    ] = ",".join(DEFAULT_BILL_SECTIONS),
+    ] = ",".join(BILL_SECTION_NAMES),
     storage_dir: Annotated[
         Path,
         typer.Option(

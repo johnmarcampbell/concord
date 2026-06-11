@@ -1,17 +1,62 @@
-"""Bill and tier-2 entity models (Phase 2a/b).
+"""Bill section catalogue and Bill entity models (Phase 2a/b).
 
 The :class:`BillDetail` row carries identity fields only; the political-graph
 data (cosponsors, actions, subjects, titles, summaries) lives in the
-five tier-2 models below, one per :doc:`ADR 0009 </adr/0009>` JSONL
-sibling file. Naming follows the endpoint that produced each model per
-:doc:`ADR 0018 </adr/0018>`: ``BillDetail`` from ``/v3/bill/{c}/{t}/{n}``,
+five Bill-section models below, one per :doc:`ADR 0009 </adr/0009>` JSONL
+sibling file. :data:`BILL_SECTIONS` is the catalogue of those sections —
+the single source of truth for their names and every string derived from
+them (ADR 0025). Model naming follows the endpoint that produced each model
+per :doc:`ADR 0018 </adr/0018>`: ``BillDetail`` from ``/v3/bill/{c}/{t}/{n}``,
 ``BillCosponsor`` from ``/cosponsors``, etc. The unqualified "Bill" is
 the aggregate domain concept and is not bound to any class.
 """
 
+from dataclasses import dataclass
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict
+
+
+@dataclass(frozen=True)
+class BillSection:
+    """One Bill section — a mutable sub-endpoint of the Bill aggregate (ADR 0009).
+
+    The catalogue entry carries every name derived from the section:
+    ``name`` (the plural token used by the CLI, the sub-endpoint URL
+    segment, and every per-stage mapping key), ``entity`` (the singular
+    name recorded for this section's child rows in ``validation_failures``,
+    ADR 0023), ``jsonl_name`` (the ADR 0009 JSONL sibling file), and
+    ``fetched_at_column`` (the ``bills`` column its loader stamps). All
+    four are spelled out literally — never computed — so each string is
+    greppable and a test can assert internal consistency. Data only by
+    design: fetchers, writers, and projectors stay in their stage modules,
+    keyed by ``name`` (ADR 0025).
+    """
+
+    name: str
+    entity: str
+    jsonl_name: str
+    fetched_at_column: str
+
+
+#: The Bill section catalogue — which sections make up the Bill aggregate.
+#: Scraper, loader, storage, web, and CLI all consult this tuple; their
+#: per-stage maps are keyed by ``.name`` and drift-checked against it in
+#: tests. Adding a section means one entry here plus a model, a projector,
+#: a fetcher, and a storage writer (ADR 0025).
+BILL_SECTIONS: tuple[BillSection, ...] = (
+    BillSection("cosponsors", "cosponsor", "bill_cosponsors.jsonl", "cosponsors_fetched_at"),
+    BillSection("actions", "action", "bill_actions.jsonl", "actions_fetched_at"),
+    BillSection("subjects", "subject", "bill_subjects.jsonl", "subjects_fetched_at"),
+    BillSection("titles", "title", "bill_titles.jsonl", "titles_fetched_at"),
+    BillSection("summaries", "summary", "bill_summaries.jsonl", "summaries_fetched_at"),
+)
+
+#: Section names in catalogue order — the "all sections" default everywhere.
+BILL_SECTION_NAMES: tuple[str, ...] = tuple(s.name for s in BILL_SECTIONS)
+
+#: By-name lookup for callers handed a bare section name (CLI args, map keys).
+BILL_SECTIONS_BY_NAME: dict[str, BillSection] = {s.name: s for s in BILL_SECTIONS}
 
 
 def bill_id_from_components(congress: int, bill_type: str, bill_number: int) -> str:

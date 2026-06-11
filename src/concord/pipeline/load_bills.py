@@ -5,10 +5,11 @@ into the ``bills`` SQLite table. The natural key is the composite
 ``(congress, bill_type, bill_number)``; the loader keeps the latest
 snapshot per key and UPSERTs one row each.
 
-Phase 2b adds five sibling tier-2 JSONL files (per ADR 0009) — the
+Phase 2b adds one sibling JSONL file per Bill section (per ADR 0009;
+the catalogue is :data:`concord.models.bills.BILL_SECTIONS`) — the
 loader reads each when present and projects to its child table,
 stamping the corresponding ``bills.<section>_fetched_at`` column. A
-Bill present in tier-2 snapshots but absent from ``bills.jsonl`` is
+Bill present in section snapshots but absent from ``bills.jsonl`` is
 counted as a tier-2 orphan and skipped (it would violate the FK).
 
 Re-running the loader over an unchanged JSONL is a no-op. Re-running
@@ -27,40 +28,27 @@ from pydantic import ValidationError
 
 from concord.models._common import Snapshot
 from concord.models.bills import (
+    BILL_SECTIONS,
     BillAction,
     BillCosponsor,
     BillDetail,
+    BillSection,
     BillSubject,
     BillSummary,
     BillTitle,
 )
 from concord.models.validation import ValidationFailure
 from concord.pipeline._failures import parse_or_record
-from concord.scraper.bills import (
-    BILL_ENRICHMENT_SECTIONS,
-    BILLS_JSONL_NAME,
-    enrichment_jsonl_name,
-)
+from concord.scraper.bills import BILLS_JSONL_NAME
 from concord.storage.sqlite import SqliteStorage
 
 _log = logging.getLogger("concord.pipeline.load_bills")
 
-#: One source of truth mapping a tier-2 section to its singular entity name —
-#: the ``entity`` recorded for that section's child rows in validation_failures
-#: (ADR 0023). The family tuple and each projector's row label both derive from
-#: this, so adding a section is a one-line edit here plus a projector.
-_SECTION_ENTITY: dict[str, str] = {
-    "cosponsors": "cosponsor",
-    "actions": "action",
-    "subjects": "subject",
-    "titles": "title",
-    "summaries": "summary",
-}
-
 #: The Bill entity family for the validation_failures mirror table (ADR 0023):
-#: the tier-1 bill plus its five tier-2 child sections. A full ``load`` clears
-#: this whole family before re-inserting; ``load_one`` narrows by ``bill_id``.
-_BILL_ENTITIES: tuple[str, ...] = ("bill", *_SECTION_ENTITY.values())
+#: the tier-1 bill plus each Bill section's singular entity name from the
+#: catalogue. A full ``load`` clears this whole family before re-inserting;
+#: ``load_one`` narrows by ``bill_id``.
+_BILL_ENTITIES: tuple[str, ...] = ("bill", *(s.entity for s in BILL_SECTIONS))
 
 
 class LoadStats(NamedTuple):
@@ -130,7 +118,7 @@ def load(
         # storage._maybe_transaction. A bulk load that previously
         # paid the fsync cost per section per bill now pays it once.
         with storage.transaction():
-            for section in BILL_ENRICHMENT_SECTIONS:
+            for section in BILL_SECTIONS:
                 t2 = _load_tier2_section(storage_dir, section, storage, failures)
                 tier2_snapshots_read += t2["snapshots_read"]
                 tier2_bills_updated += t2["bills_updated"]
@@ -212,7 +200,7 @@ def load_one(
         tier2_bills_updated = 0
         tier2_orphans_skipped = 0
         with storage.transaction():
-            for section in BILL_ENRICHMENT_SECTIONS:
+            for section in BILL_SECTIONS:
                 t2 = _load_tier2_section_for_bill(storage_dir, section, storage, bill_id, failures)
                 tier2_snapshots_read += t2["snapshots_read"]
                 tier2_bills_updated += t2["bills_updated"]
@@ -276,7 +264,7 @@ def _scan_tier1_for_key(
 
 def _load_tier2_section_for_bill(
     storage_dir: Path,
-    section: str,
+    section: BillSection,
     storage: SqliteStorage,
     bill_id: str,
     failures: list[ValidationFailure],
@@ -288,7 +276,7 @@ def _load_tier2_section_for_bill(
         "orphans_skipped": 0,
         "envelope_failures": 0,
     }
-    path = storage_dir / enrichment_jsonl_name(section)
+    path = storage_dir / section.jsonl_name
     if not path.exists():
         return counters
 
@@ -320,7 +308,7 @@ def _load_tier2_section_for_bill(
         _log.info(
             "tier-2 orphan: %s in %s but no parent bill row; skipping",
             bill_id,
-            section,
+            section.name,
         )
         return counters
     fetched_at, payload = latest
@@ -360,11 +348,11 @@ def _ingest_tier1(
 
 def _load_tier2_section(
     storage_dir: Path,
-    section: str,
+    section: BillSection,
     storage: SqliteStorage,
     failures: list[ValidationFailure],
 ) -> dict[str, int]:
-    """Project one tier-2 JSONL file into its child table.
+    """Project one Bill section's JSONL file into its child table.
 
     Returns a counters dict with ``snapshots_read``, ``bills_updated``,
     ``orphans_skipped``, ``envelope_failures``. A missing file is a no-op.
@@ -375,7 +363,7 @@ def _load_tier2_section(
         "orphans_skipped": 0,
         "envelope_failures": 0,
     }
-    path = storage_dir / enrichment_jsonl_name(section)
+    path = storage_dir / section.jsonl_name
     if not path.exists():
         return counters
 
@@ -409,7 +397,7 @@ def _load_tier2_section(
             _log.info(
                 "tier-2 orphan: %s in %s but no parent bill row; skipping",
                 bill_id,
-                section,
+                section.name,
             )
             continue
         _project_section(storage, section, bill_id, payload, fetched_at.isoformat(), failures)
@@ -419,22 +407,20 @@ def _load_tier2_section(
 
 # Per-section projection: extract the array from the payload, parse each
 # row via the model layer, and call the matching storage method. ``source_file``
-# (the tier-2 JSONL the rows came from) and ``entity`` (the section's singular
-# name, from ``_SECTION_ENTITY``) thread down to ``_parsed_rows`` so each dropped
-# child row becomes a validation_failures row keyed on the parent ``bill_id``
-# (ADR 0023).
+# (the section's JSONL the rows came from) and ``entity`` (the section's
+# singular name, both from the Bill section catalogue) thread down to
+# ``_parsed_rows`` so each dropped child row becomes a validation_failures row
+# keyed on the parent ``bill_id`` (ADR 0023).
 def _project_section(
     storage: SqliteStorage,
-    section: str,
+    section: BillSection,
     bill_id: str,
     payload: dict[str, Any],
     fetched_at: str,
     failures: list[ValidationFailure],
 ) -> None:
-    source_file = enrichment_jsonl_name(section)
-    entity = _SECTION_ENTITY[section]
-    _SECTION_PROJECTORS[section](
-        storage, bill_id, payload, fetched_at, source_file, entity, failures
+    _SECTION_PROJECTORS[section.name](
+        storage, bill_id, payload, fetched_at, section.jsonl_name, section.entity, failures
     )
 
 
@@ -449,7 +435,7 @@ def _parsed_rows[T](
     """Yield parsed rows; record + skip any that raise on ``parse``.
 
     ``entity`` is the section's singular name (``"cosponsor"`` / ``"action"`` /
-    …, from :data:`_SECTION_ENTITY`); each failed row appends a
+    …, from the Bill section catalogue); each failed row appends a
     :class:`ValidationFailure` keyed on the parent ``bill_id`` (ADR 0023).
     """
     if not isinstance(rows, list):

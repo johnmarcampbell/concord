@@ -1,15 +1,15 @@
 """Stage 0 — Bills scraper.
 
 Walks ``api.congress.gov``'s seven Bill endpoints to build the canonical
-identity record per Bill plus the five tier-2 enrichment streams:
+identity record per Bill plus the five Bill sections:
 
 1. ``/v3/bill/{congress}/{bill_type}`` — list endpoint. Stubs only;
    used solely to discover Bill numbers. Not persisted.
 2. ``/v3/bill/{c}/{t}/{n}`` — detail endpoint. One ADR 0006 snapshot
    envelope per response is appended to ``data/bills.jsonl``.
-3. ``/v3/bill/{c}/{t}/{n}/{section}`` for each of cosponsors, actions,
-   subjects, titles, summaries — one envelope per (bill, section) is
-   appended to the corresponding ``data/bill_<section>.jsonl`` file
+3. ``/v3/bill/{c}/{t}/{n}/{section}`` for each Bill section in the
+   :data:`concord.models.bills.BILL_SECTIONS` catalogue — one envelope
+   per (bill, section) is appended to that section's own JSONL file
    per ADR 0009.
 """
 
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import IO, Any, NamedTuple
 
 from concord.api import Client
+from concord.models.bills import BILL_SECTION_NAMES, BILL_SECTIONS_BY_NAME
 from concord.scraper._common import (
     append_snapshot,
     is_stub_unchanged,
@@ -45,21 +46,6 @@ DEFAULT_BILL_TYPES: tuple[str, ...] = (
 
 #: Canonical filename inside the storage directory.
 BILLS_JSONL_NAME = "bills.jsonl"
-
-#: Tier-2 sub-endpoint names. Each maps to its own ``bill_<section>.jsonl``
-#: under the storage directory per ADR 0009.
-BILL_ENRICHMENT_SECTIONS: tuple[str, ...] = (
-    "cosponsors",
-    "actions",
-    "subjects",
-    "titles",
-    "summaries",
-)
-
-
-def enrichment_jsonl_name(section: str) -> str:
-    """Return the canonical JSONL filename for one tier-2 section."""
-    return f"bill_{section}.jsonl"
 
 
 def _parse_bill_number(stub: dict[str, Any]) -> int | None:
@@ -320,7 +306,7 @@ def _enrich_one_bill(
     section_freshness: dict[str, dict[tuple[Any, ...], datetime]],
     signal: datetime | None,
 ) -> _BillEnrichResult:
-    """Fetch enrichment sections for one bill; write per-section envelopes."""
+    """Fetch the requested Bill sections for one bill; write per-section envelopes."""
     congress, bill_type, bill_number = bill_key
     bt = bill_type.lower()
     normalized_key = (congress, bt, bill_number)
@@ -394,12 +380,11 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
     into SQLite.
     """
     storage_dir.mkdir(parents=True, exist_ok=True)
-    requested_sections = tuple(sections) if sections is not None else BILL_ENRICHMENT_SECTIONS
+    requested_sections = tuple(sections) if sections is not None else BILL_SECTION_NAMES
     for s in requested_sections:
         if s not in _ENRICHMENT_FETCHERS:
             raise ValueError(
-                f"unknown enrichment section {s!r}; "
-                f"expected one of {', '.join(BILL_ENRICHMENT_SECTIONS)}"
+                f"unknown Bill section {s!r}; expected one of {', '.join(BILL_SECTION_NAMES)}"
             )
 
     # Per-section freshness maps gate which sub-endpoint fetches we
@@ -409,7 +394,7 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
     if skip_unchanged:
         for section in requested_sections:
             section_freshness[section] = load_freshness_map(
-                storage_dir / enrichment_jsonl_name(section),
+                storage_dir / BILL_SECTIONS_BY_NAME[section].jsonl_name,
                 ("congress", "bill_type", "bill_number"),
             )
 
@@ -418,7 +403,7 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
     handles: dict[str, IO[str]] = {}
     try:
         for section in requested_sections:
-            handles[section] = (storage_dir / enrichment_jsonl_name(section)).open(
+            handles[section] = (storage_dir / BILL_SECTIONS_BY_NAME[section].jsonl_name).open(
                 "a", encoding="utf-8"
             )
 
@@ -475,13 +460,11 @@ def scrape_enrichment(  # noqa: PLR0913 — one kwarg per knob; collapsing into 
 
 __all__ = [
     "BILLS_JSONL_NAME",
-    "BILL_ENRICHMENT_SECTIONS",
     "DEFAULT_BILL_TYPES",
     "EnrichProgressEvent",
     "EnrichStats",
     "ScrapeProgressEvent",
     "ScrapeStats",
-    "enrichment_jsonl_name",
     "scrape_basic",
     "scrape_enrichment",
 ]

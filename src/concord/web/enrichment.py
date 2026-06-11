@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from concord.scraper.bills import BILL_ENRICHMENT_SECTIONS
+from concord.models.bills import BILL_SECTIONS
 from concord.web._deps import VALID_BILL_TYPES, get_db
 
 _log = logging.getLogger("concord.web")
@@ -29,6 +29,14 @@ _log = logging.getLogger("concord.web")
 #: Recognized truthy values for ``CONCORD_ENABLE_WEB_ENRICHMENT``. Anything
 #: else (unset, empty, "0", "no", "banana") leaves enrichment disabled.
 _ENRICHMENT_FLAG_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# The status poll reads one ``*_fetched_at`` column per Bill section plus the
+# error annotation.
+_FETCHED_AT_SELECT = ", ".join(s.fetched_at_column for s in BILL_SECTIONS)
+_ENRICHMENT_STATUS_SQL = (
+    f"SELECT {_FETCHED_AT_SELECT}, last_enrichment_error "  # noqa: S608 — catalogue column names + ? placeholder, no user input
+    "FROM bills WHERE bill_id = ?"
+)
 
 
 def read_enrichment_flag(raw: str | None) -> bool:
@@ -54,15 +62,13 @@ def compute_enrichment_state(
         return None, None
     if bill_id in app.state.enrichment_in_flight:
         return "_enrichment_in_flight", None
-    # All five *_fetched_at columns populated wins over any recorded
-    # error: an error from a prior attempt is "stale" once a later
-    # success (via the button, the CLI, or any other load/index pass)
-    # fills in every section. The fetched_at columns are the actual
+    # Every Bill section's *_fetched_at column populated wins over any
+    # recorded error: an error from a prior attempt is "stale" once a
+    # later success (via the button, the CLI, or any other load/index
+    # pass) fills in every section. The fetched_at columns are the actual
     # source of truth for what's loaded; ``last_enrichment_error`` is
     # an annotation on top.
-    any_missing = any(
-        bill.get(f"{section}_fetched_at") is None for section in BILL_ENRICHMENT_SECTIONS
-    )
+    any_missing = any(bill.get(section.fetched_at_column) is None for section in BILL_SECTIONS)
     if not any_missing:
         return None, None
     last_error = bill.get("last_enrichment_error")
@@ -131,22 +137,17 @@ def register(app: FastAPI) -> None:  # noqa: C901 — FastAPI route declarations
         }
         if bill_id in request.app.state.enrichment_in_flight:
             return templates.TemplateResponse(request, "bills/_enrichment_in_flight.html", context)
-        # Read the bill row and key off (a) the five *_fetched_at
-        # columns, then (b) any recorded error. All five populated wins
-        # over a stale error: a later success via the CLI or any other
-        # out-of-band load pass fills in the columns but leaves any
+        # Read the bill row and key off (a) each Bill section's
+        # *_fetched_at column, then (b) any recorded error. All populated
+        # wins over a stale error: a later success via the CLI or any
+        # other out-of-band load pass fills in the columns but leaves any
         # prior error annotation in place, and we don't want that
         # annotation to override the observable "this bill is fully
         # enriched" state.
-        row = db.execute(
-            "SELECT cosponsors_fetched_at, actions_fetched_at, subjects_fetched_at, "
-            "       titles_fetched_at, summaries_fetched_at, last_enrichment_error "
-            "FROM bills WHERE bill_id = ?",
-            (bill_id,),
-        ).fetchone()
+        row = db.execute(_ENRICHMENT_STATUS_SQL, (bill_id,)).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail=f"unknown bill: {bill_id}")
-        any_missing = any(row[f"{s}_fetched_at"] is None for s in BILL_ENRICHMENT_SECTIONS)
+        any_missing = any(row[s.fetched_at_column] is None for s in BILL_SECTIONS)
         if not any_missing:
             return templates.TemplateResponse(request, "bills/_enrichment_done.html", context)
         last_error = row["last_enrichment_error"]
