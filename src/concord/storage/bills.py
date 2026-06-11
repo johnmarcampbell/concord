@@ -173,20 +173,11 @@ _BILL_COLUMNS: tuple[str, ...] = (
 #: distros without measurably hurting throughput.
 _BILL_IDS_PRESENT_CHUNK = 500
 
-#: The tier-2 sections enriched after the tier-1 bills upsert. One name per
-#: ``*_fetched_at`` column / ``replace_*`` writer.
-BILL_TIER2_SECTIONS: tuple[str, ...] = (
-    "cosponsors",
-    "actions",
-    "subjects",
-    "titles",
-    "summaries",
-)
-
-# UPSERT on the parent row. The five *_fetched_at columns are *not* in
-# _BILL_COLUMNS — they're owned by the tier-2 loaders' per-section UPDATEs,
-# and clobbering them on every tier-1 upsert would reset the "enriched"
-# state every time `concord load bills` runs.
+# UPSERT on the parent row. The per-section *_fetched_at columns are *not* in
+# _BILL_COLUMNS — they're owned by the Bill sections' per-section UPDATEs
+# (one column per catalogue entry in concord.models.bills.BILL_SECTIONS,
+# drift-checked in tests), and clobbering them on every tier-1 upsert would
+# reset the "enriched" state every time `concord load bills` runs.
 _BILL_UPSERT_SQL = upsert_sql("bills", _BILL_COLUMNS, conflict=("bill_id",))
 
 # Per-child column tuples — used to generate INSERT SQL and to project

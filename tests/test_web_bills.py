@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from concord.embedding import EMBEDDING_DIM, Embedder
 from concord.models.bills import (
+    BILL_SECTIONS,
     BillAction,
     BillCosponsor,
     BillDetail,
@@ -19,11 +20,7 @@ from concord.models.bills import (
 )
 from concord.models.members import Member, Term
 from concord.pipeline.index_bills import index as index_bills
-from concord.scraper.bills import (
-    BILL_ENRICHMENT_SECTIONS,
-    EnrichStats,
-    enrichment_jsonl_name,
-)
+from concord.scraper.bills import EnrichStats
 from concord.storage.sqlite import SqliteStorage
 from concord.web import enrichment as web_enrichment
 from concord.web.app import create_app
@@ -332,6 +329,24 @@ class TestBillProfile:
         assert "Pipelines" in body
         # Summary's HTML body is rendered (safe).
         assert "Intro summary" in body
+
+
+class TestProfileUpdatedStamp:
+    def test_updated_uses_newest_section_stamp(self, client: TestClient) -> None:
+        """'Updated' reflects the newest fetched_at across tier-1 + Bill sections.
+
+        Pins the fix for the dead Jinja loop: ``{% set %}`` inside
+        ``{% for %}`` never escaped the loop scope, so the page always
+        rendered the tier-1 stamp (2026-05-25 in the seed) no matter how
+        recent the section stamps were.
+        """
+        db_path = client.app.state.db_path
+        newer = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+        with SqliteStorage(db_path, load_vec=False) as storage:
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=newer)
+        resp = client.get("/bills/119/hr/1")
+        assert resp.status_code == 200
+        assert "Updated 2 days ago" in resp.text
 
 
 class TestFederatedBillsSearch:
@@ -796,24 +811,22 @@ class TestEnrichOneBillBackgroundTask:
             fetched_at: datetime,
         ) -> EnrichStats:
             storage_dir.mkdir(parents=True, exist_ok=True)
-            for section in BILL_ENRICHMENT_SECTIONS:
+            for section in BILL_SECTIONS:
                 payload: dict[str, object]
-                if section == "subjects":
+                if section.name == "subjects":
                     payload = {"subjects": {"legislativeSubjects": []}}
                 else:
-                    payload = {section: []}
+                    payload = {section.name: []}
                 envelope = {
                     "fetched_at": fetched_at.isoformat(),
                     "key": {"congress": 119, "bill_type": "hr", "bill_number": 1},
                     "payload": payload,
                 }
-                with (storage_dir / enrichment_jsonl_name(section)).open(
-                    "a", encoding="utf-8"
-                ) as fh:
+                with (storage_dir / section.jsonl_name).open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps(envelope) + "\n")
             return EnrichStats(
                 bills_enriched=1,
-                snapshots_written=len(BILL_ENRICHMENT_SECTIONS),
+                snapshots_written=len(BILL_SECTIONS),
                 section_failures=0,
             )
 

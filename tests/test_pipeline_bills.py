@@ -7,15 +7,21 @@ from typing import Any
 
 import pytest
 
+from concord.models.bills import BILL_SECTIONS_BY_NAME
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_bills import reindex_one
 from concord.pipeline.load_bills import load as load_bills
 from concord.pipeline.load_bills import load_one
-from concord.scraper.bills import BILLS_JSONL_NAME, enrichment_jsonl_name
+from concord.scraper.bills import BILLS_JSONL_NAME
 from concord.storage.sqlite import SqliteStorage
 from tests._snapshots import wrap_snapshot
 
 FIXED_FETCHED_AT = datetime(2026, 5, 25, 14, 2, 11, tzinfo=UTC)
+
+
+def _section_jsonl(section: str) -> str:
+    """The catalogue's JSONL filename for one Bill section."""
+    return BILL_SECTIONS_BY_NAME[section].jsonl_name
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -197,7 +203,7 @@ class TestLoadBillsTier2:
             "summaries": "summaries_119_hr_1.json",
         }
         for section, name in section_to_fixture.items():
-            (storage_dir / enrichment_jsonl_name(section)).write_text(
+            (storage_dir / _section_jsonl(section)).write_text(
                 json.dumps(_envelope_for_section(_fixture(name), bill_key=(119, "hr", 1))) + "\n",
                 encoding="utf-8",
             )
@@ -232,7 +238,7 @@ class TestLoadBillsTier2:
         storage_dir.mkdir(parents=True, exist_ok=True)
         # Tier-2 only, with a bill_id that isn't in bills.jsonl (because
         # bills.jsonl doesn't exist).
-        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+        (storage_dir / _section_jsonl("cosponsors")).write_text(
             json.dumps(
                 _envelope_for_section(
                     _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 22)
@@ -256,7 +262,7 @@ class TestLoadBillsTier2:
         storage_dir = tmp_path / "data"
         db = tmp_path / "test.db"
         self._write_tier1(storage_dir)
-        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+        (storage_dir / _section_jsonl("cosponsors")).write_text(
             json.dumps(
                 _envelope_for_section(
                     _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 1)
@@ -283,7 +289,7 @@ class TestLoadBillsTier2:
         storage_dir = tmp_path / "data"
         db = tmp_path / "test.db"
         self._write_tier1(storage_dir)
-        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+        (storage_dir / _section_jsonl("cosponsors")).write_text(
             json.dumps(
                 _envelope_for_section(
                     _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 1)
@@ -305,7 +311,7 @@ class TestLoadBillsValidationFailures:
     def _write_cosponsors(
         self, storage_dir: Path, bill_key: tuple[int, str, int], rows: list[dict[str, Any]]
     ) -> None:
-        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+        (storage_dir / _section_jsonl("cosponsors")).write_text(
             json.dumps(_envelope_for_section({"cosponsors": rows}, bill_key=bill_key)) + "\n",
             encoding="utf-8",
         )
@@ -346,7 +352,7 @@ class TestLoadBillsValidationFailures:
         assert by_entity["bill"]["source_file"] == BILLS_JSONL_NAME
         # The cosponsor row failed on a ValueError (no Pydantic loc).
         assert by_entity["cosponsor"]["field_path"] is None
-        assert by_entity["cosponsor"]["source_file"] == enrichment_jsonl_name("cosponsors")
+        assert by_entity["cosponsor"]["source_file"] == _section_jsonl("cosponsors")
 
     def test_failures_are_idempotent(self, tmp_path: Path) -> None:
         storage_dir = tmp_path / "data"
@@ -480,7 +486,7 @@ class TestIndexBills:
             },
             "pagination": {"count": 3},
         }
-        (storage_dir / enrichment_jsonl_name("subjects")).write_text(
+        (storage_dir / _section_jsonl("subjects")).write_text(
             json.dumps(_envelope_for_section(subjects_payload, bill_key=(119, "hr", 1))) + "\n",
             encoding="utf-8",
         )
@@ -502,11 +508,11 @@ class TestIndexBills:
         # Tier-2: titles + subjects.
         titles_payload = _fixture("titles_119_hr_1.json")
         subjects_payload = _fixture("subjects_119_hr_1.json")
-        (storage_dir / enrichment_jsonl_name("titles")).write_text(
+        (storage_dir / _section_jsonl("titles")).write_text(
             json.dumps(_envelope_for_section(titles_payload, bill_key=(119, "hr", 1))) + "\n",
             encoding="utf-8",
         )
-        (storage_dir / enrichment_jsonl_name("subjects")).write_text(
+        (storage_dir / _section_jsonl("subjects")).write_text(
             json.dumps(_envelope_for_section(subjects_payload, bill_key=(119, "hr", 1))) + "\n",
             encoding="utf-8",
         )
@@ -565,9 +571,7 @@ class TestLoadOne:
         storage_dir, db = self._seed(tmp_path)
         # Tier-2 cosponsors for *both* bills.
         for bill_key in [(119, "hr", 1), (119, "hr", 22)]:
-            with (storage_dir / enrichment_jsonl_name("cosponsors")).open(
-                "a", encoding="utf-8"
-            ) as fh:
+            with (storage_dir / _section_jsonl("cosponsors")).open("a", encoding="utf-8") as fh:
                 fh.write(
                     json.dumps(
                         _envelope_for_section(
@@ -613,7 +617,7 @@ class TestLoadOne:
         """Loading hr-1 must not touch the cosponsors_fetched_at on hr-22."""
         storage_dir, db = self._seed(tmp_path)
         # Bulk-load both bills + tier-2 for hr-22.
-        (storage_dir / enrichment_jsonl_name("cosponsors")).write_text(
+        (storage_dir / _section_jsonl("cosponsors")).write_text(
             json.dumps(
                 _envelope_for_section(
                     _fixture("cosponsors_119_hr_22.json"), bill_key=(119, "hr", 22)
