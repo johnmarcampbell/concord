@@ -308,7 +308,9 @@ class TestAdaptiveThrottle:
     def test_cooldown_and_pace_are_capped(self) -> None:
         slept: list[float] = []
         throttle = AdaptiveThrottle(sleep=slept.append, rng=_low_jitter)
-        for _ in range(20):
+        # Far past where 2**strikes would overflow a float if the schedule's
+        # exponent were unbounded — a permanent block must wait, not crash.
+        for _ in range(1100):
             throttle.penalize(None)
         assert throttle.penalize(None) == MAX_COOLDOWN
         assert max(slept) == MAX_COOLDOWN

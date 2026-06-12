@@ -159,6 +159,12 @@ _COOLDOWN_BASE = 30.0
 
 _COOLDOWN_GROWTH = 2.0
 
+#: Strikes beyond this stop growing the cooldown schedule — it has already
+#: saturated :data:`MAX_COOLDOWN` (30 x 2^5 = 960 > 900), and an unbounded
+#: exponent would eventually overflow on a permanent block ("retried
+#: indefinitely" means wait forever, not crash at strike 1025).
+_MAX_COOLDOWN_DOUBLINGS = 5
+
 #: Cap on a single throttle cooldown and on honored ``Retry-After`` values,
 #: in seconds (15 min — a realistic Cloudflare window, unlike the old 60s cap
 #: that kept re-entering the block window). Bounds how long a misbehaving
@@ -229,7 +235,8 @@ class AdaptiveThrottle:
         """
         self._strikes += 1
         self._pace = min(self._pace * _PACE_GROWTH, _MAX_PACE)
-        scheduled = _COOLDOWN_BASE * _COOLDOWN_GROWTH ** (self._strikes - 1)
+        doublings = min(self._strikes - 1, _MAX_COOLDOWN_DOUBLINGS)
+        scheduled = _COOLDOWN_BASE * _COOLDOWN_GROWTH**doublings
         base = max(retry_after if retry_after is not None else 0.0, scheduled)
         delay = min(base * (1.0 + _COOLDOWN_JITTER * self._rng()), MAX_COOLDOWN)
         self._sleep(delay)
