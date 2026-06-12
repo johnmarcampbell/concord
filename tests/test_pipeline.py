@@ -358,7 +358,8 @@ def wired_components(
     text_http = httpx.Client(transport=text_transport)
     client = Client(api_key="test", transport=api_transport)
     storage = JsonlStorage(tmp_path / "out.jsonl")
-    return client, lambda url: fetch_text(url, text_http), storage
+    # No-op sleep: fetch_text paces every request now, even healthy ones.
+    return client, lambda url: fetch_text(url, text_http, sleep=lambda _s: None), storage
 
 
 class TestIntegration:
@@ -459,7 +460,7 @@ class TestResume:
             call_count["n"] += 1
             if call_count["n"] > 7:
                 raise RuntimeError("simulated crash")
-            return fetch_text(url, text_http_1)
+            return fetch_text(url, text_http_1, sleep=lambda _s: None)
 
         with client_1, pytest.raises(RuntimeError, match="simulated crash"):
             pull(
@@ -489,7 +490,7 @@ class TestResume:
                 date(2026, 5, 22),
                 date(2026, 5, 22),
                 client=client_2,
-                fetch=lambda url: fetch_text(url, text_http_2),
+                fetch=lambda url: fetch_text(url, text_http_2, sleep=lambda _s: None),
                 storage=storage_2,
                 now=_now,
             )

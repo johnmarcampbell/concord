@@ -9,36 +9,50 @@ dropped but their inner text preserved.
 No bs4, no lxml — the format is stable enough that one stdlib parser does the
 job and removes a dependency the rest of the project doesn't need.
 
-Retry policy
-------------
+Pacing and retry policy
+-----------------------
 
 The ``www.congress.gov`` HTML tier is a separate service from
 ``api.congress.gov``: it sits behind Cloudflare and has its own (undocumented)
-rate limit. A bulk pull of many articles trips two distinct Cloudflare signals,
-and the limit is enforced **per client across every URL**, not per request —
-so the backoff state lives on a single :class:`AdaptiveThrottle` shared by all
-fetches in a run, not inside one URL's retry loop (see ADR 0002's "JSONL is
-canonical, re-runs are cheap" — being throttled is a wait, never a data loss):
+rate limit, enforced **per client across every URL**, not per request — so the
+pacing state lives on a single :class:`AdaptiveThrottle` shared by all fetches
+in a run, not inside one URL's retry loop (see ADR 0002's "JSONL is canonical,
+re-runs are cheap" — being throttled is a wait, never a data loss).
 
-* HTTP 429 (Cloudflare rate-limit rule): typically carries a ``Retry-After``;
-  we honor it. Retry **indefinitely**.
-* HTTP 403 (Cloudflare bot/WAF block): a block page with **no** ``Retry-After``,
-  so there is no server hint to honor. Treated as the same throttle signal as
-  429 and retried **indefinitely**, but the wait comes from our own adaptive
-  backoff. This is the case a flat retry handles badly, which is why the
-  throttle escalates and persists across URLs rather than resetting per fetch.
+The throttle is *proactive*, not merely reactive. Cloudflare rate-limit rules
+work on windows: once tripped, the client stays blocked for the remainder of
+the rule's window (minutes, not seconds), and requests made inside the window
+are wasted. Running full speed until the first 429 therefore guarantees a
+long stall. Instead the throttle paces **every** request (AIMD — additive
+decrease of the inter-request gap on success, multiplicative increase on
+throttle) with random jitter so the request stream never looks
+machine-regular, and treats a throttle response as a *window* signal:
+
+* Every request first waits the current pace (starts at
+  :data:`_INITIAL_PACE`, decays toward :data:`_MIN_PACE` over clean fetches,
+  doubles per throttle hit up to :data:`_MAX_PACE`), jittered ±50%.
+* HTTP 429 (Cloudflare rate-limit rule) and HTTP 403 (Cloudflare bot/WAF
+  block, which carries no ``Retry-After``) are the same throttle signal.
+  Both are retried **indefinitely** after a cooldown of
+  ``max(Retry-After, 30s doubling per consecutive strike)`` capped at
+  :data:`MAX_COOLDOWN` — retrying every minute inside a multi-minute block
+  window (the old behavior) only burns requests, so consecutive strikes wait
+  out progressively more of the window. Cooldowns are jittered upward so
+  retries don't synchronize with the window boundary.
 * HTTP 5xx and transport errors (DNS, timeout, connection reset): genuine
   faults — retry up to :data:`MAX_5XX_RETRIES` times with exponential backoff
-  before surfacing a :class:`TextFetchError`. These are tracked per fetch and
-  are kept separate from throttling, which never counts against that budget.
+  (capped at :data:`MAX_BACKOFF`) before surfacing a :class:`TextFetchError`.
+  These are tracked per fetch and kept separate from throttling, which never
+  counts against that budget.
 
-Both throttle signals escalate one :class:`AdaptiveThrottle` level per hit and
-relax one level per :data:`_DECAY_AFTER_SUCCESSES` clean fetches, so a steady
-drip of "one 403 per URL" ratchets the backoff up instead of oscillating at the
-floor. Retry decisions are logged via :mod:`logging` (logger ``concord.text``).
+Strikes reset on the first clean fetch, but the *pace* does not: it decays
+additively, so a steady drip of "one 403 per URL" still ratchets the request
+rate down instead of oscillating at the floor. Retry decisions are logged via
+:mod:`logging` (logger ``concord.text``).
 """
 
 import logging
+import random
 import time
 from collections.abc import Callable
 from html.parser import HTMLParser
@@ -54,9 +68,9 @@ from concord.api import (
 from concord.models.runs import Attempt
 from concord.observability import Recorder, active_recorder
 
-#: Cap on a single backoff delay, in seconds. Applied to both the exponential
-#: schedule and Retry-After values so a server-suggested 1-hour wait can't
-#: silently stall the pipeline.
+#: Cap on a single 5xx/transport backoff delay, in seconds. Throttle cooldowns
+#: have their own, much higher cap (:data:`MAX_COOLDOWN`) — a Cloudflare block
+#: window outlasts 60s, but a flapping origin server shouldn't.
 MAX_BACKOFF = 60.0
 
 #: Maximum retries for transient 5xx / transport failures before surfacing
@@ -111,78 +125,120 @@ class _PreExtractor(HTMLParser):
         return "".join(self._chunks).strip()
 
 
-#: Consecutive clean fetches required to relax the throttle one level. Decay is
-#: deliberately slower than the one-level-per-throttle climb so a steady drip of
-#: "one 403 per URL" still ratchets the backoff up rather than oscillating at the
-#: 1s floor (a single success would otherwise cancel a single 403).
-_DECAY_AFTER_SUCCESSES = 3
+#: Inter-request gap, in seconds, when a run starts. Deliberately non-zero:
+#: full speed until the first 429 means entering the Cloudflare block window
+#: at maximum velocity. Low and slow finishes sooner than fast and blocked.
+_INITIAL_PACE = 1.0
 
-#: Cap on the throttle level. At this level the exponential backoff has already
-#: saturated :data:`MAX_BACKOFF`; capping bounds how long recovery takes after a
-#: sustained block (``_MAX_THROTTLE_LEVEL * _DECAY_AFTER_SUCCESSES`` clean
-#: fetches to fully relax).
-_MAX_THROTTLE_LEVEL = 7
+#: Floor the pace decays toward over sustained clean fetches. Never zero —
+#: every request stays paced.
+_MIN_PACE = 0.5
+
+#: Ceiling on the inter-request pace after repeated throttling.
+_MAX_PACE = 30.0
+
+#: Additive pace decrease per clean fetch (the AI half of AIMD). Small on
+#: purpose: recovering the 1s lost to one pace-doubling takes ~20 clean
+#: fetches, so a steady drip of "one 403 per URL" ratchets the rate down
+#: rather than oscillating at the floor.
+_PACE_DECAY = 0.05
+
+#: Multiplicative pace increase per throttle hit (the MD half of AIMD).
+_PACE_GROWTH = 2.0
+
+#: Pace jitter band: each pace wait is ``pace * uniform(LO, HI)``. A
+#: machine-regular request cadence is itself a bot signal; jitter also keeps
+#: retries from synchronizing with the rate-limit window.
+_PACE_JITTER_LO = 0.5
+_PACE_JITTER_HI = 1.5
+
+#: First-strike throttle cooldown, in seconds, doubling per consecutive
+#: strike. A 429/403 means the rate-limit window is already tripped; waits
+#: shorter than the window remainder are pure waste.
+_COOLDOWN_BASE = 30.0
+
+_COOLDOWN_GROWTH = 2.0
+
+#: Cap on a single throttle cooldown and on honored ``Retry-After`` values,
+#: in seconds (15 min — a realistic Cloudflare window, unlike the old 60s cap
+#: that kept re-entering the block window). Bounds how long a misbehaving
+#: server can park the pipeline per retry.
+MAX_COOLDOWN = 900.0
+
+#: Upward-only jitter fraction on cooldowns: waiting slightly longer than the
+#: hint/schedule is cheap; retrying exactly at the window boundary risks
+#: another strike.
+_COOLDOWN_JITTER = 0.25
 
 
 class AdaptiveThrottle:
-    """Client-level adaptive backoff shared across every article fetch in a run.
+    """Client-level AIMD pacer shared across every article fetch in a run.
 
     congress.gov enforces its limit per client, not per request, so a single
-    instance is threaded through all :func:`fetch_text` calls: the level climbs
-    one step per 403/429 and relaxes one step per :data:`_DECAY_AFTER_SUCCESSES`
-    clean fetches. :meth:`pace` proactively slows the *next* request once the
-    level is raised (so a recovered fetch doesn't immediately re-trip the
-    limit); :meth:`penalize` performs the post-throttle retry wait, honoring a
-    server ``Retry-After`` when present and otherwise backing off exponentially.
+    instance is threaded through all :func:`fetch_text` calls. :meth:`pace`
+    waits the current jittered inter-request gap before *every* request — the
+    throttle is proactive, not a reaction to the first 429. :meth:`penalize`
+    handles a throttle response: it doubles the pace and sleeps out a cooldown
+    sized to the Cloudflare block window (``max(Retry-After, escalating
+    schedule)``), doubling per consecutive strike. :meth:`recover` notes a
+    clean fetch: strikes reset, and the pace decays additively toward the
+    floor.
 
-    Throttle waits never count against the 5xx fault budget — being blocked is a
-    wait condition, not a fault. ``sleep`` is injectable so tests don't pay real
-    wall time.
+    Throttle waits never count against the 5xx fault budget — being blocked is
+    a wait condition, not a fault. ``sleep`` and ``rng`` are injectable so
+    tests don't pay real wall time and aren't at the mercy of jitter
+    (``rng()`` must return a float in ``[0, 1)``; the default is
+    :func:`random.random`).
     """
 
-    def __init__(self, *, sleep: Callable[[float], None] = time.sleep) -> None:
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        rng: Callable[[], float] = random.random,
+    ) -> None:
         self._sleep = sleep
-        self._level = 0
-        self._ok_streak = 0
+        self._rng = rng
+        self._pace = _INITIAL_PACE
+        self._strikes = 0
 
     @property
-    def level(self) -> int:
-        """Current throttle level (0 when healthy). Exposed for tests/logging."""
-        return self._level
+    def pace_seconds(self) -> float:
+        """Current un-jittered inter-request gap. Exposed for tests/logging."""
+        return self._pace
+
+    @property
+    def strikes(self) -> int:
+        """Consecutive throttle responses since the last clean fetch."""
+        return self._strikes
 
     def pace(self) -> None:
-        """Wait the current throttle delay before a request (no-op when healthy)."""
-        if self._level > 0:
-            self._sleep(self._delay())
+        """Wait the jittered inter-request gap. Applies to every request."""
+        jitter = _PACE_JITTER_LO + (_PACE_JITTER_HI - _PACE_JITTER_LO) * self._rng()
+        self._sleep(self._pace * jitter)
 
     def penalize(self, retry_after: float | None) -> float:
-        """Record a throttle response, sleep the retry wait, return the delay used.
+        """Record a throttle response, sleep out the cooldown, return the delay used.
 
-        Honors ``retry_after`` when the server supplied one (Cloudflare 429s do);
-        otherwise falls back to the exponential schedule for the newly raised
-        level (Cloudflare 403s don't).
+        The cooldown is the larger of the server's ``Retry-After`` (Cloudflare
+        429s carry one; 403s don't) and the escalating per-strike schedule —
+        a hint shorter than the schedule is distrusted, because consecutive
+        strikes mean honoring it just re-entered the block window. Jittered
+        upward, capped at :data:`MAX_COOLDOWN`. Also doubles the pace, so the
+        request rate after recovery stays below whatever tripped the limit.
         """
-        self._level = min(self._level + 1, _MAX_THROTTLE_LEVEL)
-        self._ok_streak = 0
-        delay = retry_after if retry_after is not None else self._delay()
+        self._strikes += 1
+        self._pace = min(self._pace * _PACE_GROWTH, _MAX_PACE)
+        scheduled = _COOLDOWN_BASE * _COOLDOWN_GROWTH ** (self._strikes - 1)
+        base = max(retry_after if retry_after is not None else 0.0, scheduled)
+        delay = min(base * (1.0 + _COOLDOWN_JITTER * self._rng()), MAX_COOLDOWN)
         self._sleep(delay)
         return delay
 
     def recover(self) -> None:
-        """Note a clean fetch; relax one level after enough consecutive successes."""
-        if self._level == 0:
-            return
-        self._ok_streak += 1
-        if self._ok_streak >= _DECAY_AFTER_SUCCESSES:
-            self._level -= 1
-            self._ok_streak = 0
-
-    def _delay(self) -> float:
-        """Exponential backoff for the current level, capped at :data:`MAX_BACKOFF`.
-
-        Level 1 → 1s, 2 → 2s, 3 → 4s, … saturating at the cap.
-        """
-        return min(_BACKOFF_BASE ** (self._level - 1), MAX_BACKOFF)
+        """Note a clean fetch: reset strikes, decay the pace toward the floor."""
+        self._strikes = 0
+        self._pace = max(self._pace - _PACE_DECAY, _MIN_PACE)
 
 
 def fetch_text(
@@ -199,12 +255,13 @@ def fetch_text(
     followed automatically. Transient failures (429, 403, 5xx, transport
     errors) are retried per the module-level policy.
 
-    ``throttle`` is the shared :class:`AdaptiveThrottle` carrying rate-limit
-    state across every fetch in a run; pass one instance for a whole pull so
-    throttling congress.gov slows *subsequent* URLs too. When omitted, a fresh
-    per-call throttle is used (fine for one-off fetches and tests). ``sleep`` is
-    injectable so tests don't pay real wall time; it also seeds the default
-    throttle's clock.
+    ``throttle`` is the shared :class:`AdaptiveThrottle` carrying pacing state
+    across every fetch in a run; pass one instance for a whole pull so the
+    request rate adapts across URLs. When omitted, a fresh per-call throttle is
+    used (fine for one-off fetches and tests, at the cost of the initial ~1s
+    pace — every request is paced, even healthy ones). ``sleep`` is injectable
+    so tests don't pay real wall time; it also seeds the default throttle's
+    clock.
 
     Raises :class:`TextFetchError` on:
 
@@ -242,9 +299,9 @@ def _get_with_retry(
     rec = active_recorder()
     attempts: list[Attempt] = []
 
-    # Proactively wait out any backoff carried over from earlier URLs before the
-    # first attempt — congress.gov rate-limits per client, so hammering the next
-    # URL immediately after a throttle just re-trips the limit.
+    # Every request is paced, healthy or not — the gap carries over from earlier
+    # URLs because congress.gov rate-limits per client, and going full speed
+    # until the first 429 just enters the block window at maximum velocity.
     throttle.pace()
     transient_attempts = 0
     while True:
@@ -273,13 +330,17 @@ def _get_with_retry(
             # do not increment transient_attempts — being blocked is a wait
             # condition, not a fault, and must not burn the 5xx budget.
             _note_attempt(attempts, status=status, message=response.reason_phrase)
-            delay = throttle.penalize(_retry_after_seconds(response))
+            retry_after = _retry_after_seconds(response)
+            delay = throttle.penalize(retry_after)
             _log.warning(
-                "%d from %s (rate-limited?); backing off %.1fs before retry (level %d)",
+                "%d from %s (rate-limited?); cooling down %.1fs before retry "
+                "(Retry-After: %s, strike %d, pace now %.2fs/req)",
                 status,
                 url,
                 delay,
-                throttle.level,
+                _format_retry_after(retry_after),
+                throttle.strikes,
+                throttle.pace_seconds,
             )
             continue
 
@@ -387,9 +448,9 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     """Parse the ``Retry-After`` header, if any, as seconds.
 
     Supports the integer-seconds form. Returns ``None`` for the HTTP-date
-    form or when the header is missing/unparseable; callers fall back to
-    exponential backoff in that case. The result is clamped to
-    :data:`MAX_BACKOFF` so a misbehaving server can't park us forever.
+    form or when the header is missing/unparseable; callers fall back to the
+    cooldown schedule in that case. The result is clamped to
+    :data:`MAX_COOLDOWN` so a misbehaving server can't park us forever.
     """
     raw = response.headers.get("retry-after")
     if not raw:
@@ -398,4 +459,13 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
         seconds = float(raw.strip())
     except ValueError:
         return None
-    return min(max(seconds, 0.0), MAX_BACKOFF)
+    return min(max(seconds, 0.0), MAX_COOLDOWN)
+
+
+def _format_retry_after(retry_after: float | None) -> str:
+    """Render the parsed (clamped) ``Retry-After`` for the throttle log line.
+
+    ``"none"`` when the header was absent or unparseable — so the log shows
+    whether a cooldown came from the server's hint or our own strike schedule.
+    """
+    return "none" if retry_after is None else f"{retry_after:.0f}s"
