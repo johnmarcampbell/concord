@@ -13,7 +13,9 @@ Subcommands follow the pattern ``concord <stage> <entity>``:
 
 The same shape applies to Members, Bills, and Votes.
 
-``concord serve`` is unchanged — it isn't stage-scoped.
+``concord serve`` is unchanged — it isn't stage-scoped. ``concord daemon``
+(ADR 0026) is the unsupervised scheduler: it drives the stage commands above
+as child processes on a daily Tick (forward incremental + chunked backfill).
 
 Default paths:
 
@@ -32,6 +34,7 @@ import typer
 # Side-effectful: each module decorates its commands onto the stage apps.
 from concord.cli import bills, members, proceedings, votes  # noqa: F401
 from concord.cli._apps import index_app, load_app, run_app, scrape_app
+from concord.cli.daemon import daemon_command
 from concord.cli.serve import serve_command
 from concord.observability import configure_logging
 
@@ -67,8 +70,9 @@ def _root() -> None:
     configure_logging()
 
 
-# serve lives directly on the root app, not under a stage sub-app.
+# serve and daemon live directly on the root app, not under a stage sub-app.
 app.command("serve")(serve_command)
+app.command("daemon")(daemon_command)
 
 # ---------------------------------------------------------------------------
 # Entry point

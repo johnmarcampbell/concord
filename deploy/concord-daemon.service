@@ -1,0 +1,50 @@
+# systemd unit for the Concord scraping daemon (ADR 0026).
+#
+# The daemon owns *scheduling* (a daily Tick: forward incremental + one
+# backfill chunk per entity); systemd owns *liveness* (restart on crash).
+#
+# Install:
+#   sudo cp deploy/concord-daemon.service /etc/systemd/system/
+#   sudo mkdir -p /etc/concord && sudo $EDITOR /etc/concord/daemon.env   # API keys
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now concord-daemon
+#   journalctl -u concord-daemon -f                                       # follow logs
+#
+# /etc/concord/daemon.env holds (chmod 600, root-owned):
+#   CONGRESS_API_KEY=...        # required
+#   OPENAI_API_KEY=...          # optional; needed only to index Proceedings
+#
+# Adjust User, WorkingDirectory, and the uv/concord path to your deployment.
+
+[Unit]
+Description=Concord scraping daemon (forward incremental + auto-backfill)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=concord
+Group=concord
+WorkingDirectory=/srv/concord
+EnvironmentFile=/etc/concord/daemon.env
+
+# Runs Ticks forever; --once is for ad-hoc/cron use, not this unit.
+# `uv run` resolves the project venv; replace with an absolute `concord`
+# path if you install the console script system-wide.
+ExecStart=/usr/bin/uv run concord daemon --data-dir /srv/concord/data
+
+# Graceful stop: the daemon traps SIGTERM, finishes the in-flight child, then
+# exits. Give a scrape time to wind down before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+Restart=always
+RestartSec=30
+
+# Light hardening; loosen if your data dir lives elsewhere.
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/srv/concord/data
+
+[Install]
+WantedBy=multi-user.target
