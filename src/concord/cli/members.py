@@ -121,6 +121,44 @@ def _run_index_members(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline (shared by `run members` and `sync`)
+# ---------------------------------------------------------------------------
+
+
+def run_members_pipeline(
+    *,
+    congresses: list[int],
+    storage_path: Path,
+    db_path: Path,
+    show_progress: bool,
+    command: str,
+    skip_unchanged: bool = False,
+) -> None:
+    """Run scrape → load → index for Members over ``congresses``.
+
+    The single stage-chaining definition shared by ``concord run members``
+    and ``concord sync``. The caller owns API-key gating and the final
+    ``"✓ Done."`` echo; ``command`` labels the Scrape Run (ADR 0021). Stage 2
+    is FTS-only — no OpenAI key required.
+    """
+    typer.echo("→ Stage 0: scrape", err=True)
+    _run_scrape_members(
+        congresses=congresses,
+        storage_path=storage_path,
+        show_progress=show_progress,
+        db_path=db_path,
+        command=command,
+        skip_unchanged=skip_unchanged,
+    )
+
+    typer.echo("→ Stage 1: load", err=True)
+    _run_load_members(storage_path=storage_path, db_path=db_path)
+
+    typer.echo("→ Stage 2: index", err=True)
+    _run_index_members(db_path=db_path)
+
+
+# ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
 
@@ -258,19 +296,12 @@ def run_members_command(
 
     parsed = _parse_congresses(congresses)
 
-    typer.echo("→ Stage 0: scrape", err=True)
-    _run_scrape_members(
+    run_members_pipeline(
         congresses=parsed,
         storage_path=storage_path,
-        show_progress=show_progress,
         db_path=db_path,
+        show_progress=show_progress,
         command="run members",
     )
-
-    typer.echo("→ Stage 1: load", err=True)
-    _run_load_members(storage_path=storage_path, db_path=db_path)
-
-    typer.echo("→ Stage 2: index", err=True)
-    _run_index_members(db_path=db_path)
 
     typer.echo("✓ Done.", err=True)

@@ -219,6 +219,55 @@ def _run_index(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline (shared by `run proceedings` and `sync`)
+# ---------------------------------------------------------------------------
+
+
+def run_proceedings_pipeline(
+    *,
+    start: date,
+    end: date,
+    storage_path: Path,
+    db_path: Path,
+    limit: int | None,
+    show_progress: bool,
+    command: str,
+) -> None:
+    """Run scrape → load → index for Proceedings over ``[start, end]``.
+
+    The single stage-chaining definition shared by ``concord run proceedings``
+    and ``concord sync``. The caller owns API-key gating and the final
+    ``"✓ Done."`` echo; ``command`` labels the Scrape Run (ADR 0021).
+    """
+    typer.echo("→ Stage 0: scrape", err=True)
+    _run_scrape_proceedings(
+        start=start,
+        end=end,
+        storage=JsonlStorage(storage_path),
+        storage_label=str(storage_path),
+        limit=limit,
+        show_progress=show_progress,
+        db_path=db_path,
+        command=command,
+    )
+
+    typer.echo("→ Stage 1: load", err=True)
+    _run_load(
+        jsonl_path=storage_path,
+        db_path=db_path,
+        limit=None,  # load reads from JSONL; limit only constrains the scrape
+        show_progress=show_progress,
+    )
+
+    typer.echo("→ Stage 2: index", err=True)
+    _run_index(
+        db_path=db_path,
+        limit=limit,
+        show_progress=show_progress,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
 
@@ -424,31 +473,14 @@ def run_proceedings_command(
     start = _parse_date(from_)
     end = _parse_date(to or _today())
 
-    typer.echo("→ Stage 0: scrape", err=True)
-    _run_scrape_proceedings(
+    run_proceedings_pipeline(
         start=start,
         end=end,
-        storage=JsonlStorage(storage_path),
-        storage_label=str(storage_path),
+        storage_path=storage_path,
+        db_path=db_path,
         limit=limit,
         show_progress=show_progress,
-        db_path=db_path,
         command="run proceedings",
-    )
-
-    typer.echo("→ Stage 1: load", err=True)
-    _run_load(
-        jsonl_path=storage_path,
-        db_path=db_path,
-        limit=None,  # load reads from JSONL; limit only constrains the scrape
-        show_progress=show_progress,
-    )
-
-    typer.echo("→ Stage 2: index", err=True)
-    _run_index(
-        db_path=db_path,
-        limit=limit,
-        show_progress=show_progress,
     )
 
     typer.echo("✓ Done.", err=True)

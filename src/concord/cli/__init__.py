@@ -33,6 +33,7 @@ import typer
 from concord.cli import bills, members, proceedings, votes  # noqa: F401
 from concord.cli._apps import index_app, load_app, run_app, scrape_app
 from concord.cli.serve import serve_command
+from concord.cli.sync import sync_command
 from concord.observability import configure_logging
 
 # ---------------------------------------------------------------------------
@@ -67,8 +68,9 @@ def _root() -> None:
     configure_logging()
 
 
-# serve lives directly on the root app, not under a stage sub-app.
+# serve and sync live directly on the root app, not under a stage sub-app.
 app.command("serve")(serve_command)
+app.command("sync")(sync_command)
 
 # ---------------------------------------------------------------------------
 # Entry point

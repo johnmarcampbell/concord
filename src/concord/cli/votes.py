@@ -206,6 +206,49 @@ def _run_index_votes(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline (shared by `run votes` and `sync`)
+# ---------------------------------------------------------------------------
+
+
+def run_votes_pipeline(  # noqa: PLR0913 — one kwarg per scrape knob; +db_path/command thread the Scrape Run
+    *,
+    congresses: list[int],
+    sessions: list[int],
+    chambers: list[str],
+    storage_dir: Path,
+    db_path: Path,
+    limit: int | None,
+    show_progress: bool,
+    command: str,
+    skip_unchanged: bool = False,
+) -> None:
+    """Run scrape → load → index for Votes over the given congresses/sessions/chambers.
+
+    The single stage-chaining definition shared by ``concord run votes`` and
+    ``concord sync``. The caller owns API-key gating and the final
+    ``"✓ Done."`` echo; ``command`` labels the Scrape Run (ADR 0021).
+    """
+    typer.echo("→ Stage 0: scrape", err=True)
+    _run_scrape_votes(
+        congresses=congresses,
+        sessions=sessions,
+        chambers=chambers,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+        db_path=db_path,
+        command=command,
+        skip_unchanged=skip_unchanged,
+    )
+
+    typer.echo("→ Stage 1: load", err=True)
+    _run_load_votes(storage_dir=storage_dir, db_path=db_path, limit=None)
+
+    typer.echo("→ Stage 2: index", err=True)
+    _run_index_votes(db_path=db_path, limit=None)
+
+
+# ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
 
@@ -391,22 +434,15 @@ def run_votes_command(
         )
         raise typer.Exit(code=2)
 
-    typer.echo("→ Stage 0: scrape", err=True)
-    _run_scrape_votes(
+    run_votes_pipeline(
         congresses=parsed_congresses,
         sessions=parsed_sessions,
         chambers=parsed_chambers,
         storage_dir=storage_dir,
+        db_path=db_path,
         limit=limit,
         show_progress=show_progress,
-        db_path=db_path,
         command="run votes",
     )
-
-    typer.echo("→ Stage 1: load", err=True)
-    _run_load_votes(storage_dir=storage_dir, db_path=db_path, limit=None)
-
-    typer.echo("→ Stage 2: index", err=True)
-    _run_index_votes(db_path=db_path, limit=None)
 
     typer.echo("✓ Done.", err=True)
