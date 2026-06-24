@@ -32,8 +32,8 @@ import typer
 # Side-effectful: each module decorates its commands onto the stage apps.
 from concord.cli import bills, members, proceedings, votes  # noqa: F401
 from concord.cli._apps import index_app, load_app, run_app, scrape_app
-from concord.cli.cycle import sync_command
 from concord.cli.serve import serve_command
+from concord.cli.sync import sync_command
 from concord.observability import configure_logging
 
 # ---------------------------------------------------------------------------

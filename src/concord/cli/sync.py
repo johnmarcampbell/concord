@@ -36,7 +36,7 @@ from concord.cli.votes import (
 from concord.congress import current_congress
 from concord.observability import configure_logging
 
-_log = logging.getLogger("concord.cli.cycle")
+_log = logging.getLogger("concord.cli.sync")
 
 #: Default rolling-window size for the proceedings leg of a Sync.
 DEFAULT_LOOKBACK_DAYS = 7
@@ -45,7 +45,7 @@ DEFAULT_LOOKBACK_DAYS = 7
 LOCK_FILENAME = ".sync.lock"
 
 
-class CycleAlreadyRunningError(Exception):
+class SyncAlreadyRunningError(Exception):
     """Raised when another Sync already holds the advisory lock."""
 
 
@@ -59,7 +59,7 @@ class EntityResult:
 
 
 @dataclass(frozen=True)
-class CycleResult:
+class SyncResult:
     """Aggregate outcome of one Sync — one :class:`EntityResult` per entity."""
 
     results: list[EntityResult]
@@ -71,11 +71,11 @@ class CycleResult:
 
 
 @contextmanager
-def cycle_lock(lock_path: Path) -> Iterator[None]:
+def sync_lock(lock_path: Path) -> Iterator[None]:
     """Hold an advisory ``flock`` for the duration of one Sync.
 
     Uses a non-blocking exclusive lock (``LOCK_EX | LOCK_NB``) so a second
-    concurrent Sync bows out immediately with :class:`CycleAlreadyRunningError`
+    concurrent Sync bows out immediately with :class:`SyncAlreadyRunningError`
     rather than queueing behind the first. The lock is advisory and
     kernel-released when the process (and thus the file descriptor) dies, so a
     crashed Sync leaves no stale lock to clear (ADR 0026).
@@ -85,19 +85,19 @@ def cycle_lock(lock_path: Path) -> Iterator[None]:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise CycleAlreadyRunningError(f"another Sync already holds {lock_path}") from exc
+            raise SyncAlreadyRunningError(f"another Sync already holds {lock_path}") from exc
         # The lock releases when `handle` closes on context exit.
         yield
 
 
-def run_cycle(
+def run_sync(
     *,
     lookback_days: int,
     db_path: Path,
     show_progress: bool,
     today: date | None = None,
-) -> CycleResult:
-    """Run one Sync and return a per-entity :class:`CycleResult`.
+) -> SyncResult:
+    """Run one Sync and return a per-entity :class:`SyncResult`.
 
     Proceedings are scraped over a rolling ``[today - lookback_days, today]``
     window; members, bills, and votes over the **current Congress** with
@@ -106,7 +106,7 @@ def run_cycle(
 
     ``today`` is injectable so the window/Congress math is deterministically
     testable; it defaults to the current UTC date. Raises
-    :class:`CycleAlreadyRunningError` if another Sync already holds the lock. The
+    :class:`SyncAlreadyRunningError` if another Sync already holds the lock. The
     JSONL stores and the lock live alongside ``db_path``.
     """
     resolved_today = today if today is not None else datetime.now(UTC).date()
@@ -169,7 +169,7 @@ def run_cycle(
     ]
 
     results: list[EntityResult] = []
-    with cycle_lock(storage_dir / LOCK_FILENAME):
+    with sync_lock(storage_dir / LOCK_FILENAME):
         for name, run_pipeline in pipelines:
             typer.echo(f"=== sync: {name} ===", err=True)
             try:
@@ -187,7 +187,7 @@ def run_cycle(
                 )
             else:
                 results.append(EntityResult(entity=name, ok=True, error=None))
-    return CycleResult(results=results)
+    return SyncResult(results=results)
 
 
 def sync_command(
@@ -237,12 +237,12 @@ def sync_command(
     _require_openai_key()
 
     try:
-        result = run_cycle(
+        result = run_sync(
             lookback_days=lookback_days,
             db_path=db_path,
             show_progress=show_progress,
         )
-    except CycleAlreadyRunningError as exc:
+    except SyncAlreadyRunningError as exc:
         typer.echo(f"another Sync is already running; exiting ({exc}).", err=True)
         raise typer.Exit(code=75) from exc
 

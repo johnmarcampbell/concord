@@ -1,4 +1,4 @@
-"""Tests for ``concord sync`` (the Sync cycle).
+"""Tests for ``concord sync`` (one Sync over all four entities).
 
 The four entity pipelines are exercised by their own suites; here we stub
 them out and verify the *orchestration* contract from ADR 0026:
@@ -20,10 +20,10 @@ import pytest
 from typer.testing import CliRunner
 
 import concord.cli as cli_module
-import concord.cli.cycle as cycle_module
+import concord.cli.sync as sync_module
 from concord.api import ENV_API_KEY
 from concord.cli._common import ENV_OPENAI_API_KEY
-from concord.cli.cycle import CycleAlreadyRunningError, run_cycle
+from concord.cli.sync import SyncAlreadyRunningError, run_sync
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -62,7 +62,7 @@ def _install_pipelines(
     order: list[str] | None = None,
     fail: tuple[str, ...] = (),
 ) -> None:
-    """Replace the four ``run_<entity>_pipeline`` callables in ``cycle``.
+    """Replace the four ``run_<entity>_pipeline`` callables in ``sync``.
 
     Each stub records its call (into ``captured`` and/or ``order``) and, if its
     entity is listed in ``fail``, raises so the best-effort path is exercised.
@@ -81,7 +81,7 @@ def _install_pipelines(
 
             return _fake
 
-        monkeypatch.setattr(cycle_module, attr, _make(entity))
+        monkeypatch.setattr(sync_module, attr, _make(entity))
 
 
 # -- help --------------------------------------------------------------------
@@ -106,7 +106,7 @@ def test_window_and_congress_wiring(
     _install_pipelines(monkeypatch, captured=captured)
 
     db = tmp_path / "proceedings.db"
-    result = run_cycle(
+    result = run_sync(
         lookback_days=7,
         db_path=db,
         show_progress=False,
@@ -142,7 +142,7 @@ def test_lookback_days_changes_only_the_proceedings_window(
     captured: dict[str, dict[str, Any]] = {}
     _install_pipelines(monkeypatch, captured=captured)
 
-    run_cycle(
+    run_sync(
         lookback_days=1,
         db_path=tmp_path / "p.db",
         show_progress=False,
@@ -162,7 +162,7 @@ def test_best_effort_one_failure_does_not_abort_the_rest(
     order: list[str] = []
     _install_pipelines(monkeypatch, order=order, fail=("bills",))
 
-    result = run_cycle(
+    result = run_sync(
         lookback_days=7,
         db_path=tmp_path / "p.db",
         show_progress=False,
@@ -217,7 +217,7 @@ def test_sync_exits_0_when_all_entities_ok(
 # -- flock overlap guard -----------------------------------------------------
 
 
-def test_run_cycle_raises_when_lock_already_held(
+def test_run_sync_raises_when_lock_already_held(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -227,8 +227,8 @@ def test_run_cycle_raises_when_lock_already_held(
     lock_path = tmp_path / ".sync.lock"
     with lock_path.open("a", encoding="utf-8") as held:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(CycleAlreadyRunningError):
-            run_cycle(
+        with pytest.raises(SyncAlreadyRunningError):
+            run_sync(
                 lookback_days=7,
                 db_path=tmp_path / "p.db",
                 show_progress=False,

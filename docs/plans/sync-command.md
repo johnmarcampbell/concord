@@ -38,7 +38,7 @@ A **Sync** (CONTEXT.md → Orchestration) is one bounded incremental pass across
 ## Relevant prior decisions
 
 - **ADR 0026 — Sync command, not resident daemon** (new, created with this plan) ([docs/adr/0026-sync-command-not-resident-daemon.md](../adr/0026-sync-command-not-resident-daemon.md)).
-- **ADR 0007 — Parallel pipelines per entity** ([docs/adr/0007-parallel-pipelines-per-entity.md](../adr/0007-parallel-pipelines-per-entity.md)): stages are modules, not classes; **no base class** to DRY entities; cross-entity orchestration belongs at the CLI level. The cycle calls the four pipelines *explicitly* — do not introduce a shared protocol/ABC.
+- **ADR 0007 — Parallel pipelines per entity** ([docs/adr/0007-parallel-pipelines-per-entity.md](../adr/0007-parallel-pipelines-per-entity.md)): stages are modules, not classes; **no base class** to DRY entities; cross-entity orchestration belongs at the CLI level. The Sync calls the four pipelines *explicitly* — do not introduce a shared protocol/ABC.
 - **ADR 0015 — Staleness-aware re-scrape** ([docs/adr/0015-staleness-aware-rescrape.md](../adr/0015-staleness-aware-rescrape.md)): "daily incremental is just `--skip-unchanged`." Sync sets `skip_unchanged=True` for the mutable entities.
 - **ADR 0021 — Scrape Run observability** ([docs/adr/0021-scrape-run-observability.md](../adr/0021-scrape-run-observability.md)): each entity scrape mints a Scrape Run; a Sync produces up to four. Stage 1/2 failures produce *no* Scrape Run, which is why the summary + exit code are load-bearing.
 - **ADR 0022 — Internal import convention** ([docs/adr/0022-internal-import-convention.md](../adr/0022-internal-import-convention.md)): import from the defining submodule, absolute imports only. `cli/__init__.py` is the Typer composition root.
@@ -80,7 +80,7 @@ def current_congress(today: date) -> int:
     return (start_year - 1789) // 2 + 1      # 1st Congress began 1789
 ```
 
-**2. Extract `run_<entity>_pipeline(...)` from each of the four entity modules.** Today the scrape→load→index chain (plus the `"→ Stage N"` echoes) lives inline inside each `run_<entity>_command`. Move *just that chain* into a module-level `run_<entity>_pipeline(...)` taking already-parsed, typed params; the command keeps key-gating, CLI-string parsing, and the final `"✓ Done."` echo, then delegates. This is behavior-preserving for `run <entity>` and gives `sync` one definition to call. Crucially, **key-gating stays in the command, not the pipeline** — the Sync gates once up front, and pipelines must not raise `typer.Exit` for config reasons. Each pipeline accepts a `command: str` label that is threaded to the scrape worker for the Scrape Run ledger (`"run bills"` from the command, `"sync"` from the cycle).
+**2. Extract `run_<entity>_pipeline(...)` from each of the four entity modules.** Today the scrape→load→index chain (plus the `"→ Stage N"` echoes) lives inline inside each `run_<entity>_command`. Move *just that chain* into a module-level `run_<entity>_pipeline(...)` taking already-parsed, typed params; the command keeps key-gating, CLI-string parsing, and the final `"✓ Done."` echo, then delegates. This is behavior-preserving for `run <entity>` and gives `sync` one definition to call. Crucially, **key-gating stays in the command, not the pipeline** — the Sync gates once up front, and pipelines must not raise `typer.Exit` for config reasons. Each pipeline accepts a `command: str` label that is threaded to the scrape worker for the Scrape Run ledger (`"run bills"` from the command, `"sync"` from the Sync).
 
 Pipeline signatures (typed params, no CLI strings):
 - `run_proceedings_pipeline(*, start: date, end: date, storage_path, db_path, limit, show_progress, command)`
@@ -90,18 +90,18 @@ Pipeline signatures (typed params, no CLI strings):
 
 (Members/votes/bills scrape workers already accept `skip_unchanged`; thread it through the new pipeline param.)
 
-**3. The cycle (`src/concord/cli/cycle.py`).** A composition root that calls the four pipelines explicitly — no abstraction over them (ADR 0007). Shape:
+**3. The Sync (`src/concord/cli/sync.py`).** A composition root that calls the four pipelines explicitly — no abstraction over them (ADR 0007). Shape:
 
 ```
 sync_command(--lookback-days=7, --db=DEFAULT_DB, --progress/--no-progress):
     gate CONGRESS_API_KEY and OPENAI_API_KEY  → exit 2 if missing
-    result = run_cycle(lookback_days=..., db_path=..., show_progress=...)
+    result = run_sync(lookback_days=..., db_path=..., show_progress=...)
     print summary (one line per entity)
     raise typer.Exit(code = 1 if result has any failure else 0)
 
-run_cycle(*, lookback_days, db_path, show_progress, today=None) -> CycleResult:
+run_sync(*, lookback_days, db_path, show_progress, today=None) -> SyncResult:
     today = today or datetime.now(UTC).date()
-    with cycle_lock(db_path.parent / ".sync.lock"):   # raises CycleAlreadyRunning if held
+    with sync_lock(db_path.parent / ".sync.lock"):   # raises SyncAlreadyRunningError if held
         start, end = today - timedelta(days=lookback_days), today
         congress = current_congress(today)
         results = []
@@ -116,13 +116,13 @@ run_cycle(*, lookback_days, db_path, show_progress, today=None) -> CycleResult:
             except Exception as exc:                  # best-effort; typer.Exit subclasses Exception
                 logger.exception("sync: %s pipeline failed", name)
                 results.append(EntityResult(name, ok=False, error=f"{type(exc).__name__}: {exc}"))
-        return CycleResult(results)
+        return SyncResult(results)
 ```
 
-- `run_cycle` takes `today` as an injectable param (default `datetime.now(UTC).date()`) so window/Congress math is deterministically testable.
-- `run_cycle` calls the module-level `run_<entity>_pipeline` functions; tests monkeypatch them.
-- `cycle_lock` is a small `@contextmanager` in `cycle.py` using `fcntl.flock(fd, LOCK_EX | LOCK_NB)`, raising `CycleAlreadyRunning` on `BlockingIOError`. `sync_command` catches `CycleAlreadyRunning`, prints "another Sync is already running", and exits `75`.
-- `EntityResult` / `CycleResult` are frozen dataclasses; `CycleResult.ok` is `all(r.ok for r in results)`.
+- `run_sync` takes `today` as an injectable param (default `datetime.now(UTC).date()`) so window/Congress math is deterministically testable.
+- `run_sync` calls the module-level `run_<entity>_pipeline` functions; tests monkeypatch them.
+- `sync_lock` is a small `@contextmanager` in `sync.py` using `fcntl.flock(fd, LOCK_EX | LOCK_NB)`, raising `SyncAlreadyRunningError` on `BlockingIOError`. `sync_command` catches `SyncAlreadyRunningError`, prints "another Sync is already running", and exits `75`.
+- `EntityResult` / `SyncResult` are frozen dataclasses; `SyncResult.ok` is `all(r.ok for r in results)`.
 - Lock-held (`75`) is distinct from entity-failure (`1`) so cron can tell "benign, still running" from "ran and something broke."
 
 ```mermaid
@@ -131,7 +131,7 @@ flowchart TD
     B -- no --> X[exit 2]
     B -- yes --> C{acquire flock<br/>data/.sync.lock}
     C -- held --> Y[exit 75]
-    C -- got it --> D[run_cycle: today→window + current_congress]
+    C -- got it --> D[run_sync: today→window + current_congress]
     D --> P[proceedings pipeline]
     D --> M[members pipeline]
     D --> Bi[bills pipeline]
@@ -155,15 +155,15 @@ flowchart TD
 
 7. **Confirm extraction is behavior-preserving.** Run `uv run pytest` (the existing CLI tests for `run <entity>`) and `uv run mypy src`. No output or behavior should have changed for the four `run` commands.
 
-8. **Create `src/concord/cli/cycle.py`.** Implement: `EntityResult` + `CycleResult` frozen dataclasses; `CycleAlreadyRunning(Exception)`; the `cycle_lock` contextmanager (`fcntl.flock`, `LOCK_EX | LOCK_NB`); `run_cycle(*, lookback_days, db_path, show_progress, today=None) -> CycleResult` per the Approach, importing the four `run_<entity>_pipeline` functions and the entity default storage paths/dirs; and `sync_command(...)` the Typer command (key gating → `run_cycle` → summary → exit code). Use `Progress`/logging already in the codebase; do **not** add file logging or signal handlers.
+8. **Create `src/concord/cli/sync.py`.** Implement: `EntityResult` + `SyncResult` frozen dataclasses; `SyncAlreadyRunningError(Exception)`; the `sync_lock` contextmanager (`fcntl.flock`, `LOCK_EX | LOCK_NB`); `run_sync(*, lookback_days, db_path, show_progress, today=None) -> SyncResult` per the Approach, importing the four `run_<entity>_pipeline` functions and the entity default storage paths/dirs; and `sync_command(...)` the Typer command (key gating → `run_sync` → summary → exit code). Use `Progress`/logging already in the codebase; do **not** add file logging or signal handlers.
 
-9. **Register `concord sync`.** In `src/concord/cli/__init__.py`, add `from concord.cli.cycle import sync_command` (absolute import, ADR 0022) and `app.command("sync")(sync_command)` next to the `serve` registration (line 71). Verify `uv run concord sync --help` renders and `uv run concord --help` lists `sync`.
+9. **Register `concord sync`.** In `src/concord/cli/__init__.py`, add `from concord.cli.sync import sync_command` (absolute import, ADR 0022) and `app.command("sync")(sync_command)` next to the `serve` registration (line 71). Verify `uv run concord sync --help` renders and `uv run concord --help` lists `sync`.
 
-10. **Test best-effort isolation.** Create `tests/test_cli_sync.py`. Monkeypatch the four `run_<entity>_pipeline` functions to no-ops; make one (e.g. bills) raise. Assert: the other three were still called, `CycleResult` marks bills failed with the error string, and `run_cycle` returned (did not propagate). Assert `sync_command` exits `1` in this case and `0` when all succeed (use Typer's `CliRunner`).
+10. **Test best-effort isolation.** Create `tests/test_cli_sync.py`. Monkeypatch the four `run_<entity>_pipeline` functions to no-ops; make one (e.g. bills) raise. Assert: the other three were still called, `SyncResult` marks bills failed with the error string, and `run_sync` returned (did not propagate). Assert `sync_command` exits `1` in this case and `0` when all succeed (use Typer's `CliRunner`).
 
-11. **Test the flock guard.** In `tests/test_cli_sync.py`, acquire the lock manually (open `data/.sync.lock` under a tmp data dir, `fcntl.flock(..., LOCK_EX | LOCK_NB)`), then invoke `concord sync` (or `run_cycle`) and assert it raises `CycleAlreadyRunning` / the command exits `75` **without** calling any pipeline (monkeypatched to fail if called).
+11. **Test the flock guard.** In `tests/test_cli_sync.py`, acquire the lock manually (open `data/.sync.lock` under a tmp data dir, `fcntl.flock(..., LOCK_EX | LOCK_NB)`), then invoke `concord sync` (or `run_sync`) and assert it raises `SyncAlreadyRunningError` / the command exits `75` **without** calling any pipeline (monkeypatched to fail if called).
 
-12. **Test window + Congress wiring.** Monkeypatch the pipelines to capture their kwargs; call `run_cycle(today=date(2026,6,23), lookback_days=7, ...)`. Assert proceedings got `start=date(2026,6,16)`, `end=date(2026,6,23)`; members/bills/votes got `congresses=[119]` and `skip_unchanged=True`.
+12. **Test window + Congress wiring.** Monkeypatch the pipelines to capture their kwargs; call `run_sync(today=date(2026,6,23), lookback_days=7, ...)`. Assert proceedings got `start=date(2026,6,16)`, `end=date(2026,6,23)`; members/bills/votes got `congresses=[119]` and `skip_unchanged=True`.
 
 13. **Test key gating.** With `CONGRESS_API_KEY` / `OPENAI_API_KEY` unset (monkeypatch `os.environ`), assert `concord sync` exits `2` and runs no pipeline.
 
@@ -181,7 +181,7 @@ Not applicable. This plan adds no tables, columns, entity types, or persistent s
 
 - **Unit — `tests/test_congress.py`:** `current_congress()` at the Jan-3 boundaries (step 2).
 - **Unit — `tests/test_cli_sync.py`:**
-  - Best-effort isolation: one entity raises, the other three still run, `CycleResult` reflects it, exit `1` (step 10).
+  - Best-effort isolation: one entity raises, the other three still run, `SyncResult` reflects it, exit `1` (step 10).
   - flock guard: lock held → exit `75`, no pipelines invoked (step 11).
   - Window + Congress wiring: injected `today` produces the right `start/end` and `congresses=[current]` + `skip_unchanged=True` (step 12).
   - Key gating: missing key → exit `2`, no pipelines (step 13).
