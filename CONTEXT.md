@@ -48,6 +48,12 @@ The vocabulary in this section covers the Congressional Record sub-domain — th
 - **Stage 2 — Index**: builds the derived indexes (chunks + FTS5 + vector embeddings) from the database mirror. Regenerable. (See ADR 0005.)
 - **Stage 3 — Enrich** *(future)*: extracts entities (people, bills, ...) and writes them to entity / mention tables.
 
+## Orchestration
+
+- **Sync** — one bounded, incremental pass that reconciles Concord's stores with upstream across *all* entity types in a single command (`concord sync`). Proceedings are pulled over a rolling recent window; the mutable Congress-keyed entities (Members, Bills, Votes) are pulled over the **current Congress** only, skipping records upstream reports unchanged. Every pipeline stage (Scrape → Load → Index) runs per entity, so a Sync leaves the derived store fully queryable. Best-effort across entities: one entity's failure is recorded and reported but does not abort the others. A Sync is *steady-state, schedule-driven incremental* — distinct from `run <entity>`, which covers a single entity over an arbitrary window (including a historical **backfill**). Cadence is owned by the operator's scheduler (cron / systemd timer), not by Concord; the command itself is a single pass, not a loop. One Sync fans out to at most one **Scrape Run** per entity (see Observability). See [ADR 0026](docs/adr/0026-sync-command-not-resident-daemon.md) for why this is a scheduled command rather than a resident daemon.
+- **Backfill** — a deliberate, one-shot pull of historical data outside the rolling Sync window: old date ranges for Proceedings, or closed Congresses for the mutable entities. Run via `run <entity>` with explicit selectors, never by Sync.
+- **Current Congress** — the single Congress in session on a given date, derived from the calendar (a Congress spans two years, beginning the January after each federal election). The bound a Sync applies to Members, Bills, and Votes, in place of the CLI's historical default of several Congresses.
+
 ## Search vocabulary
 
 - **Keyword search** — lexical search against the FTS5 index. BM25 ranking, phrase queries, NEAR, snippets.

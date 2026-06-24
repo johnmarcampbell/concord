@@ -487,6 +487,50 @@ def scrape_bills_enrich_command(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline (shared by `run bills` and `sync`)
+# ---------------------------------------------------------------------------
+
+
+def run_bills_pipeline(
+    *,
+    congresses: list[int],
+    bill_types: list[str],
+    storage_dir: Path,
+    db_path: Path,
+    limit: int | None,
+    show_progress: bool,
+    command: str,
+    skip_unchanged: bool = False,
+) -> None:
+    """Run scrape → load → index for Bills over ``congresses`` x ``bill_types``.
+
+    The single stage-chaining definition shared by ``concord run bills`` and
+    ``concord sync``. Scrapes **basic** Bill identity/detail only — tier-2
+    enrichment (cosponsors/actions/subjects/titles/summaries) stays on-demand
+    per ADR 0016 and is never run here (ADR 0026). The caller owns API-key
+    gating and the final ``"✓ Done."`` echo; ``command`` labels the Scrape Run
+    (ADR 0021).
+    """
+    typer.echo("→ Stage 0: scrape", err=True)
+    _run_scrape_bills(
+        congresses=congresses,
+        bill_types=bill_types,
+        storage_dir=storage_dir,
+        limit=limit,
+        show_progress=show_progress,
+        db_path=db_path,
+        command=command,
+        skip_unchanged=skip_unchanged,
+    )
+
+    typer.echo("→ Stage 1: load", err=True)
+    _run_load_bills(storage_dir=storage_dir, db_path=db_path, limit=None)
+
+    typer.echo("→ Stage 2: index", err=True)
+    _run_index_bills(db_path=db_path, limit=None)
+
+
+# ---------------------------------------------------------------------------
 # Subcommands — load / index / run bills
 # ---------------------------------------------------------------------------
 
@@ -587,21 +631,14 @@ def run_bills_command(
     parsed_congresses = _parse_congresses(congresses)
     parsed_types = _parse_bill_types(bill_types)
 
-    typer.echo("→ Stage 0: scrape", err=True)
-    _run_scrape_bills(
+    run_bills_pipeline(
         congresses=parsed_congresses,
         bill_types=parsed_types,
         storage_dir=storage_dir,
+        db_path=db_path,
         limit=limit,
         show_progress=show_progress,
-        db_path=db_path,
         command="run bills",
     )
-
-    typer.echo("→ Stage 1: load", err=True)
-    _run_load_bills(storage_dir=storage_dir, db_path=db_path, limit=None)
-
-    typer.echo("→ Stage 2: index", err=True)
-    _run_index_bills(db_path=db_path, limit=None)
 
     typer.echo("✓ Done.", err=True)

@@ -45,13 +45,13 @@ docker run --rm \
     -e CONGRESS_API_KEY=... \
     -e OPENAI_API_KEY=sk-... \
     concord \
-    concord pull --from 2026-05-01 --to 2026-05-22
+    concord run proceedings --from 2026-05-01 --to 2026-05-22
 ```
 
-`concord load`, `concord index`, and the entity-specific pipelines
-(`concord pull-members`, `concord pull-bills`, ...) all follow the
-same pattern. Pass `concord --help` as the command to see the full
-list.
+The per-stage commands (`concord scrape|load|index <entity>`), the
+all-stages-per-entity `concord run <entity>`, and the all-entity
+`concord sync` (see below) all follow the same pattern. Pass
+`concord --help` as the command to see the full list.
 
 ## Host directory ownership
 
@@ -84,7 +84,7 @@ this — Docker Desktop's file-sharing layer handles UID translation.
 - **`OPENAI_API_KEY`** — required by `concord serve` (semantic
   search) and `concord index` (embedding generation).
 - **`CONGRESS_API_KEY`** — required by the scraper subcommands
-  (`pull`, `pull-members`, `pull-bills`, ...).
+  (`scrape proceedings`, `run bills`, `sync`, ...).
 
 Both are read from the process environment; the image does not bundle
 any defaults or fallbacks.
@@ -109,16 +109,23 @@ services:
       - .env                       # not committed
 ```
 
-Pipeline jobs run as one-shot containers off the same image:
+Scheduled updates run as one-shot containers off the same image. A
+**Sync** (CONTEXT.md → Orchestration) does one bounded, best-effort
+incremental pass over all four entities — scrape → load → index for each
+— in a single command:
 
 ```sh
-docker compose run --rm concord concord pull --from "$(date -u +%F)" --to "$(date -u +%F)"
-docker compose run --rm concord concord load
-docker compose run --rm concord concord index
+docker compose run --rm concord concord sync --no-progress
 ```
 
-Schedule those via host-side `cron` (or `systemd` timers) — the image
-itself stays single-purpose.
+Schedule that one line via host-side `cron` (or a `systemd` timer) — the
+image itself stays single-purpose, and `concord sync` owns the
+orchestration in tested code rather than in a shell snippet (see
+[ADR 0026](adr/0026-sync-command-not-resident-daemon.md)). `concord sync`
+self-guards against overlap with an advisory `flock`, so no `flock(1)`
+wrapper is needed; an overlapping run exits with code `75`. For a one-off
+historical **Backfill**, use `concord run <entity>` with a wide window
+instead.
 
 ## Image internals
 

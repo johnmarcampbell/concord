@@ -36,18 +36,32 @@ loopback port.
 
 ## Initial backfill
 
-Optional: do the heavy initial pull + index on your dev machine, then
-`rsync` the resulting SQLite + JSONL to the VPS. Saves several hours of
-VPS time. Otherwise, run on the VPS:
+The one-time historical pull is a **Backfill** (CONTEXT.md → Orchestration):
+a deliberate, wide-window `concord run <entity>` over old dates and closed
+Congresses. It is distinct from the recurring **Sync** below, which only ever
+covers a bounded window. Run each entity's full pipeline (scrape → load →
+index) once; everything is idempotent, so a re-run is a no-op.
+
+Optional: do the heavy backfill on your dev machine, then `rsync` the
+resulting SQLite + JSONL to the VPS. Saves several hours of VPS time.
+Otherwise, run on the VPS (all stores under `/var/lib/concord`):
 
 ```sh
-sudo -u concord -E /opt/concord/.venv/bin/concord pull \
+sudo -u concord -E /opt/concord/.venv/bin/concord run proceedings \
     --from 2021-01-01 --to 2026-05-22 \
-    --storage /var/lib/concord/proceedings.jsonl
-sudo -u concord -E /opt/concord/.venv/bin/concord load \
-    --jsonl /var/lib/concord/proceedings.jsonl \
+    --storage /var/lib/concord/proceedings.jsonl \
     --db /var/lib/concord/proceedings.db
-sudo -u concord -E /opt/concord/.venv/bin/concord index \
+sudo -u concord -E /opt/concord/.venv/bin/concord run members \
+    --congresses 117,118,119 \
+    --storage /var/lib/concord/members.jsonl \
+    --db /var/lib/concord/proceedings.db
+sudo -u concord -E /opt/concord/.venv/bin/concord run bills \
+    --congresses 117,118,119 \
+    --storage-dir /var/lib/concord \
+    --db /var/lib/concord/proceedings.db
+sudo -u concord -E /opt/concord/.venv/bin/concord run votes \
+    --congresses 117,118,119 \
+    --storage-dir /var/lib/concord \
     --db /var/lib/concord/proceedings.db
 ```
 
@@ -93,29 +107,45 @@ In the Hostinger dashboard, route the public `your-domain.com` (or chosen
 subdomain) to `127.0.0.1:8000`. TLS terminates at the Hostinger edge; the
 app sees plain HTTP. No additional certificate management needed.
 
-## Daily updates via cron
+## Daily updates via `concord sync`
+
+A **Sync** (CONTEXT.md → Orchestration) is one bounded, best-effort
+incremental pass over all four entities — scrape → load → index for each —
+in a single tested command. The scheduler owns the cadence; Concord owns the
+orchestration. See [ADR 0026](adr/0026-sync-command-not-resident-daemon.md)
+for why this is a scheduled command and not a resident daemon.
 
 `/etc/cron.d/concord` (running as the `concord` user):
 
 ```cron
-# At 04:30 UTC every day: pull yesterday's record, load it, index it.
+# At 04:30 UTC every day: one Sync over all four entities.
+# Proceedings use a rolling 7-day window (--lookback-days); members, bills,
+# and votes cover the current Congress with skip-unchanged always on.
 30 4 * * * concord set -a; . /etc/concord.env; set +a; \
-    /opt/concord/.venv/bin/concord pull \
-      --from "$(date -u -d yesterday +\%Y-\%m-\%d)" \
-      --to "$(date -u -d yesterday +\%Y-\%m-\%d)" \
-      --storage /var/lib/concord/proceedings.jsonl >> /var/log/concord-pull.log 2>&1
-40 4 * * * concord /opt/concord/.venv/bin/concord load \
-      --jsonl /var/lib/concord/proceedings.jsonl \
-      --db /var/lib/concord/proceedings.db >> /var/log/concord-load.log 2>&1
-45 4 * * * concord set -a; . /etc/concord.env; set +a; \
-    /opt/concord/.venv/bin/concord index \
-      --db /var/lib/concord/proceedings.db >> /var/log/concord-index.log 2>&1
+    /opt/concord/.venv/bin/concord sync \
+      --db /var/lib/concord/proceedings.db \
+      --no-progress >> /var/log/concord-sync.log 2>&1
 ```
+
+The JSONL stores and the overlap lock live alongside `--db` (so
+`/var/lib/concord/`). No `flock(1)` wrapper is needed: `concord sync` takes
+its own advisory `flock` and a second invocation that overlaps a still-running
+Sync exits cleanly with code `75` rather than doing duplicate work.
+
+Exit codes worth alerting on: `0` all entities ok · `1` one or more entities
+failed (the others still ran — best-effort) · `2` a required API key is
+missing · `75` another Sync was already running. A one-line-per-entity summary
+is written to stderr (captured in `concord-sync.log`).
 
 The running `concord-web` service picks up the new rows automatically:
 WAL mode + fresh-connection-per-request means each `/search` and
 `/proceedings/{id}` request sees the latest committed state without a
 restart.
+
+> Prefer `systemd` timers? A `concord-sync.timer` + oneshot
+> `concord-sync.service` firing the same command is equally valid — and since
+> `systemd` already supervises `concord-web` on this box, it is the lighter
+> option. The `flock` guard makes either scheduler safe.
 
 ## Backups
 
