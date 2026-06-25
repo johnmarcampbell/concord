@@ -96,9 +96,8 @@ class Client:
         self._fetch = Fetcher(
             self._client,
             source="api",
-            policy=RetryAfterPolicy(sleep=self._sleep, logger=_log),
+            policy=RetryAfterPolicy(logger=_log),
             sleep=self._sleep,
-            logger=_log,
         )
 
     # -- lifecycle -----------------------------------------------------------

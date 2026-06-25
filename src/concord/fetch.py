@@ -8,7 +8,8 @@ protocol-specific parsing above it.
 import logging
 import time
 from collections.abc import Callable
-from enum import Enum
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any
 
 import httpx
@@ -37,8 +38,16 @@ class FetchError(Exception):
 class Disposition(Enum):
     """How the fetch spine should treat one HTTP response."""
 
-    PASS = "allow"  # noqa: S105 - enum label, not a secret
-    THROTTLE = "throttle"
+    ALLOW = auto()
+    THROTTLE = auto()
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Pure response-policy decision for the next fetch step."""
+
+    disposition: Disposition
+    delay: float = 0.0
 
 
 class RateLimitPolicy:
@@ -48,15 +57,15 @@ class RateLimitPolicy:
     status-code handling in :class:`Fetcher`.
 
     ``before_request`` runs once per logical fetch before the first attempt.
-    ``on_response`` may block and mutate policy state before telling the fetch
-    spine whether the response should be treated as a throttle signal.
+    ``on_response`` may mutate policy state, but returns a pure decision the
+    fetch spine acts on, including any throttle delay.
     """
 
     def before_request(self) -> None:
         return None
 
-    def on_response(self, _path: str, _response: httpx.Response) -> Disposition:
-        return Disposition.PASS
+    def on_response(self, _path: str, _response: httpx.Response) -> Decision:
+        return Decision(Disposition.ALLOW)
 
     def on_success(self) -> None:
         return None
@@ -72,23 +81,20 @@ class RetryAfterPolicy(RateLimitPolicy):
     def __init__(
         self,
         *,
-        sleep: Callable[[float], None] = time.sleep,
         logger: logging.Logger | None = None,
     ) -> None:
-        self._sleep = sleep
         self._consecutive_throttles = 0
         self._log = logger if logger is not None else logging.getLogger("concord.fetch")
 
-    def on_response(self, path: str, response: httpx.Response) -> Disposition:
+    def on_response(self, path: str, response: httpx.Response) -> Decision:
         if response.status_code != HTTP_TOO_MANY_REQUESTS:
-            return Disposition.PASS
+            return Decision(Disposition.ALLOW)
         delay = _retry_after_seconds(response)
         if delay is None:
             delay = _backoff_seconds(self._consecutive_throttles)
         self._log.warning("429 from %s; backing off %.1fs before retry", path, delay)
-        self._sleep(delay)
         self._consecutive_throttles += 1
-        return Disposition.THROTTLE
+        return Decision(Disposition.THROTTLE, delay)
 
     def on_success(self) -> None:
         self._consecutive_throttles = 0
@@ -105,14 +111,13 @@ class Fetcher:
         policy: RateLimitPolicy | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_transient_retries: int = MAX_5XX_RETRIES,
-        logger: logging.Logger | None = None,
     ) -> None:
         self._client = client
         self._source = source
         self._policy = policy if policy is not None else RateLimitPolicy()
         self._sleep = sleep
         self._max_transient_retries = max_transient_retries
-        self._log = logger if logger is not None else logging.getLogger(f"concord.{source}")
+        self._log = logging.getLogger(f"concord.{source}")
 
     def get(self, path: str, *, params: dict[str, Any] | None = None) -> httpx.Response:
         rec = active_recorder()
@@ -141,10 +146,12 @@ class Fetcher:
                 transient_attempts += 1
                 continue
 
-            if self._policy.on_response(path, response) is Disposition.THROTTLE:
+            decision = self._policy.on_response(path, response)
+            if decision.disposition is Disposition.THROTTLE:
                 _note_attempt(
                     attempts, status=response.status_code, message=_attempt_message(response)
                 )
+                self._sleep(decision.delay)
                 continue
 
             status = response.status_code
@@ -205,9 +212,7 @@ class Fetcher:
         return _backoff_seconds(transient_attempts)
 
 
-def _attempt_message(response: httpx.Response, message: str | None = None) -> str:
-    if message is not None:
-        return message
+def _attempt_message(response: httpx.Response) -> str:
     return response.reason_phrase or f"HTTP {response.status_code}"
 
 

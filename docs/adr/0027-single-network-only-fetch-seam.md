@@ -33,9 +33,10 @@ body parsing layered above the fetch.
 - Client-specific rate-limit behavior is expressed as a small policy seam:
   `RateLimitPolicy` with `before_request`, `on_response`, and `on_success`
   hooks. `before_request` runs once per logical fetch before the first attempt;
-  `on_response` may block and mutate policy state before telling the fetch
-  spine whether to retry as a throttle. The first concrete adapter is
-  `RetryAfterPolicy` for `api.congress.gov`.
+  `on_response` returns a pure decision for the fetch spine to act on,
+  including any throttle delay, so the fetch spine remains the single owner of
+  sleeping. The first concrete adapter is `RetryAfterPolicy` for
+  `api.congress.gov`.
 - Client adapters stay shallow and explicit. `concord.api`, `concord.text`, and
   `concord.senate_xml` keep their own URL building, parsing, and public error
   types. This is a thin shared helper, not a base class hierarchy, consistent
@@ -49,9 +50,9 @@ body parsing layered above the fetch.
 The extraction only works cleanly if these three failure classes stay distinct:
 
 - Network failure: the upstream did not successfully return the bytes we asked
-  for. This includes transport errors, exhausted transient retries, terminal
-  non-success HTTP responses, and policy-rejected responses. Owned by
-  `concord.fetch` and recorded through ADR 0021.
+  for. This includes transport errors, exhausted transient retries, and
+  terminal non-success HTTP responses. Owned by `concord.fetch` and recorded
+  through ADR 0021.
 - Structural failure: the fetch succeeded, but the body is unusable in a way
   that only the caller can detect, such as congress.gov HTML without the
   expected `<pre>` block. This stays with the caller.

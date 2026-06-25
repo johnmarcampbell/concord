@@ -7,7 +7,14 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from concord.fetch import Disposition, Fetcher, FetchError, RateLimitPolicy, RetryAfterPolicy
+from concord.fetch import (
+    Decision,
+    Disposition,
+    Fetcher,
+    FetchError,
+    RateLimitPolicy,
+    RetryAfterPolicy,
+)
 from concord.observability import Recorder, _recorder
 
 
@@ -25,7 +32,7 @@ def _fetcher(
     handler: Callable[[httpx.Request], httpx.Response],
     *,
     sleep: Callable[[float], None] | None = None,
-    policy: RetryAfterPolicy | None = None,
+    policy: RateLimitPolicy | None = None,
 ) -> Fetcher:
     client = httpx.Client(
         base_url="https://api.congress.gov/v3", transport=httpx.MockTransport(handler)
@@ -136,7 +143,7 @@ class TestFetchErrorRecording:
 class TestRetryAfterPolicy:
     def test_retry_after_is_honored_and_recorded(self) -> None:
         sleeps: list[float] = []
-        policy = RetryAfterPolicy(sleep=sleeps.append)
+        policy = RetryAfterPolicy()
         handler = _sequenced([httpx.Response(429, headers={"Retry-After": "3"}), _ok()])
 
         with _active_recorder() as rec:
@@ -151,7 +158,7 @@ class TestRetryAfterPolicy:
 
     def test_429s_do_not_consume_transient_budget(self) -> None:
         sleeps: list[float] = []
-        policy = RetryAfterPolicy(sleep=sleeps.append)
+        policy = RetryAfterPolicy()
         responses = [httpx.Response(429) for _ in range(8)]
         responses.append(_ok())
 
@@ -173,8 +180,8 @@ class _BeforeRequestOncePolicy(RateLimitPolicy):
     def before_request(self) -> None:
         self.before_request_calls += 1
 
-    def on_response(self, path: str, response: httpx.Response) -> Disposition:
-        return Disposition.PASS
+    def on_response(self, path: str, response: httpx.Response) -> Decision:
+        return Decision(Disposition.ALLOW)
 
 
 class TestPolicyHookPlacement:

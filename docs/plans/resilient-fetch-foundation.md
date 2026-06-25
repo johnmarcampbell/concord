@@ -17,7 +17,7 @@ Concord has three HTTP clients, one per upstream source:
 
 Each independently implements the **same network-resilience spine**: a retry loop over an `httpx` transport, exponential backoff, indefinite waiting on rate-limit signals, and the **Scrape Run** observability protocol (ADR 0021) — incrementing an endpoint-bucketed success count on a clean fetch and emitting a **Run Event** for any request that saw ≥1 non-success attempt. The three copies have already drifted (different retry caps, one uncapped backoff, `text.py` reaching into `concord.api` for HTTP status constants), and the Run Event contract is re-asserted in each.
 
-The grilling established that the genuine variation between the clients collapses to **one axis — rate-limit / throttle policy** — and that *content* validation is not a fetch concern at all (it already lives at Stage 1 via the `from_<source>` Pydantic factories, per ADR 0018). So the deep module is **network-only**: it returns raw bytes on a successful fetch and never inspects the body. See "Approach" for the full rationale.
+The grilling established that the genuine variation between the clients collapses to **one axis — rate-limit / throttle policy** — and that *content* validation is not a fetch concern at all (it already lives at Stage 1 via the `from_<source>` Pydantic factories, per ADR 0018). So the deep module is **network-only**: it returns the final successful `httpx.Response` and never inspects the body. See "Approach" for the full rationale.
 
 Domain terms used below are defined in [CONTEXT.md](../../CONTEXT.md): **Scrape Run**, **Run Event**, **Endpoint bucket**, **Load Validation Failure**, **Stage 0 / Stage 1**, **wire-shape model**, the `from_<source>` factory. Architecture terms (**deep module**, **seam**, **adapter**) follow the `improve-codebase-architecture` skill's LANGUAGE.md.
 
@@ -40,7 +40,7 @@ These were repeatedly conflated in the current code; the new design keeps them s
 
 ## Non-goals
 
-1. **Migrating `text.py` or `senate_xml.py`.** Those are PRs 2 and 3. This PR must leave them compiling and passing unchanged — including `text.py`'s current `from concord.api import HTTP_*` (see "Approach → Constant compatibility").
+1. **Migrating `text.py` or `senate_xml.py`.** Those are PRs 2 and 3. This PR must leave their runtime behavior and tests intact; only `text.py`'s shared `HTTP_*` import is pulled forward to `concord.fetch` as part of the seam cleanup (see "Approach → Constant compatibility").
 2. **Touching content validation.** No changes to any `from_congress_api` factory, the Stage-1 loaders, or Load Validation Failures.
 3. **Introducing a "structural failure" Run Event kind.** We explicitly decided against this — content/structural failures are already handled (Stage 1 for `api`; `text.py`'s existing `_record_structural_failure` for Proceedings). The Run Event model is unchanged.
 4. **Changing the `AdaptiveThrottle`** (PR 2's concern) or senate's behaviour (PR 3's concern).
@@ -86,10 +86,10 @@ class Fetcher:
     def get(self, path: str, *, params: dict[str, Any] | None = None) -> bytes:
         """Fetch `path`, returning the raw 2xx response body. Raises FetchError
         on a network failure (exhausted transient retries, terminal non-success,
-        or a policy-rejected 2xx sentinel). Never inspects the body otherwise."""
+        or a terminal non-success HTTP response). Never inspects the body otherwise."""
 ```
 
-`get` returns **raw bytes** on success and records the network success/Run Event. It does **no** JSON parsing, content-type validation, or shape checking — that is the caller's job (and, for the wire-shape entities, Stage 1's). On failure it raises `fetch.FetchError(message, *, status_code)`; each client translates that into its own public exception (`ApiError` here) so callers' `except` clauses are unchanged.
+`get` returns the final successful **`httpx.Response`** and records the network success/Run Event. It does **no** JSON parsing, content-type validation, or shape checking — that is the caller's job (and, for the wire-shape entities, Stage 1's). On failure it raises `fetch.FetchError(message, *, status_code)`; each client translates that into its own public exception (`ApiError` here) so callers' `except` clauses are unchanged.
 
 ### The policy seam (one axis of variation)
 
@@ -98,13 +98,13 @@ The only genuine inter-client difference is rate-limit handling. It is an inject
 ```python
 class RateLimitPolicy:           # base class = all no-ops; reproduces "no rate-limit handling"
     def before_request(self) -> None: ...                 # default: pass  (PR2 text: pace())
-    def classify(self, response: httpx.Response) -> Decision: ...
-        # default: Decision(PASS). May SLEEP for a throttle response (the
-        # policy owns its cooldown schedule + state) and return Decision(THROTTLE).
+    def on_response(self, path: str, response: httpx.Response) -> Decision: ...
+        # default: Decision(ALLOW). For a throttle response the policy returns
+        # Decision(THROTTLE, delay=...) and the fetch spine performs the sleep.
     def on_success(self) -> None: ...                     # default: pass  (PR2 text: recover())
 ```
 
-`Disposition` is a small enum: `PASS` (let the spine judge by status code: 2xx ⇒ success, 5xx ⇒ transient retry, other ⇒ terminal), `THROTTLE` (the policy already slept; retry **without** burning the transient budget), `REJECT` (treat this response — typically a 2xx — as a terminal network failure; this is PR 3's **not-found sentinel**). `classify` returns a `Decision(disposition, message=None)` dataclass rather than a bare enum so a policy can supply the attempt message the spine records for a `THROTTLE`/`REJECT` response (PR 3 uses this to keep the HTML-trap marker legible in the ledger); `message=None` falls back to `response.reason_phrase`.
+`Disposition` is a small enum: `ALLOW` (let the spine judge by status code: 2xx ⇒ success, 5xx ⇒ transient retry, other ⇒ terminal) and `THROTTLE` (retry **without** burning the transient budget). `on_response` returns a `Decision(disposition, delay=0.0)` dataclass so the policy remains a pure decision function while the fetch spine stays the single owner of sleeping.
 
 The spine loop, in one place:
 
@@ -118,18 +118,17 @@ while True:
         note transport attempt
         if transient >= max_transient_retries: record_failure; raise FetchError
         sleep(backoff(transient)); transient += 1; continue
-    decision = policy.classify(resp)      # classify may sleep + escalate on THROTTLE
+    decision = policy.on_response(path, resp)
     match decision.disposition:
-        case THROTTLE: note attempt(status, decision.message); continue   # no transient increment
-        case REJECT:   note attempt(status, decision.message); record_failure; raise FetchError(not found)
-        case PASS:
+        case THROTTLE: note attempt(status); sleep(decision.delay); continue
+        case ALLOW:
             status = resp.status_code
             if 5xx:        note attempt; if transient>=cap: record_failure; raise; else sleep(backoff(transient)); transient += 1; continue
             if not 2xx:    note attempt; record_failure; raise FetchError(terminal)
-            record_success; return resp.content
+            record_success; return resp
 ```
 
-The **retry-after** adapter for `api` (this PR): `before_request`/`on_success` are the base no-ops; `classify` returns `THROTTLE` for HTTP 429 (sleeping `Retry-After` seconds if present, else exponential backoff capped at `MAX_BACKOFF`) and `PASS` otherwise — so 5xx still flow through the shared transient path and a 403 (bad api.data.gov key) stays terminal, exactly as today.
+The **retry-after** adapter for `api` (this PR): `before_request`/`on_success` are the base no-ops; `on_response` returns `Decision(THROTTLE, delay=...)` for HTTP 429 (`Retry-After` if present, else exponential backoff capped at `MAX_BACKOFF`) and `Decision(ALLOW)` otherwise — so 5xx still flow through the shared transient path and a 403 (bad api.data.gov key) stays terminal, exactly as today.
 
 ### Content stays out (why `api._get` keeps a JSON/dict check)
 
@@ -144,7 +143,7 @@ This PR is behaviour-preserving for `api.congress.gov` except for two deliberate
 
 ### Constant compatibility
 
-`text.py` imports `HTTP_FORBIDDEN`, `HTTP_SERVER_ERROR_MIN`, `HTTP_SERVER_ERROR_MAX`, `HTTP_TOO_MANY_REQUESTS` from `concord.api` ([text.py:62-67](../../src/concord/text.py)). To avoid touching `text.py` this PR, define the canonical constants in `concord.fetch` and **re-export** them from `concord.api` (keep the names bound in `api.py`, e.g. `from concord.fetch import HTTP_FORBIDDEN, ...`). PR 2 repoints `text.py` to import from `concord.fetch` directly and PR 1's re-export can then be dropped. Confirm no import cycle: `fetch → observability → models.runs`; `api → fetch`; `text → api` (unchanged this PR). `tests/test_import_cycles.py` is the guard.
+`text.py` imports `HTTP_FORBIDDEN`, `HTTP_SERVER_ERROR_MIN`, `HTTP_SERVER_ERROR_MAX`, `HTTP_TOO_MANY_REQUESTS` from `concord.fetch` directly in this PR, eliminating the temporary `concord.api` re-export shim the initial plan sketched. Confirm no import cycle: `fetch → observability → models.runs`; `api → fetch`; `text → fetch`. `tests/test_import_cycles.py` is the guard.
 
 ### Module dependency category
 
@@ -154,15 +153,15 @@ This PR is behaviour-preserving for `api.congress.gov` except for two deliberate
 
 1. **Create `src/concord/fetch.py` with constants + helpers.** Add module docstring (cross-reference ADR 0021, ADR 0007, ADR 0027). Define `MAX_BACKOFF = 60.0`, `MAX_5XX_RETRIES = 5`, `_BACKOFF_BASE = 2.0`, and the `HTTP_*` status constants (`HTTP_FORBIDDEN`, `HTTP_TOO_MANY_REQUESTS`, `HTTP_SERVER_ERROR_MIN`, `HTTP_SERVER_ERROR_MAX`). Move `_note_attempt`, `_backoff_seconds`, `_retry_after_seconds` here (copied verbatim from `api.py:607-667`, dropping the per-client `path` flavour text). Add `_record_success(rec, source, path, attempts)` / `_record_failure(rec, source, path, attempts)` taking `source` as a parameter (generalising api's hardcoded `"api"`). Verify `uv run python -c "import concord.fetch"` succeeds.
 
-2. **Define `FetchError`, `Disposition`, `Decision`, and `RateLimitPolicy` base in `fetch.py`.** `FetchError(Exception)` with `status_code: int | None` (mirrors `ApiError`'s shape, [api.py:87-96](../../src/concord/api.py)). `Disposition` as an `enum.Enum` with `PASS` / `THROTTLE` / `REJECT`. `Decision` as a frozen dataclass `(disposition: Disposition, message: str | None = None)`. `RateLimitPolicy` base class with the three no-op hooks (`before_request`, `classify` returning `Decision(Disposition.PASS)`, `on_success`). Type-hint everything (mypy strict on `src/`).
+2. **Define `FetchError`, `Disposition`, `Decision`, and `RateLimitPolicy` base in `fetch.py`.** `FetchError(Exception)` with `status_code: int | None` (mirrors `ApiError`'s shape, [api.py:87-96](../../src/concord/api.py)). `Disposition` as an `enum.Enum` with `ALLOW` / `THROTTLE`. `Decision` as a frozen dataclass `(disposition: Disposition, delay: float = 0.0)`. `RateLimitPolicy` base class with the three no-op hooks (`before_request`, `on_response` returning `Decision(Disposition.ALLOW)`, `on_success`). Type-hint everything (mypy strict on `src/`).
 
-3. **Implement `Fetcher` in `fetch.py`.** Constructor per the "Approach" sketch (wraps a caller-supplied `httpx.Client`; `source`, `policy`, `sleep`, `max_transient_retries` injectable). Implement `get(path, *, params=None) -> bytes` as the spine loop from "Approach". `rec = active_recorder()` at entry; record success/failure via the `source`-parameterised helpers. Run `uv run mypy src`.
+3. **Implement `Fetcher` in `fetch.py`.** Constructor per the "Approach" sketch (wraps a caller-supplied `httpx.Client`; `source`, `policy`, `sleep`, `max_transient_retries` injectable). Implement `get(path, *, params=None) -> httpx.Response` as the spine loop from "Approach". `rec = active_recorder()` at entry; record success/failure via the `source`-parameterised helpers. Run `uv run mypy src`.
 
-4. **Implement the retry-after policy in `fetch.py`.** Add `RetryAfterPolicy(RateLimitPolicy)`: `classify` returns `Decision(Disposition.THROTTLE)` for status 429 — sleeping `_retry_after_seconds(response)` if present else `_backoff_seconds` on its own consecutive-429 counter (capped at `MAX_BACKOFF`) — and `Decision(Disposition.PASS)` otherwise. It needs the injected `sleep`; pass it in via the policy constructor. (Design note: keep the 429 schedule self-contained in the policy, per "Owned behaviour change 2".)
+4. **Implement the retry-after policy in `fetch.py`.** Add `RetryAfterPolicy(RateLimitPolicy)`: `on_response` returns `Decision(Disposition.THROTTLE, delay=...)` for status 429 — `_retry_after_seconds(response)` if present else `_backoff_seconds` on its own consecutive-429 counter (capped at `MAX_BACKOFF`) — and `Decision(Disposition.ALLOW)` otherwise. The policy does not sleep; the fetch spine owns all `sleep(...)` calls.
 
 5. **Write `tests/test_fetch.py`.** Port the network-resilience assertions from `tests/test_api_recording.py` to the module interface, driving a `Fetcher` over an `httpx.MockTransport`. Cover: clean 2xx ⇒ success bucket bumped, no event; 503-then-200 ⇒ one `resolved` event; terminal 503 (after `MAX_5XX_RETRIES`) ⇒ one `failed` event + `FetchError`; transport-error-then-200 ⇒ resolved event carrying `transport_class`; non-retryable 404 ⇒ `failed` event + `FetchError(status_code=404)`; no recorder ⇒ no-op. Add retry-after-specific tests: 429-then-200 with the `RetryAfterPolicy` ⇒ resolved event with a 429 attempt, and that 429 does not consume the transient budget (e.g. 429×N then 200 still succeeds with N>MAX_5XX_RETRIES). Use an injected `sleep` capturing delays to assert `Retry-After` is honoured.
 
-6. **Migrate `concord.api` onto `Fetcher`.** In `Client.__init__`, after building `self._client`, construct `self._fetch = Fetcher(self._client, source="api", policy=RetryAfterPolicy(sleep=self._sleep), sleep=self._sleep)`. Rewrite `Client._get` ([api.py:508-597](../../src/concord/api.py)) to: build `merged` params, call `body = self._fetch.get(path, params=merged)` inside `try/except FetchError as exc: raise ApiError(str(exc), status_code=exc.status_code) from exc`, then `data = json.loads(body)`, check `isinstance(data, dict)` (raise `ApiError` if not — no separate event, per "Owned behaviour change 1"), and return. Delete `api.py`'s now-unused loop body and the moved helpers/constants. **Re-export** the `HTTP_*` constants in `api.py` (`from concord.fetch import HTTP_FORBIDDEN, HTTP_SERVER_ERROR_MIN, HTTP_SERVER_ERROR_MAX, HTTP_TOO_MANY_REQUESTS`) so `text.py` keeps importing them. Keep `MAX_BACKOFF` / `MAX_5XX_RETRIES` / `_BACKOFF_BASE` re-exported too if any test references them.
+6. **Migrate `concord.api` onto `Fetcher`.** In `Client.__init__`, after building `self._client`, construct `self._fetch = Fetcher(self._client, source="api", policy=RetryAfterPolicy(logger=_log), sleep=self._sleep)`. Rewrite `Client._get` ([api.py:508-597](../../src/concord/api.py)) to: build `merged` params, call `response = self._fetch.get(path, params=merged)` inside `try/except FetchError as exc: raise ApiError(str(exc), status_code=exc.status_code) from exc`, then `data = json.loads(response.content)`, catch `json.JSONDecodeError` and re-raise `ApiError`, check `isinstance(data, dict)` (raise `ApiError` if not — no separate event, per "Owned behaviour change 1"), and return. Delete `api.py`'s now-unused loop body and the moved helpers/constants. Repoint `text.py` to import the shared `HTTP_*` constants from `concord.fetch` directly.
 
 7. **Write ADR 0027.** Create `docs/adr/0027-single-network-only-fetch-seam.md` following the format of a recent ADR (e.g. [0026](../adr/0026-sync-command-not-resident-daemon.md)). Record: the three clients shared one resilience spine; it is now one network-only `concord.fetch` module with a rate-limit **policy** seam; content validation stays at Stage 1 (ADR 0018); the module is a thin helper, not a base class (ADR 0007); the **network failure vs structural failure vs Load Validation Failure** distinction. Note PRs 2/3 add the other two policy adapters. List it in the ADR index if one exists.
 
@@ -186,7 +185,7 @@ No seed changes. This is a pure refactor of network plumbing — no new tables, 
 
 - [ ] `src/concord/fetch.py` exists with `Fetcher`, `RateLimitPolicy`, `RetryAfterPolicy`, `Disposition`, `FetchError`, and the moved constants/helpers.
 - [ ] `concord.api.Client._get` calls `Fetcher.get` and contains no retry loop of its own; `ApiError` is still the public exception.
-- [ ] `text.py` and `senate_xml.py` are unmodified and their tests pass (the `HTTP_*` re-export keeps `text.py` importing from `concord.api`).
+- [ ] `text.py` imports the shared `HTTP_*` constants from `concord.fetch`, `senate_xml.py` remains unmodified, and their tests pass.
 - [ ] `docs/adr/0027-single-network-only-fetch-seam.md` exists and records the decision.
 - [ ] `tests/test_fetch.py` covers the spine + retry-after behaviour; redundant assertions removed from `tests/test_api_recording.py`.
 - [ ] Two owned behaviour changes (malformed-2xx counting; 429 schedule) are noted in the PR description.
@@ -202,4 +201,4 @@ No seed changes. This is a pure refactor of network plumbing — no new tables, 
 ## Out-of-band work
 
 - PRs 2 ([resilient-fetch-text.md](resilient-fetch-text.md)) and 3 ([resilient-fetch-senate.md](resilient-fetch-senate.md)) **block on this PR merging.** They add the `AdaptiveThrottlePolicy` and the senate default-policy + not-found-sentinel adapters respectively, and delete each client's copied constants/helpers. They are independent of each other.
-- After all three land, the `HTTP_*` re-export added to `api.py` in Step 6 becomes dead (PR 2 repoints `text.py`); PR 2 should remove it.
+- PR 2 and PR 3 build on the shared constants and response-returning seam established here; no temporary `api.py` re-export shim remains to delete.
