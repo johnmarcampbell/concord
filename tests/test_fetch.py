@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from concord.fetch import Fetcher, FetchError, RetryAfterPolicy
+from concord.fetch import Disposition, Fetcher, FetchError, RateLimitPolicy, RetryAfterPolicy
 from concord.observability import Recorder, _recorder
 
 
@@ -62,14 +62,24 @@ class TestFetchSuccessRecording:
     def test_clean_request_bumps_bucket_and_emits_no_event(self) -> None:
         with _active_recorder() as rec:
             fetcher = _fetcher(lambda _r: _ok())
-            body = fetcher.get("/daily-congressional-record")
-        assert body == b'{"ok": true}'
+            response = fetcher.get("/daily-congressional-record")
+        assert response.content == b'{"ok": true}'
+        assert response.headers["content-type"] == "application/json"
         assert rec.successes == {"api:daily-record/list": 1}
         assert rec.events == []
 
     def test_no_recorder_is_a_noop(self) -> None:
         fetcher = _fetcher(lambda _r: _ok())
-        assert fetcher.get("/daily-congressional-record") == b'{"ok": true}'
+        assert fetcher.get("/daily-congressional-record").content == b'{"ok": true}'
+
+    def test_headers_are_preserved_for_downstream_checks(self) -> None:
+        fetcher = _fetcher(
+            lambda _r: httpx.Response(
+                200, content=b"<xml/>", headers={"Content-Type": "application/xml"}
+            )
+        )
+        response = fetcher.get("/roll-call")
+        assert response.headers["Content-Type"] == "application/xml"
 
 
 class TestFetchErrorRecording:
@@ -126,7 +136,7 @@ class TestFetchErrorRecording:
 class TestRetryAfterPolicy:
     def test_retry_after_is_honored_and_recorded(self) -> None:
         sleeps: list[float] = []
-        policy = RetryAfterPolicy(sleep=sleeps.append, source="api")
+        policy = RetryAfterPolicy(sleep=sleeps.append)
         handler = _sequenced([httpx.Response(429, headers={"Retry-After": "3"}), _ok()])
 
         with _active_recorder() as rec:
@@ -141,7 +151,7 @@ class TestRetryAfterPolicy:
 
     def test_429s_do_not_consume_transient_budget(self) -> None:
         sleeps: list[float] = []
-        policy = RetryAfterPolicy(sleep=sleeps.append, source="api")
+        policy = RetryAfterPolicy(sleep=sleeps.append)
         responses = [httpx.Response(429) for _ in range(8)]
         responses.append(_ok())
 
@@ -154,3 +164,26 @@ class TestRetryAfterPolicy:
         assert len(rec.events) == 1
         assert rec.events[0].final_status == "resolved"
         assert [a.status for a in rec.events[0].attempts] == [429] * 8
+
+
+class _BeforeRequestOncePolicy(RateLimitPolicy):
+    def __init__(self) -> None:
+        self.before_request_calls = 0
+
+    def before_request(self) -> None:
+        self.before_request_calls += 1
+
+    def on_response(self, path: str, response: httpx.Response) -> Disposition:
+        return Disposition.PASS
+
+
+class TestPolicyHookPlacement:
+    def test_before_request_runs_once_per_logical_fetch(self) -> None:
+        policy = _BeforeRequestOncePolicy()
+        handler = _sequenced([httpx.Response(503), _ok()])
+
+        with _active_recorder():
+            fetcher = _fetcher(handler, policy=policy)
+            fetcher.get("/daily-congressional-record")
+
+        assert policy.before_request_calls == 1

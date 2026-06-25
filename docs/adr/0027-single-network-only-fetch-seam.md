@@ -28,11 +28,14 @@ body parsing layered above the fetch.
 - Add one deep helper module, `concord.fetch`, that owns the network-only fetch
   loop: transport retries, transient 5xx retries, exponential backoff, and the
   ADR 0021 Scrape Run success and Run Event recording contract.
-- The module returns raw bytes on a successful 2xx response and never inspects
+- The module returns the final successful `httpx.Response` and never inspects
   the response body for JSON, XML, HTML structure, or domain shape.
 - Client-specific rate-limit behavior is expressed as a small policy seam:
-  `RateLimitPolicy` with `before_request`, `classify`, and `on_success` hooks.
-  The first concrete adapter is `RetryAfterPolicy` for `api.congress.gov`.
+  `RateLimitPolicy` with `before_request`, `on_response`, and `on_success`
+  hooks. `before_request` runs once per logical fetch before the first attempt;
+  `on_response` may block and mutate policy state before telling the fetch
+  spine whether to retry as a throttle. The first concrete adapter is
+  `RetryAfterPolicy` for `api.congress.gov`.
 - Client adapters stay shallow and explicit. `concord.api`, `concord.text`, and
   `concord.senate_xml` keep their own URL building, parsing, and public error
   types. This is a thin shared helper, not a base class hierarchy, consistent

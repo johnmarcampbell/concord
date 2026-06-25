@@ -16,20 +16,12 @@ from typing import Any
 import httpx
 
 from concord import __version__
-from concord import fetch as fetch_module
 from concord.fetch import Fetcher, FetchError, RetryAfterPolicy
 from concord.models.proceedings import Article, Issue
 
 API_BASE = "https://api.congress.gov/v3"
 USER_AGENT = f"concord/{__version__}"
 ENV_API_KEY = "CONGRESS_API_KEY"
-
-HTTP_FORBIDDEN = fetch_module.HTTP_FORBIDDEN
-HTTP_SERVER_ERROR_MAX = fetch_module.HTTP_SERVER_ERROR_MAX
-HTTP_SERVER_ERROR_MIN = fetch_module.HTTP_SERVER_ERROR_MIN
-HTTP_TOO_MANY_REQUESTS = fetch_module.HTTP_TOO_MANY_REQUESTS
-MAX_5XX_RETRIES = fetch_module.MAX_5XX_RETRIES
-MAX_BACKOFF = fetch_module.MAX_BACKOFF
 
 #: Per-page size when walking the ``/articles`` endpoint. The API maxes out
 #: at 250 results per page; using the max minimizes round trips on issues
@@ -104,8 +96,9 @@ class Client:
         self._fetch = Fetcher(
             self._client,
             source="api",
-            policy=RetryAfterPolicy(sleep=self._sleep, source="api"),
+            policy=RetryAfterPolicy(sleep=self._sleep, logger=_log),
             sleep=self._sleep,
+            logger=_log,
         )
 
     # -- lifecycle -----------------------------------------------------------
@@ -491,12 +484,12 @@ class Client:
             merged.update(params)
 
         try:
-            body = self._fetch.get(path, params=merged)
+            response = self._fetch.get(path, params=merged)
         except FetchError as exc:
             raise ApiError(str(exc), status_code=exc.status_code) from exc
 
         try:
-            data: Any = json.loads(body)
+            data: Any = json.loads(response.content)
         except json.JSONDecodeError as exc:
             raise ApiError(f"expected JSON object from {path}, got invalid JSON") from exc
         if not isinstance(data, dict):

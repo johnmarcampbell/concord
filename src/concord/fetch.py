@@ -8,7 +8,6 @@ protocol-specific parsing above it.
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -40,15 +39,6 @@ class Disposition(Enum):
 
     PASS = "allow"  # noqa: S105 - enum label, not a secret
     THROTTLE = "throttle"
-    REJECT = "reject"
-
-
-@dataclass(frozen=True)
-class Decision:
-    """Policy classification for one response."""
-
-    disposition: Disposition
-    message: str | None = None
 
 
 class RateLimitPolicy:
@@ -56,13 +46,17 @@ class RateLimitPolicy:
 
     The base policy is a no-op: every response falls through to the shared
     status-code handling in :class:`Fetcher`.
+
+    ``before_request`` runs once per logical fetch before the first attempt.
+    ``on_response`` may block and mutate policy state before telling the fetch
+    spine whether the response should be treated as a throttle signal.
     """
 
     def before_request(self) -> None:
         return None
 
-    def classify(self, _response: httpx.Response) -> Decision:
-        return Decision(Disposition.PASS)
+    def on_response(self, _path: str, _response: httpx.Response) -> Disposition:
+        return Disposition.PASS
 
     def on_success(self) -> None:
         return None
@@ -79,22 +73,22 @@ class RetryAfterPolicy(RateLimitPolicy):
         self,
         *,
         sleep: Callable[[float], None] = time.sleep,
-        source: str = "fetch",
+        logger: logging.Logger | None = None,
     ) -> None:
         self._sleep = sleep
         self._consecutive_throttles = 0
-        self._log = logging.getLogger(f"concord.{source}")
+        self._log = logger if logger is not None else logging.getLogger("concord.fetch")
 
-    def classify(self, response: httpx.Response) -> Decision:
+    def on_response(self, path: str, response: httpx.Response) -> Disposition:
         if response.status_code != HTTP_TOO_MANY_REQUESTS:
-            return Decision(Disposition.PASS)
+            return Disposition.PASS
         delay = _retry_after_seconds(response)
         if delay is None:
             delay = _backoff_seconds(self._consecutive_throttles)
-        self._log.warning("429 response; backing off %.1fs before retry", delay)
+        self._log.warning("429 from %s; backing off %.1fs before retry", path, delay)
         self._sleep(delay)
         self._consecutive_throttles += 1
-        return Decision(Disposition.THROTTLE)
+        return Disposition.THROTTLE
 
     def on_success(self) -> None:
         self._consecutive_throttles = 0
@@ -111,68 +105,62 @@ class Fetcher:
         policy: RateLimitPolicy | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_transient_retries: int = MAX_5XX_RETRIES,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._client = client
         self._source = source
         self._policy = policy if policy is not None else RateLimitPolicy()
         self._sleep = sleep
         self._max_transient_retries = max_transient_retries
-        self._log = logging.getLogger(f"concord.{source}")
+        self._log = logger if logger is not None else logging.getLogger(f"concord.{source}")
 
-    def get(self, path: str, *, params: dict[str, Any] | None = None) -> bytes:
+    def get(self, path: str, *, params: dict[str, Any] | None = None) -> httpx.Response:
         rec = active_recorder()
         attempts: list[Attempt] = []
         transient_attempts = 0
 
+        self._policy.before_request()
         while True:
-            self._policy.before_request()
             try:
                 response = self._client.get(path, params=params)
             except httpx.HTTPError as exc:
                 _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
-                if transient_attempts >= self._max_transient_retries:
-                    _record_failure(rec, self._source, path, attempts)
-                    raise FetchError(
+                delay = self._next_transient_delay_or_raise(
+                    rec=rec,
+                    path=path,
+                    attempts=attempts,
+                    transient_attempts=transient_attempts,
+                    failure_message=(
                         f"transport error calling {path} "
                         f"(gave up after {self._max_transient_retries} attempts): {exc}"
-                    ) from exc
-                delay = _backoff_seconds(transient_attempts)
+                    ),
+                    cause=exc,
+                )
                 self._log.warning("transport error on %s (%s); retrying in %.1fs", path, exc, delay)
                 self._sleep(delay)
                 transient_attempts += 1
                 continue
 
-            decision = self._policy.classify(response)
-            if decision.disposition is Disposition.THROTTLE:
+            if self._policy.on_response(path, response) is Disposition.THROTTLE:
                 _note_attempt(
-                    attempts,
-                    status=response.status_code,
-                    message=_attempt_message(response, decision.message),
+                    attempts, status=response.status_code, message=_attempt_message(response)
                 )
                 continue
-            if decision.disposition is Disposition.REJECT:
-                _note_attempt(
-                    attempts,
-                    status=response.status_code,
-                    message=_attempt_message(response, decision.message),
-                )
-                _record_failure(rec, self._source, path, attempts)
-                raise FetchError(
-                    _rejected_message(path, response, decision.message),
-                    status_code=response.status_code,
-                )
 
             status = response.status_code
             if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
                 _note_attempt(attempts, status=status, message=_attempt_message(response))
-                if transient_attempts >= self._max_transient_retries:
-                    _record_failure(rec, self._source, path, attempts)
-                    raise FetchError(
+                delay = self._next_transient_delay_or_raise(
+                    rec=rec,
+                    path=path,
+                    attempts=attempts,
+                    transient_attempts=transient_attempts,
+                    failure_message=(
                         f"{status} {_attempt_message(response)} from {path} "
-                        f"(gave up after {self._max_transient_retries} attempts)",
-                        status_code=status,
-                    )
-                delay = _backoff_seconds(transient_attempts)
+                        f"(gave up after {self._max_transient_retries} attempts)"
+                    ),
+                    status_code=status,
+                )
                 self._log.warning(
                     "%s from %s; retrying in %.1fs (attempt %d/%d)",
                     status,
@@ -195,20 +183,32 @@ class Fetcher:
 
             self._policy.on_success()
             _record_success(rec, self._source, path, attempts)
-            return response.content
+            return response
+
+    def _next_transient_delay_or_raise(
+        self,
+        *,
+        rec: Recorder | None,
+        path: str,
+        attempts: list[Attempt],
+        transient_attempts: int,
+        failure_message: str,
+        status_code: int | None = None,
+        cause: Exception | None = None,
+    ) -> float:
+        if transient_attempts >= self._max_transient_retries:
+            _record_failure(rec, self._source, path, attempts)
+            error = FetchError(failure_message, status_code=status_code)
+            if cause is not None:
+                raise error from cause
+            raise error
+        return _backoff_seconds(transient_attempts)
 
 
 def _attempt_message(response: httpx.Response, message: str | None = None) -> str:
     if message is not None:
         return message
     return response.reason_phrase or f"HTTP {response.status_code}"
-
-
-def _rejected_message(path: str, response: httpx.Response, message: str | None) -> str:
-    detail = _attempt_message(response, message)
-    if response.is_success:
-        return f"{detail} from {path} ({response.status_code})"
-    return f"{response.status_code} {detail} from {path}"
 
 
 def _note_attempt(
