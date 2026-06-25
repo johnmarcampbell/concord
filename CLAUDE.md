@@ -19,6 +19,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 If a proposed change conflicts with an ADR, the right move is to discuss whether to write a new ADR (or amend the existing one) — not to silently diverge. ADRs are appended, not edited away.
 
+## Reach for a Pydantic model at every boundary
+
+Pydantic models are the project's **first-class tool for data crossing an application boundary — reach for one before a bare `dict` or hand-rolled parsing.** A *boundary* is anywhere untyped or untrusted data enters or leaves the program: the API / XML / HTML wire (ingest), the JSONL load step, the SQLite read path, the LLM JSON exchange, CLI and web-form input. A validated model at the boundary is the **default**; a `dict[str, Any]` threaded through application code is the thing that needs justifying.
+
+The project already names the kinds of model and the factories that build them — use them rather than inventing ad-hoc parsing:
+
+- **Wire-shape model** — mirrors an external response; built by a `from_<source>(payload)` classmethod ([ADR 0018](docs/adr/0018-pydantic-at-the-load-boundary.md) is the worked example, at the load boundary).
+- **Domain model** — what the app operates on after normalization.
+- **Read-view model** — built from a `sqlite3.Row` on the read/display path (`BillHit`, `VoteHit`, `MemberHit`, … in `web/search.py`); give it a `from_row` / `from_sql` factory that owns the read, rather than fetching pieces into loose dicts at each call site.
+
+**The model owns the crossing — both directions.** Instantiate a model *from* a boundary with a `from_<source>(...)` classmethod (`from_congress_api`, `from_senate_xml`, `from_row` / `from_sql`); serialize it *to* a destination with a `to_<destination>(...)` method (Pydantic's `model_dump_json` / `model_dump` for JSON/JSONL, or a named `to_<sink>()` where a bespoke shape is needed). The validation, parsing, and serialization for a representation belong **on the model that owns that representation** — so a caller crosses a boundary by calling the model's factory or serializer, never by hand-rolling the dict-shuffling at the call site. Keep each model aligned with the boundary it represents (a wire-shape model mirrors the wire per [ADR 0018](docs/adr/0018-pydantic-at-the-load-boundary.md); a read-view / persistence model owns the store) — that alignment, not a blanket rule, decides which model grows a given `from_`/`to_` method.
+
+Exceptions exist (a one-row internal helper; a genuinely hot loop where a model is measurable overhead) — but they are *exceptions*: take the model first, and if you skip it, say why, the same discipline as a `# noqa` reason. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Never write `from __future__ import annotations`
 
 This project is Python 3.12+ and bans that import — see [CONTRIBUTING.md](CONTRIBUTING.md). A pre-commit hook and CI step block it; don't add it back.

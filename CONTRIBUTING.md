@@ -23,6 +23,20 @@ The pre-commit hook runs `ruff format` and `ruff check --fix` on every `git comm
 - **`# noqa` requires an inline reason.** Format: `# noqa: RULE — short reason`. A bare `# noqa` will be flagged in review.
 - **Reach for per-file-ignores in `pyproject.toml` over scattering noqas** when a rule consistently misfires on a whole module (e.g., the storage layer's intentional SQL-string construction).
 
+## Pydantic first
+
+Pydantic models are the default tool for data crossing an application boundary — **reach for one before a bare `dict` or hand-rolled parsing.** A *boundary* is anywhere untyped or untrusted data enters or leaves the program: the API / XML / HTML wire, the JSONL load step, the SQLite read path, the LLM JSON exchange, CLI and web-form input. The validated model is the default; a `dict[str, Any]` threaded through application code is what needs a reason.
+
+The project already has the vocabulary and the factories — use them rather than re-deriving ad-hoc parsing:
+
+- **Wire-shape model** with a `from_<source>(payload)` classmethod for ingest ([ADR 0018](docs/adr/0018-pydantic-at-the-load-boundary.md) settles where validation runs, naming, and the factory shape).
+- **Domain model** for what the app operates on after normalization.
+- **Read-view model** with a `from_row` / `from_sql` factory for the read/display path (`BillHit`, `VoteHit`, … in `web/search.py`). Let one factory own all the reading for an aggregate instead of fetching its parts into loose dicts at each call site.
+
+**Models own their crossing in both directions.** Read *in* with a `from_<source>(...)` classmethod — `from_congress_api`, `from_senate_xml`, `from_row` / `from_sql`. Write *out* with a `to_<destination>(...)` method — Pydantic's `model_dump_json` / `model_dump` for JSON/JSONL, or a named `to_<sink>()` for a bespoke shape. Parsing, validation, and serialization for a representation live **on the model that owns it**, so a caller crosses the boundary by calling the model's factory or serializer rather than hand-rolling the dict-shuffling. Keep each model aligned with its boundary (a wire-shape model mirrors the wire per ADR 0018; a read-view / persistence model owns the store) — don't push a representation onto a model that shouldn't know it.
+
+Exceptions are fine — a single-row internal helper, or a genuinely hot loop where a model is measurable overhead — but they're *exceptions*: model first, and if you skip it, leave a one-line reason, the same discipline as a `# noqa`.
+
 ## Linter philosophy
 
 The ruff config in [pyproject.toml](pyproject.toml) is intentionally broad — it pulls in most pylint checks (`PL`), security (`S`), complexity (`C90`), naming (`N`), pytest style (`PT`), and more. The goal isn't perfectionism: it's to catch *unintentional* drift early, so the codebase stays uniform without anyone having to remember the rules.
