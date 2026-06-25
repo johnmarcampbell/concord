@@ -1,26 +1,11 @@
 """Typed client for `api.congress.gov <https://api.congress.gov/>`_.
 
-All HTTP and JSON-parsing concerns live here. Callers receive validated
-Pydantic models (:class:`Issue`, :class:`Article`) and never touch the
-raw camelCase payload shape.
-
-Retry policy
-------------
-
-Transient failures are retried automatically:
-
-* HTTP 429 ("Too Many Requests"): retry **indefinitely**, respecting any
-  ``Retry-After`` header and otherwise backing off exponentially capped at
-  :data:`MAX_BACKOFF`. Rate-limited is not broken — we wait.
-* HTTP 5xx, connection errors, read/write/connect timeouts: retry up to
-  :data:`MAX_5XX_RETRIES` times with exponential backoff. After that, the
-  failure surfaces as an :class:`ApiError`.
-
-Every retry decision is logged to ``stderr`` via :mod:`logging` (logger
-``concord.api``) at WARNING level so multi-hour pulls have a visible
-heartbeat.
+Network resilience lives in :mod:`concord.fetch`. This module layers the
+api.congress.gov specifics above that spine: URL construction, JSON envelope
+parsing, and conversion into the project's typed models.
 """
 
+import json
 import logging
 import os
 import time
@@ -31,13 +16,20 @@ from typing import Any
 import httpx
 
 from concord import __version__
+from concord import fetch as fetch_module
+from concord.fetch import Fetcher, FetchError, RetryAfterPolicy
 from concord.models.proceedings import Article, Issue
-from concord.models.runs import Attempt
-from concord.observability import Recorder, active_recorder
 
 API_BASE = "https://api.congress.gov/v3"
 USER_AGENT = f"concord/{__version__}"
 ENV_API_KEY = "CONGRESS_API_KEY"
+
+HTTP_FORBIDDEN = fetch_module.HTTP_FORBIDDEN
+HTTP_SERVER_ERROR_MAX = fetch_module.HTTP_SERVER_ERROR_MAX
+HTTP_SERVER_ERROR_MIN = fetch_module.HTTP_SERVER_ERROR_MIN
+HTTP_TOO_MANY_REQUESTS = fetch_module.HTTP_TOO_MANY_REQUESTS
+MAX_5XX_RETRIES = fetch_module.MAX_5XX_RETRIES
+MAX_BACKOFF = fetch_module.MAX_BACKOFF
 
 #: Per-page size when walking the ``/articles`` endpoint. The API maxes out
 #: at 250 results per page; using the max minimizes round trips on issues
@@ -62,24 +54,6 @@ BILL_SUB_PAGE_SIZE = 250
 #: API caps at 250; a single House session produces ~600-800 rolls so
 #: the list endpoint settles in three to four pages.
 VOTES_PAGE_SIZE = 250
-
-#: Cap on a single backoff delay, in seconds. Applied to both the exponential
-#: schedule and Retry-After values so a server-suggested 1-hour wait can't
-#: silently stall the pipeline.
-MAX_BACKOFF = 60.0
-
-#: Maximum retries for transient 5xx / transport failures before surfacing
-#: an :class:`ApiError`. 429s are retried indefinitely separately.
-MAX_5XX_RETRIES = 5
-
-#: Exponential schedule for transient backoff: 1s, 2s, 4s, 8s, 16s (capped).
-_BACKOFF_BASE = 2.0
-
-#: HTTP status codes we treat specially.
-HTTP_FORBIDDEN = 403
-HTTP_TOO_MANY_REQUESTS = 429
-HTTP_SERVER_ERROR_MIN = 500
-HTTP_SERVER_ERROR_MAX = 600  # exclusive upper bound
 
 _log = logging.getLogger("concord.api")
 
@@ -126,6 +100,12 @@ class Client:
             transport=transport,
             timeout=timeout,
             headers={"User-Agent": USER_AGENT},
+        )
+        self._fetch = Fetcher(
+            self._client,
+            source="api",
+            policy=RetryAfterPolicy(sleep=self._sleep, source="api"),
+            sleep=self._sleep,
         )
 
     # -- lifecycle -----------------------------------------------------------
@@ -510,158 +490,15 @@ class Client:
         if params:
             merged.update(params)
 
-        # Observability (ADR 0021): the recorder, if any, gets a success count
-        # per request and a Run Event for any request with ≥1 non-success
-        # attempt. ``attempts`` accumulates every non-success try (transport
-        # failure, 429, 5xx, terminal 4xx) so a resolved-on-retry request can
-        # report what it weathered. None outside an active scrape — recording
-        # is then a no-op. Retry *behavior* below is unchanged.
-        rec = active_recorder()
-        attempts: list[Attempt] = []
+        try:
+            body = self._fetch.get(path, params=merged)
+        except FetchError as exc:
+            raise ApiError(str(exc), status_code=exc.status_code) from exc
 
-        transient_attempts = 0
-        while True:
-            try:
-                response = self._client.get(path, params=merged)
-            except httpx.HTTPError as exc:
-                # Transport-level failure (DNS, timeout, connection reset).
-                # Treat as a retryable transient.
-                _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
-                if transient_attempts >= MAX_5XX_RETRIES:
-                    _record_failure(rec, path, attempts)
-                    raise ApiError(
-                        f"transport error calling {path} "
-                        f"(gave up after {MAX_5XX_RETRIES} attempts): {exc}"
-                    ) from exc
-                delay = _backoff_seconds(transient_attempts)
-                _log.warning("transport error on %s (%s); retrying in %.1fs", path, exc, delay)
-                self._sleep(delay)
-                transient_attempts += 1
-                continue
-
-            status = response.status_code
-
-            if status == HTTP_TOO_MANY_REQUESTS:
-                # 429s are recorded as errors (ADR 0021) even though we retry
-                # them indefinitely — a rate-limit-aware client hitting one is
-                # our own request-budget signal worth surfacing.
-                _note_attempt(attempts, status=status, message=response.reason_phrase)
-                delay = _retry_after_seconds(response) or _backoff_seconds(transient_attempts)
-                _log.warning("429 from %s; backing off %.1fs before retry", path, delay)
-                self._sleep(delay)
-                # 429 retries do not increment transient_attempts — rate-limited
-                # is a wait condition, not a fault. We could be 429'd for hours.
-                continue
-
-            if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
-                _note_attempt(attempts, status=status, message=response.reason_phrase)
-                if transient_attempts >= MAX_5XX_RETRIES:
-                    _record_failure(rec, path, attempts)
-                    raise ApiError(
-                        f"{status} {response.reason_phrase} from {path} "
-                        f"(gave up after {MAX_5XX_RETRIES} attempts)",
-                        status_code=status,
-                    )
-                delay = _backoff_seconds(transient_attempts)
-                _log.warning(
-                    "%s from %s; retrying in %.1fs (attempt %d/%d)",
-                    status,
-                    path,
-                    delay,
-                    transient_attempts + 1,
-                    MAX_5XX_RETRIES,
-                )
-                self._sleep(delay)
-                transient_attempts += 1
-                continue
-
-            if not response.is_success:
-                # Non-retryable client error (4xx other than 429): surface immediately.
-                _note_attempt(attempts, status=status, message=response.reason_phrase)
-                _record_failure(rec, path, attempts)
-                raise ApiError(
-                    f"{status} {response.reason_phrase} from {path}",
-                    status_code=status,
-                )
-
-            data: Any = response.json()
-            if not isinstance(data, dict):
-                _note_attempt(
-                    attempts,
-                    status=status,
-                    message=f"expected JSON object, got {type(data).__name__}",
-                )
-                _record_failure(rec, path, attempts)
-                raise ApiError(f"expected JSON object from {path}, got {type(data).__name__}")
-            _record_success(rec, path, attempts)
-            return data
-
-
-# -- observability helpers --------------------------------------------------
-#
-# Kept module-level (rather than inline blocks / a nested closure) so the
-# recording stays a single statement per call site in :meth:`Client._get` —
-# the retry loop is already at the project's complexity ceiling.
-
-
-def _note_attempt(
-    attempts: list[Attempt],
-    *,
-    status: int | None = None,
-    transport_class: str | None = None,
-    message: str,
-) -> None:
-    """Append one non-success :class:`Attempt`; ``n`` derives from list position.
-
-    Centralizing the construction keeps the five retry-loop branches one line
-    each and means no call site can mis-number an attempt.
-    """
-    attempts.append(
-        Attempt(
-            n=len(attempts) + 1,
-            status=status,
-            transport_class=transport_class,
-            message=message,
-        )
-    )
-
-
-def _record_success(rec: Recorder | None, path: str, attempts: list[Attempt]) -> None:
-    """Record a successful api request, plus a resolved Run Event if it retried."""
-    if rec is None:
-        return
-    rec.note_success("api", path)
-    if attempts:
-        rec.note_request_outcome("api", path, attempts, resolved=True)
-
-
-def _record_failure(rec: Recorder | None, path: str, attempts: list[Attempt]) -> None:
-    """Record a terminal api failure as a failed Run Event (no-op without a recorder)."""
-    if rec is not None:
-        rec.note_request_outcome("api", path, attempts, resolved=False)
-
-
-# -- retry helpers ----------------------------------------------------------
-
-
-def _backoff_seconds(attempt: int) -> float:
-    """Exponential backoff capped at :data:`MAX_BACKOFF`. ``attempt`` is 0-based."""
-    return min(_BACKOFF_BASE**attempt, MAX_BACKOFF)
-
-
-def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """Parse the ``Retry-After`` header, if any, as seconds.
-
-    Supports the integer-seconds form. Returns ``None`` for the HTTP-date
-    form or when the header is missing/unparseable; callers fall back to
-    exponential backoff in that case. The result is clamped to
-    :data:`MAX_BACKOFF` so a misbehaving server can't park us forever.
-    """
-    raw = response.headers.get("retry-after")
-    if not raw:
-        return None
-    try:
-        seconds = float(raw.strip())
-    except ValueError:
-        return None
-    return min(max(seconds, 0.0), MAX_BACKOFF)
+        try:
+            data: Any = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ApiError(f"expected JSON object from {path}, got invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise ApiError(f"expected JSON object from {path}, got {type(data).__name__}")
+        return data

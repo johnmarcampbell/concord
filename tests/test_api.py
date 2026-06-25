@@ -403,8 +403,7 @@ class TestRetry429:
         client, sleeps = _client_with_sleep_recorder(handler)
         with client:
             client.list_issues()
-        # Slept once per 429, all with the same delay (no escalation).
-        assert len(sleeps) == 10
+        assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
 
     def test_retry_after_capped_to_max_backoff(self) -> None:
         # A pathological server says "wait 24 hours" — clamp to MAX_BACKOFF.
