@@ -22,6 +22,7 @@ _LEAF_FIRST_IMPORTS = [
     "concord.models",
     "concord.text",
     "concord.api",
+    "concord.fetch",
 ]
 
 

@@ -59,7 +59,7 @@ from html.parser import HTMLParser
 
 import httpx
 
-from concord.api import (
+from concord.fetch import (
     HTTP_FORBIDDEN,
     HTTP_SERVER_ERROR_MAX,
     HTTP_SERVER_ERROR_MIN,
