@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from concord.pipeline.index_members import index as index_members
 from concord.pipeline.load_members import load as load_members
 from concord.storage.sqlite import SqliteStorage
@@ -226,6 +228,38 @@ class TestLoadMembers:
         stats = load_members(jsonl_path=jsonl, db_path=db)
         assert stats.members_written == 1
         assert stats.terms_written == 0
+
+
+class TestLoadMembersAtomicity:
+    """load_members is whole-load-atomic (ADR 0028).
+
+    A failure anywhere in the load — here, the final failures convergence —
+    rolls back the entire batch, so no partial member/term rows survive.
+    Before #149 each ``upsert_member`` self-committed, so the member would
+    have been left behind.
+    """
+
+    def test_failure_rolls_back_whole_batch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        jsonl = tmp_path / "members.jsonl"
+        db = tmp_path / "test.db"
+        payload = _fixture("current_house.json")["members"][0]
+        _write_jsonl(jsonl, [_envelope_for(payload, congress=119)])
+
+        # Fail at the end of the load, after the member has been upserted
+        # inside the transaction.
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(SqliteStorage, "replace_validation_failures", _boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            load_members(jsonl_path=jsonl, db_path=db)
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.get_member("O000172") is None
+            assert storage.terms_for_member("O000172") == []
 
 
 class TestLoadValidationFailures:

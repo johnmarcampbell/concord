@@ -92,32 +92,34 @@ def load(
         snapshots_read, envelope_failures = _ingest_tier1(jsonl_path, latest_per_key)
 
     storage = SqliteStorage(db_path, load_vec=False)
+    tier2_snapshots_read = 0
+    tier2_bills_updated = 0
+    tier2_orphans_skipped = 0
     try:
-        for (_c, _t, _n), (fetched_at, payload) in latest_per_key.items():
-            bill = parse_or_record(
-                failures,
-                partial(BillDetail.from_congress_api, payload),
-                entity="bill",
-                entity_key=f"{_c}-{_t}-{_n}",
-                source_file=BILLS_JSONL_NAME,
-                payload=payload,
-                log=_log,
-            )
-            if bill is None:
-                continue
-            storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
-            bills_written += 1
-            if limit is not None and bills_written >= limit:
-                break
-
-        tier2_snapshots_read = 0
-        tier2_bills_updated = 0
-        tier2_orphans_skipped = 0
-        # Collapse the 5N tier-2 per-section transactions into one
-        # batch. Each replace_bill_* joins this transaction via
-        # storage._maybe_transaction. A bulk load that previously
-        # paid the fsync cost per section per bill now pays it once.
+        # Whole-load-atomic: one transaction around tier-1, all five tier-2
+        # sections, and the failures convergence (ADR 0028). Tier-1 now joins
+        # the same batch tier-2 already used (tier-2's read of tier-1 rows sees
+        # them via read-your-own-writes within the transaction), so a bulk load
+        # pays one commit instead of one-per-bill plus one-per-section-per-bill,
+        # and a mid-load crash never lands a bill with only some of its sections.
         with storage.transaction():
+            for (_c, _t, _n), (fetched_at, payload) in latest_per_key.items():
+                bill = parse_or_record(
+                    failures,
+                    partial(BillDetail.from_congress_api, payload),
+                    entity="bill",
+                    entity_key=f"{_c}-{_t}-{_n}",
+                    source_file=BILLS_JSONL_NAME,
+                    payload=payload,
+                    log=_log,
+                )
+                if bill is None:
+                    continue
+                storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
+                bills_written += 1
+                if limit is not None and bills_written >= limit:
+                    break
+
             for section in BILL_SECTIONS:
                 t2 = _load_tier2_section(storage_dir, section, storage, failures)
                 tier2_snapshots_read += t2["snapshots_read"]
@@ -125,10 +127,10 @@ def load(
                 tier2_orphans_skipped += t2["orphans_skipped"]
                 envelope_failures += t2["envelope_failures"]
 
-        # A full load converges the family; a limited load must not (it only
-        # processed a subset, so a family-wide replace would drop real rows).
-        if limit is None:
-            storage.replace_validation_failures(failures, entities=_BILL_ENTITIES)
+            # A full load converges the family; a limited load must not (it only
+            # processed a subset, so a family-wide replace would drop real rows).
+            if limit is None:
+                storage.replace_validation_failures(failures, entities=_BILL_ENTITIES)
     finally:
         storage.close()
 
@@ -180,26 +182,29 @@ def load_one(
         latest, snapshots_read, envelope_failures = _scan_tier1_for_key(jsonl_path, target_key)
 
     storage = SqliteStorage(db_path, load_vec=False)
+    tier2_snapshots_read = 0
+    tier2_bills_updated = 0
+    tier2_orphans_skipped = 0
     try:
-        if latest is not None:
-            fetched_at, payload = latest
-            bill = parse_or_record(
-                failures,
-                partial(BillDetail.from_congress_api, payload),
-                entity="bill",
-                entity_key=bill_id,
-                source_file=BILLS_JSONL_NAME,
-                payload=payload,
-                log=_log,
-            )
-            if bill is not None:
-                storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
-                bills_written = 1
-
-        tier2_snapshots_read = 0
-        tier2_bills_updated = 0
-        tier2_orphans_skipped = 0
+        # Whole-load-atomic, per-bill: tier-1, every tier-2 section, and the
+        # narrowed failures convergence land as one transaction (ADR 0028), so
+        # a crash mid-enrichment never leaves this bill's sections half-applied.
         with storage.transaction():
+            if latest is not None:
+                fetched_at, payload = latest
+                bill = parse_or_record(
+                    failures,
+                    partial(BillDetail.from_congress_api, payload),
+                    entity="bill",
+                    entity_key=bill_id,
+                    source_file=BILLS_JSONL_NAME,
+                    payload=payload,
+                    log=_log,
+                )
+                if bill is not None:
+                    storage.upsert_bill(bill, fetched_at=fetched_at.isoformat())
+                    bills_written = 1
+
             for section in BILL_SECTIONS:
                 t2 = _load_tier2_section_for_bill(storage_dir, section, storage, bill_id, failures)
                 tier2_snapshots_read += t2["snapshots_read"]
@@ -207,11 +212,13 @@ def load_one(
                 tier2_orphans_skipped += t2["orphans_skipped"]
                 envelope_failures += t2["envelope_failures"]
 
-        # Narrow the replace to this one bill (ADR 0016/0023): the per-bill
-        # enrichment flow converges only this bill's rows, never disturbing
-        # other bills' failures — so unlike the bulk ``--limit`` path it always
-        # runs.
-        storage.replace_validation_failures(failures, entities=_BILL_ENTITIES, entity_key=bill_id)
+            # Narrow the replace to this one bill (ADR 0016/0023): the per-bill
+            # enrichment flow converges only this bill's rows, never disturbing
+            # other bills' failures — so unlike the bulk ``--limit`` path it always
+            # runs.
+            storage.replace_validation_failures(
+                failures, entities=_BILL_ENTITIES, entity_key=bill_id
+            )
     finally:
         storage.close()
 

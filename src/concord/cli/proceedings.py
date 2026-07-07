@@ -125,6 +125,12 @@ def _run_load(
                 if storage.has(proceeding.granule_id):
                     skipped += 1
                 else:
+                    # Per-record commit, deliberately (ADR 0028): proceedings
+                    # are independent single-row inserts with no cross-row
+                    # invariant, and this is the highest-volume, largest-row
+                    # loader — one transaction would balloon the WAL on a
+                    # backfill and forfeit incremental durability. Do NOT wrap
+                    # this loop in storage.transaction().
                     storage.write(proceeding)
                     written += 1
                 if seen % LOAD_PROGRESS_EVERY == 0:
