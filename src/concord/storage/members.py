@@ -3,8 +3,8 @@
 Owns the ``members`` / ``member_terms`` mirror tables (plus the ``members_fts``
 search index): their DDL, column tuples, INSERT/UPSERT SQL, the Member/Term
 row serializers, and the persistence/query helpers. ``SqliteStorage`` composes
-these and owns the transaction boundary; the write helper here that needs
-member+terms atomicity manages its own self-contained BEGIN/COMMIT.
+these and owns the transaction boundary; the helpers here are pure SQL over a
+connection.
 """
 
 import sqlite3
@@ -110,29 +110,25 @@ def upsert_member(
     *,
     fetched_at: str,
 ) -> None:
-    """Project a Member + its Terms into SQLite atomically.
+    """Project a Member + its Terms into SQLite.
 
     The Member row is UPSERTed on ``bioguide_id``; the Term rows for this
     Member are replaced (DELETE-then-INSERT) so the projection stays
     consistent with the latest snapshot, including the case where the
-    upstream API drops a Term that used to be present. Owns a self-contained
-    BEGIN/COMMIT so the member row and its terms land as one transaction.
+    upstream API drops a Term that used to be present. Pure SQL over the
+    connection — the caller/facade transaction provides the atomic boundary
+    that lands the member row and its terms together (``SqliteStorage`` wraps
+    this in ``_maybe_transaction``).
     """
     member_row = _row_from_member(member, fetched_at=fetched_at)
     term_rows = [_row_from_term(t) for t in terms]
-    try:
-        conn.execute("BEGIN")
-        conn.execute(_MEMBER_UPSERT_SQL, member_row)
-        conn.execute(
-            "DELETE FROM member_terms WHERE bioguide_id = ?",
-            (member.bioguide_id,),
-        )
-        if term_rows:
-            conn.executemany(_TERM_INSERT_SQL, term_rows)
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    conn.execute(_MEMBER_UPSERT_SQL, member_row)
+    conn.execute(
+        "DELETE FROM member_terms WHERE bioguide_id = ?",
+        (member.bioguide_id,),
+    )
+    if term_rows:
+        conn.executemany(_TERM_INSERT_SQL, term_rows)
 
 
 def get_member(conn: sqlite3.Connection, bioguide_id: str) -> sqlite3.Row | None:

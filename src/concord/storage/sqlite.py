@@ -255,8 +255,9 @@ class SqliteStorage:
         self._conn.row_factory = sqlite3.Row
         self._load_vec = load_vec
         # Set when a caller-owned :meth:`transaction` context is active.
-        # The per-section ``replace_bill_*`` writers consult this so they
-        # don't open nested BEGIN/COMMITs inside an outer batch.
+        # Every write routes through :meth:`_maybe_transaction`, which
+        # consults this so it doesn't open a nested BEGIN/COMMIT inside an
+        # outer batch.
         self._in_tx = False
 
         if load_vec:
@@ -283,8 +284,8 @@ class SqliteStorage:
         return cursor.fetchone() is not None
 
     def write(self, proceeding: Proceeding) -> None:
-        self._conn.execute(_PROCEEDING_INSERT_SQL, _row_from_proceeding(proceeding))
-        self._conn.commit()
+        with self._maybe_transaction():
+            self._conn.execute(_PROCEEDING_INSERT_SQL, _row_from_proceeding(proceeding))
 
     # -- Stage 2: chunk I/O -----------------------------------------------
 
@@ -319,8 +320,7 @@ class SqliteStorage:
         Also records the chunking-status row so ``proceedings_without_chunks``
         won't re-yield this proceeding.
         """
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             if chunks:
                 self._conn.executemany(
                     _CHUNK_INSERT_SQL,
@@ -331,10 +331,6 @@ class SqliteStorage:
                 "(granule_id, chunked_at, chunk_count) VALUES (?, ?, ?)",
                 (granule_id, chunked_at, len(chunks)),
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
         return len(chunks)
 
     def chunks_for(self, granule_id: str) -> list[sqlite3.Row]:
@@ -369,16 +365,11 @@ class SqliteStorage:
             raise RuntimeError("bulk_insert_embeddings requires load_vec=True (sqlite-vec)")
         if not rows:
             return 0
-        try:
-            self._conn.execute("BEGIN")
+        with self._maybe_transaction():
             self._conn.executemany(
                 _VEC_INSERT_SQL,
                 [(chunk_id, sqlite_vec.serialize_float32(vec)) for chunk_id, vec in rows],
             )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
         return len(rows)
 
     # -- Members (Phase 1) ------------------------------------------------
@@ -397,7 +388,8 @@ class SqliteStorage:
         stays consistent with the latest snapshot, including the case
         where the upstream API drops a Term that used to be present.
         """
-        members_storage.upsert_member(self._conn, member, terms, fetched_at=fetched_at)
+        with self._maybe_transaction():
+            members_storage.upsert_member(self._conn, member, terms, fetched_at=fetched_at)
 
     def get_member(self, bioguide_id: str) -> sqlite3.Row | None:
         return members_storage.get_member(self._conn, bioguide_id)
@@ -409,7 +401,8 @@ class SqliteStorage:
 
     def upsert_bill(self, bill: BillDetail, *, fetched_at: str) -> None:
         """UPSERT one Bill row keyed on ``bill_id`` (latest snapshot wins, ADR 0006)."""
-        bills_storage.upsert_bill(self._conn, bill, fetched_at=fetched_at)
+        with self._maybe_transaction():
+            bills_storage.upsert_bill(self._conn, bill, fetched_at=fetched_at)
 
     def get_bill(self, bill_id: str) -> sqlite3.Row | None:
         return bills_storage.get_bill(self._conn, bill_id)
@@ -648,9 +641,10 @@ class SqliteStorage:
     def _maybe_transaction(self) -> Iterator[None]:
         """Open BEGIN/COMMIT iff no caller-owned transaction is active.
 
-        Internal helper for the per-section ``replace_bill_*`` writers
-        so the same code path works whether invoked standalone or
-        inside an outer :meth:`transaction` block.
+        The single committer that every write method routes through, so the
+        same code path works whether a write is invoked standalone (it gets
+        its own atomic BEGIN/COMMIT) or inside an outer :meth:`transaction`
+        block (it joins that batch). Rolls back on any exception.
         """
         if self._in_tx:
             yield
@@ -666,14 +660,14 @@ class SqliteStorage:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        """Group many tier-2 writes into one BEGIN/COMMIT.
+        """Group many writes into one BEGIN/COMMIT.
 
         Callers that flush hundreds of bills across five sections
-        benefit substantially (5N small transactions collapse to one). The
-        ``replace_bill_*`` methods check :attr:`_in_tx` and skip their
-        own transaction wrappers when this context is active. Nested
-        ``transaction()`` calls aren't supported — raises if entered
-        recursively.
+        benefit substantially (5N small transactions collapse to one). Every
+        write routes through :meth:`_maybe_transaction`, which checks
+        :attr:`_in_tx` and joins this batch instead of opening its own
+        BEGIN/COMMIT while the context is active. Nested ``transaction()``
+        calls aren't supported — raises if entered recursively.
 
         Rolls back on any exception so a partial bulk load doesn't
         leave the DB half-projected.

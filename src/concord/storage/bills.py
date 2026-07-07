@@ -6,8 +6,7 @@ Owns the ``bills`` mirror table, its Phase-2b tier-2 child tables
 record table (ADR 0019/0020): their DDL, column tuples, INSERT/UPSERT SQL, the
 BillDetail serializer, the schema migrations that grew this seam, and the
 persistence/query helpers. ``SqliteStorage`` composes these and owns the
-transaction boundary; the helpers here are pure SQL over a connection, except
-:func:`upsert_bill`, whose single-row write owns its own commit.
+transaction boundary; the helpers here are pure SQL over a connection.
 """
 
 import sqlite3
@@ -299,14 +298,14 @@ def m006_bill_children_not_null(conn: sqlite3.Connection) -> None:
 
 
 def upsert_bill(conn: sqlite3.Connection, bill: BillDetail, *, fetched_at: str) -> None:
-    """UPSERT one Bill row keyed on ``bill_id`` and commit.
+    """UPSERT one Bill row keyed on ``bill_id``.
 
     Latest snapshot wins per ADR 0006; the loader is responsible for feeding
-    only the latest snapshot per natural key. Owns its own commit — a
-    single-bill tier-1 write is durable immediately.
+    only the latest snapshot per natural key. Pure SQL over the connection —
+    the caller/facade owns the commit (``SqliteStorage`` wraps this in
+    ``_maybe_transaction`` so a standalone call is durable immediately).
     """
     conn.execute(_BILL_UPSERT_SQL, _row_from_bill(bill, fetched_at=fetched_at))
-    conn.commit()
 
 
 def get_bill(conn: sqlite3.Connection, bill_id: str) -> sqlite3.Row | None:

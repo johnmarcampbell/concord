@@ -145,6 +145,45 @@ class TestUpsertMember:
             )
 
 
+class TestUpsertMemberInTransaction:
+    """``upsert_member`` must join a caller-owned ``transaction()``.
+
+    Before storage grew a single transaction owner, ``upsert_member`` ran its
+    own ``BEGIN``/``COMMIT`` and could not be called inside ``transaction()``
+    at all (``BEGIN`` within ``BEGIN``). These tests pin the fixed contract:
+    the write joins the caller's batch, committing or rolling back with it.
+    """
+
+    def test_commits_with_the_batch(self, storage: SqliteStorage) -> None:
+        with storage.transaction():
+            storage.upsert_member(
+                _member(),
+                [_term(congress=119)],
+                fetched_at="2026-05-25T14:02:11+00:00",
+            )
+        row = storage.get_member("O000172")
+        assert row is not None
+        assert {t["congress"] for t in storage.terms_for_member("O000172")} == {119}
+
+    def test_rolls_back_with_the_batch(self, storage: SqliteStorage) -> None:
+        """A raise inside the batch reverts the member+terms — proving the
+        write no longer self-commits."""
+
+        def _inside_transaction() -> None:
+            with storage.transaction():
+                storage.upsert_member(
+                    _member(),
+                    [_term(congress=119)],
+                    fetched_at="2026-05-25T14:02:11+00:00",
+                )
+                raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _inside_transaction()
+        assert storage.get_member("O000172") is None
+        assert storage.terms_for_member("O000172") == []
+
+
 class TestMembersFtsTable:
     def test_table_exists_and_is_writeable(self, storage: SqliteStorage) -> None:
         """The ``index members`` stage will populate this; here we just

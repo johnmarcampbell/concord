@@ -387,6 +387,32 @@ class TestBillTier2:
         # The tier-2 stamp must still be set.
         assert row["cosponsors_fetched_at"] == "2026-05-26T00:00:00Z"
 
+    def test_upsert_bill_commits_with_the_batch(self, storage: SqliteStorage) -> None:
+        """``upsert_bill`` inside ``transaction()`` lands with the batch.
+
+        Before storage grew a single transaction owner, tier-1 ``upsert_bill``
+        self-committed and would have flushed the outer batch early; now it
+        joins the caller's transaction.
+        """
+        with storage.transaction():
+            storage.upsert_bill(_bill(), fetched_at="2026-05-25T00:00:00+00:00")
+        row = storage.get_bill("119-hr-1")
+        assert row is not None
+        assert row["title"] == "Lower Energy Costs Act"
+
+    def test_upsert_bill_rolls_back_with_the_batch(self, storage: SqliteStorage) -> None:
+        """A raise inside the batch reverts the bill — proving the tier-1
+        write no longer self-commits."""
+
+        def _inside_transaction() -> None:
+            with storage.transaction():
+                storage.upsert_bill(_bill(), fetched_at="2026-05-25T00:00:00+00:00")
+                raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _inside_transaction()
+        assert storage.get_bill("119-hr-1") is None
+
 
 class TestEnrichmentError:
     """Web-initiated enrichment helpers (ADR 0016)."""
