@@ -57,8 +57,12 @@ class RateLimitPolicy:
     status-code handling in :class:`Fetcher`.
 
     ``before_request`` runs once per logical fetch before the first attempt.
-    ``on_response`` may mutate policy state, but returns a pure decision the
-    fetch spine acts on, including any throttle delay.
+    ``on_response`` may mutate policy state, then returns a decision the fetch
+    spine acts on. A ``THROTTLE`` decision may either carry the cooldown as its
+    ``delay`` for the spine to sleep (as :class:`RetryAfterPolicy` does), or
+    perform the wait itself and return ``delay=0`` when the policy owns its own
+    clock (as ``text.py``'s ``AdaptiveThrottlePolicy`` does); the spine only
+    sleeps a non-zero ``delay``.
     """
 
     def before_request(self) -> None:
