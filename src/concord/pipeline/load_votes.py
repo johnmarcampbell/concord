@@ -105,6 +105,9 @@ def load(
     # runs exactly once for the whole load (ADR 0023).
     failures: list[ValidationFailure] = []
     try:
+        # Whole-load-atomic: one transaction spans both chambers' vote+position
+        # writes and the failures convergence (ADR 0028) — a vote never lands
+        # without its positions, and the mirror stays consistent on a crash.
         with storage.transaction():
             house = _load_house(storage, storage_dir, limit=limit, failures=failures)
 

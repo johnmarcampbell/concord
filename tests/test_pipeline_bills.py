@@ -165,6 +165,41 @@ class TestLoadBills:
             assert count == 1
 
 
+class TestLoadBillsAtomicity:
+    """load_bills is whole-load-atomic (ADR 0028): tier-1, tier-2, and the
+    failures convergence share one transaction, so a mid-load failure rolls
+    back every bill written. Before #149 tier-1 ``upsert_bill`` self-committed
+    per row, so those rows would have survived.
+    """
+
+    def test_failure_rolls_back_tier1_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage_dir = tmp_path / "data"
+        db = tmp_path / "test.db"
+        _write_jsonl(
+            storage_dir,
+            [
+                _envelope_for(_detail_payload("detail_119_hr_1.json")),
+                _envelope_for(_detail_payload("detail_119_hr_22.json")),
+            ],
+        )
+
+        # Fail at the end of the load, after both tier-1 bills have been
+        # upserted inside the transaction.
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(SqliteStorage, "replace_validation_failures", _boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            load_bills(storage_dir=storage_dir, db_path=db)
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            assert storage.get_bill("119-hr-1") is None
+            assert storage.get_bill("119-hr-22") is None
+
+
 class TestLoadBillsTier2:
     def _write_tier1(self, storage_dir: Path) -> None:
         _write_jsonl(

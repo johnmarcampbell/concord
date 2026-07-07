@@ -104,26 +104,31 @@ def load(*, jsonl_path: Path, db_path: Path) -> LoadStats:
 
     storage = SqliteStorage(db_path, load_vec=False)
     try:
-        for bioguide_id, (fetched_at, payload) in latest_per_member.items():
-            member = parse_or_record(
-                failures,
-                partial(Member.from_congress_api, payload),
-                entity="member",
-                entity_key=bioguide_id,
-                source_file=jsonl_path.name,
-                payload=payload,
-                log=_log,
-            )
-            if member is None:
-                continue
-            terms = terms_by_member.get(bioguide_id, [])
-            storage.upsert_member(member, terms, fetched_at=fetched_at.isoformat())
-            members_written += 1
-            terms_written += len(terms)
+        # Whole-load-atomic: one transaction around every member+terms write
+        # and the failures convergence (ADR 0028). ~535 per-member fsyncs
+        # collapse to one commit, and a mid-load crash never lands a member
+        # without its terms or leaves the failures mirror inconsistent.
+        with storage.transaction():
+            for bioguide_id, (fetched_at, payload) in latest_per_member.items():
+                member = parse_or_record(
+                    failures,
+                    partial(Member.from_congress_api, payload),
+                    entity="member",
+                    entity_key=bioguide_id,
+                    source_file=jsonl_path.name,
+                    payload=payload,
+                    log=_log,
+                )
+                if member is None:
+                    continue
+                terms = terms_by_member.get(bioguide_id, [])
+                storage.upsert_member(member, terms, fetched_at=fetched_at.isoformat())
+                members_written += 1
+                terms_written += len(terms)
 
-        # Replace-on-load the model-parse failures for this family (ADR 0023).
-        # Called unconditionally so a now-clean load converges away stale rows.
-        storage.replace_validation_failures(failures, entities=("member", "term"))
+            # Replace-on-load the model-parse failures for this family (ADR 0023).
+            # Called unconditionally so a now-clean load converges away stale rows.
+            storage.replace_validation_failures(failures, entities=("member", "term"))
     finally:
         storage.close()
 
