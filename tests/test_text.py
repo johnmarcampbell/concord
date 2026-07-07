@@ -6,9 +6,11 @@ from pathlib import Path
 import httpx
 import pytest
 
+from concord.fetch import Disposition
 from concord.text import (
     MAX_COOLDOWN,
     AdaptiveThrottle,
+    AdaptiveThrottlePolicy,
     TextFetchError,
     fetch_text,
 )
@@ -389,6 +391,50 @@ class TestAdaptiveThrottle:
         # Second call: a fresh throttle paces once and never cools down.
         assert len(slept_second) == 1
         assert slept_second[0] < 30.0
+
+
+class TestAdaptiveThrottlePolicy:
+    """The adapter wiring AdaptiveThrottle onto the concord.fetch policy seam."""
+
+    def test_before_request_paces_every_request(self) -> None:
+        slept: list[float] = []
+        throttle = AdaptiveThrottle(sleep=slept.append, rng=_low_jitter)
+        AdaptiveThrottlePolicy(throttle).before_request()
+        # The initial 1.0s pace x low-edge jitter — before_request maps to pace().
+        assert slept == [0.5]
+
+    @pytest.mark.parametrize("status", [403, 429])
+    def test_throttle_status_penalizes_and_signals_throttle(self, status: int) -> None:
+        slept: list[float] = []
+        throttle = AdaptiveThrottle(sleep=slept.append, rng=_low_jitter)
+        decision = AdaptiveThrottlePolicy(throttle).on_response(SAMPLE_URL, httpx.Response(status))
+        assert decision.disposition is Disposition.THROTTLE
+        # penalize slept the first-strike cooldown and escalated the throttle.
+        assert slept == [30.0]
+        assert throttle.strikes == 1
+
+    def test_throttle_decision_carries_no_delay(self) -> None:
+        # penalize owns the cooldown wait, so the decision must be zero-delay or
+        # the fetch spine would sleep the same cooldown a second time.
+        throttle = AdaptiveThrottle(sleep=lambda _s: None, rng=_low_jitter)
+        decision = AdaptiveThrottlePolicy(throttle).on_response(SAMPLE_URL, httpx.Response(429))
+        assert decision.delay == 0.0
+
+    def test_success_status_allows_without_penalizing(self) -> None:
+        slept: list[float] = []
+        throttle = AdaptiveThrottle(sleep=slept.append, rng=_low_jitter)
+        decision = AdaptiveThrottlePolicy(throttle).on_response(SAMPLE_URL, httpx.Response(200))
+        assert decision.disposition is Disposition.ALLOW
+        assert slept == []
+        assert throttle.strikes == 0
+
+    def test_on_success_recovers_the_throttle(self) -> None:
+        throttle = AdaptiveThrottle(sleep=lambda _s: None, rng=_low_jitter)
+        policy = AdaptiveThrottlePolicy(throttle)
+        policy.on_response(SAMPLE_URL, httpx.Response(429))
+        assert throttle.strikes == 1
+        policy.on_success()
+        assert throttle.strikes == 0
 
 
 # -- redirect handling --------------------------------------------------------
