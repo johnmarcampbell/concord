@@ -98,10 +98,11 @@ def load(
     try:
         # Whole-load-atomic: one transaction around tier-1, all five tier-2
         # sections, and the failures convergence (ADR 0028). Tier-1 now joins
-        # the same batch tier-2 already used (tier-2's read of tier-1 rows sees
-        # them via read-your-own-writes within the transaction), so a bulk load
-        # pays one commit instead of one-per-bill plus one-per-section-per-bill,
-        # and a mid-load crash never lands a bill with only some of its sections.
+        # the batch tier-2 already used (tier-2's read of tier-1 rows sees them
+        # via read-your-own-writes within the transaction), so tier-1's
+        # one-commit-per-bill folds into that single batch instead of paying a
+        # separate fsync per bill, and a mid-load crash never lands a bill with
+        # only some of its sections.
         with storage.transaction():
             for (_c, _t, _n), (fetched_at, payload) in latest_per_key.items():
                 bill = parse_or_record(

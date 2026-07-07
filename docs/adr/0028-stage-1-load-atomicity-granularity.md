@@ -31,7 +31,7 @@ Split the four Stage-1 loaders on whether a load has a **cross-row invariant** t
 - Proceedings is the **highest-volume, largest-row loader**: the Congressional Record is daily and each row carries the full article text, so a multi-decade backfill is hundreds of thousands of large rows. Wrapping that in one transaction would grow the WAL without bound before a single commit and forfeit incremental durability across a long-running load.
 - Per-record commit preserves the **crash-safe resume contract** already documented for the sibling online `pull` pipeline (`load_proceedings.pull`): "writes one Proceeding at a time … killing the process loses at most the in-flight article; the next invocation picks up only what's missing." Keeping Stage-1 per-record too means both proceedings write paths share one failure model.
 
-This is the deliberate per-entity choice deferred from the commit-ownership cleanup ([#149](https://github.com/johnmarcampbell/concord/issues/149)): it converges the *accidentally* inconsistent granularity onto a *principled* split, not a uniform rule.
+This is the deliberate per-entity choice ([#149](https://github.com/johnmarcampbell/concord/issues/149)) deferred by the commit-ownership cleanup ([#150](https://github.com/johnmarcampbell/concord/pull/156)): it converges the *accidentally* inconsistent granularity onto a *principled* split, not a uniform rule.
 
 ## Consequences
 
