@@ -40,15 +40,21 @@ machine-regular, and treats a throttle response as a *window* signal:
   out progressively more of the window. Cooldowns are jittered upward so
   retries don't synchronize with the window boundary.
 * HTTP 5xx and transport errors (DNS, timeout, connection reset): genuine
-  faults — retry up to :data:`MAX_5XX_RETRIES` times with exponential backoff
-  (capped at :data:`MAX_BACKOFF`) before surfacing a :class:`TextFetchError`.
-  These are tracked per fetch and kept separate from throttling, which never
-  counts against that budget.
+  faults — the shared :class:`concord.fetch.Fetcher` retries them up to
+  :data:`concord.fetch.MAX_5XX_RETRIES` times with exponential backoff (capped
+  at :data:`concord.fetch.MAX_BACKOFF`) before surfacing a
+  :class:`TextFetchError`. These are tracked per fetch and kept separate from
+  throttling, which never counts against that budget.
 
 Strikes reset on the first clean fetch, but the *pace* does not: it decays
 additively, so a steady drip of "one 403 per URL" still ratchets the request
 rate down instead of oscillating at the floor. Retry decisions are logged via
 :mod:`logging` (logger ``concord.text``).
+
+The network-resilience spine (5xx/transport retry, backoff, and Scrape Run
+recording) lives in :mod:`concord.fetch`; this module contributes only the
+Cloudflare-specific pacing and cooldown via :class:`AdaptiveThrottle`, wired
+into that spine as an :class:`AdaptiveThrottlePolicy`.
 """
 
 import logging
@@ -61,23 +67,15 @@ import httpx
 
 from concord.fetch import (
     HTTP_FORBIDDEN,
-    HTTP_SERVER_ERROR_MAX,
-    HTTP_SERVER_ERROR_MIN,
     HTTP_TOO_MANY_REQUESTS,
+    Decision,
+    Disposition,
+    Fetcher,
+    FetchError,
+    RateLimitPolicy,
 )
 from concord.models.runs import Attempt
 from concord.observability import Recorder, active_recorder
-
-#: Cap on a single 5xx/transport backoff delay, in seconds. Throttle cooldowns
-#: have their own, much higher cap (:data:`MAX_COOLDOWN`) — a Cloudflare block
-#: window outlasts 60s, but a flapping origin server shouldn't.
-MAX_BACKOFF = 60.0
-
-#: Maximum retries for transient 5xx / transport failures before surfacing
-#: a :class:`TextFetchError`. 429s are retried indefinitely separately.
-MAX_5XX_RETRIES = 5
-
-_BACKOFF_BASE = 2.0
 
 _log = logging.getLogger("concord.text")
 
@@ -248,6 +246,58 @@ class AdaptiveThrottle:
         self._pace = max(self._pace - _PACE_DECAY, _MIN_PACE)
 
 
+class AdaptiveThrottlePolicy(RateLimitPolicy):
+    """Adapt an :class:`AdaptiveThrottle` onto the :mod:`concord.fetch` seam.
+
+    The throttle's three touchpoints map one-to-one onto the policy hooks the
+    fetch spine calls:
+
+    * :meth:`before_request` → :meth:`AdaptiveThrottle.pace` — every request
+      waits the current jittered gap, healthy or not.
+    * :meth:`on_response` → :meth:`AdaptiveThrottle.penalize` on a 403/429
+      (both Cloudflare throttle signals on this tier), returning a
+      :data:`~concord.fetch.Disposition.THROTTLE` decision so the spine retries
+      indefinitely; any other status falls through to
+      :data:`~concord.fetch.Disposition.ALLOW`.
+    * :meth:`on_success` → :meth:`AdaptiveThrottle.recover` — a clean fetch
+      resets strikes and decays the pace.
+
+    ``penalize`` sleeps the cooldown itself (it owns the shared throttle's
+    injectable clock), so the returned decision carries a zero delay — the
+    fetch spine does not double-sleep it.
+    """
+
+    def __init__(self, throttle: AdaptiveThrottle) -> None:
+        self._throttle = throttle
+
+    def before_request(self) -> None:
+        self._throttle.pace()
+
+    def on_response(self, path: str, response: httpx.Response) -> Decision:
+        status = response.status_code
+        if status not in (HTTP_FORBIDDEN, HTTP_TOO_MANY_REQUESTS):
+            return Decision(Disposition.ALLOW)
+        # 403 = Cloudflare bot/WAF block (no Retry-After); 429 = rate-limit rule
+        # (usually with one). penalize sleeps out the escalating cooldown and
+        # doubles the pace; the spine retries without charging the 5xx budget.
+        retry_after = _retry_after_seconds(response)
+        delay = self._throttle.penalize(retry_after)
+        _log.warning(
+            "%d from %s (rate-limited?); cooling down %.1fs before retry "
+            "(Retry-After: %s, strike %d, pace now %.2fs/req)",
+            status,
+            path,
+            delay,
+            _format_retry_after(retry_after),
+            self._throttle.strikes,
+            self._throttle.pace_seconds,
+        )
+        return Decision(Disposition.THROTTLE)
+
+    def on_success(self) -> None:
+        self._throttle.recover()
+
+
 def fetch_text(
     url: str,
     client: httpx.Client,
@@ -260,7 +310,9 @@ def fetch_text(
     The caller owns the :class:`httpx.Client` (so connection pooling, custom
     transports, and timeout policy are external concerns). Redirects are
     followed automatically. Transient failures (429, 403, 5xx, transport
-    errors) are retried per the module-level policy.
+    errors) are retried per the module-level policy — the network spine lives
+    in :class:`concord.fetch.Fetcher`, with this tier's Cloudflare pacing
+    supplied by :class:`AdaptiveThrottlePolicy`.
 
     ``throttle`` is the shared :class:`AdaptiveThrottle` carrying pacing state
     across every fetch in a run; pass one instance for a whole pull so the
@@ -276,167 +328,54 @@ def fetch_text(
     - transport-level failures after retries are exhausted (``status_code`` is ``None``)
     - HTML that contains no ``<pre>`` block (``status_code`` is ``None``)
     """
-    response = _get_with_retry(url, client, throttle or AdaptiveThrottle(sleep=sleep), sleep)
+    throttle = throttle if throttle is not None else AdaptiveThrottle(sleep=sleep)
+    fetcher = Fetcher(
+        client,
+        source="text",
+        policy=AdaptiveThrottlePolicy(throttle),
+        sleep=sleep,
+        follow_redirects=True,
+    )
+    try:
+        response = fetcher.get(url)
+    except FetchError as exc:
+        # The spine already recorded the terminal failure (ADR 0021); restate
+        # it in this module's error type, preserving the HTTP status semantics.
+        raise TextFetchError(str(exc), status_code=exc.status_code) from exc
 
     extractor = _PreExtractor()
     extractor.feed(response.text)
     text = extractor.text
     if not text:
-        # The HTTP fetch succeeded (counted above) but the body has no <pre>
-        # block — a structural failure distinct from any network error. Record
-        # it so "page fetched but unparseable" is visible in the Scrape Run,
-        # not silently dropped (ADR 0021). status_code is None for this class.
+        # The HTTP fetch succeeded (counted by the spine) but the body has no
+        # <pre> block — a structural failure distinct from any network error.
+        # Record it so "page fetched but unparseable" is visible in the Scrape
+        # Run, not silently dropped (ADR 0021). status_code is None for this class.
         _record_structural_failure(active_recorder(), url)
         raise TextFetchError(f"no <pre> content found at {url}")
     return text
 
 
-def _get_with_retry(
-    url: str,
-    client: httpx.Client,
-    throttle: AdaptiveThrottle,
-    sleep: Callable[[float], None],
-) -> httpx.Response:
-    # Observability (ADR 0021): mirror api.py's chokepoint. ``attempts``
-    # accumulates every non-success try — transport failure, 403/429 throttle
-    # (recorded as errors even though we retry them indefinitely), 5xx — so a
-    # resolved-on-retry fetch can report what it weathered. ``rec`` is None
-    # outside an active scrape, making the recording a no-op. Retry *behavior*
-    # is unchanged.
-    rec = active_recorder()
-    attempts: list[Attempt] = []
-
-    # Every request is paced, healthy or not — the gap carries over from earlier
-    # URLs because congress.gov rate-limits per client, and going full speed
-    # until the first 429 just enters the block window at maximum velocity.
-    throttle.pace()
-    transient_attempts = 0
-    while True:
-        try:
-            response = client.get(url, follow_redirects=True)
-        except httpx.HTTPError as exc:
-            _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
-            if transient_attempts >= MAX_5XX_RETRIES:
-                _record_failure(rec, url, attempts)
-                raise TextFetchError(
-                    f"transport error fetching {url} "
-                    f"(gave up after {MAX_5XX_RETRIES} attempts): {exc}"
-                ) from exc
-            delay = _backoff_seconds(transient_attempts)
-            _log.warning("transport error on %s (%s); retrying in %.1fs", url, exc, delay)
-            sleep(delay)
-            transient_attempts += 1
-            continue
-
-        status = response.status_code
-
-        if status in (HTTP_FORBIDDEN, HTTP_TOO_MANY_REQUESTS):
-            # Both are Cloudflare throttle signals on this tier (403 = bot/WAF
-            # block, no Retry-After; 429 = rate-limit rule, usually with one).
-            # Escalate the shared throttle and retry indefinitely. Throttle waits
-            # do not increment transient_attempts — being blocked is a wait
-            # condition, not a fault, and must not burn the 5xx budget.
-            _note_attempt(attempts, status=status, message=response.reason_phrase)
-            retry_after = _retry_after_seconds(response)
-            delay = throttle.penalize(retry_after)
-            _log.warning(
-                "%d from %s (rate-limited?); cooling down %.1fs before retry "
-                "(Retry-After: %s, strike %d, pace now %.2fs/req)",
-                status,
-                url,
-                delay,
-                _format_retry_after(retry_after),
-                throttle.strikes,
-                throttle.pace_seconds,
-            )
-            continue
-
-        if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
-            _note_attempt(attempts, status=status, message=response.reason_phrase)
-            if transient_attempts >= MAX_5XX_RETRIES:
-                _record_failure(rec, url, attempts)
-                raise TextFetchError(
-                    f"{status} {response.reason_phrase} fetching {url} "
-                    f"(gave up after {MAX_5XX_RETRIES} attempts)",
-                    status_code=status,
-                )
-            delay = _backoff_seconds(transient_attempts)
-            _log.warning(
-                "%s from %s; retrying in %.1fs (attempt %d/%d)",
-                status,
-                url,
-                delay,
-                transient_attempts + 1,
-                MAX_5XX_RETRIES,
-            )
-            sleep(delay)
-            transient_attempts += 1
-            continue
-
-        if not response.is_success:
-            _note_attempt(attempts, status=status, message=response.reason_phrase)
-            _record_failure(rec, url, attempts)
-            raise TextFetchError(
-                f"{status} {response.reason_phrase} fetching {url}",
-                status_code=status,
-            )
-
-        throttle.recover()
-        _record_success(rec, url, attempts)
-        return response
-
-
 # -- observability helpers --------------------------------------------------
 #
-# Module-level (rather than inline blocks) so each recording stays one
-# statement in the retry loop, which is already at the project's complexity
-# ceiling. Source bucket is always ``"text"`` — the route table maps the full
-# URL to ``text:article``.
+# The generic success/failure recording lives in :mod:`concord.fetch`. What
+# stays here is the one recording the spine can't see: the "fetched a real page
+# but it has no <pre> block" structural failure, recorded *beside* the spine's
+# counted success. Source bucket is always ``"text"`` — the route table maps
+# the full URL to ``text:article``.
 
 #: Synthetic ``transport_class`` marker for the "fetched but no <pre> block"
 #: structural failure, which has no HTTP status of its own (the fetch was a 200).
 _NO_PRE_MARKER = "NoPreContent"
 
 
-def _note_attempt(
-    attempts: list[Attempt],
-    *,
-    status: int | None = None,
-    transport_class: str | None = None,
-    message: str,
-) -> None:
-    """Append one non-success :class:`Attempt`; ``n`` derives from list position."""
-    attempts.append(
-        Attempt(
-            n=len(attempts) + 1,
-            status=status,
-            transport_class=transport_class,
-            message=message,
-        )
-    )
-
-
-def _record_success(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
-    """Record a successful text fetch, plus a resolved Run Event if it retried."""
-    if rec is None:
-        return
-    rec.note_success("text", url)
-    if attempts:
-        rec.note_request_outcome("text", url, attempts, resolved=True)
-
-
-def _record_failure(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
-    """Record a terminal text fetch failure as a failed Run Event (no-op without a recorder)."""
-    if rec is not None:
-        rec.note_request_outcome("text", url, attempts, resolved=False)
-
-
 def _record_structural_failure(rec: Recorder | None, url: str) -> None:
     """Record the HTTP-200-but-no-<pre> structural failure as a failed Run Event.
 
-    Distinct from the network failures above: the fetch succeeded (and was
-    counted as a success) but the body was unparseable. A single synthetic
-    attempt carries the :data:`_NO_PRE_MARKER` so the cause is legible.
+    Distinct from the network failures the fetch spine records: the fetch
+    succeeded (and was counted as a success) but the body was unparseable. A
+    single synthetic attempt carries the :data:`_NO_PRE_MARKER` so the cause is
+    legible.
     """
     if rec is None:
         return
@@ -444,11 +383,6 @@ def _record_structural_failure(rec: Recorder | None, url: str) -> None:
         Attempt(n=1, status=None, transport_class=_NO_PRE_MARKER, message="no <pre> content")
     ]
     rec.note_request_outcome("text", url, attempts, resolved=False)
-
-
-def _backoff_seconds(attempt: int) -> float:
-    """Exponential backoff capped at :data:`MAX_BACKOFF`. ``attempt`` is 0-based."""
-    return min(_BACKOFF_BASE**attempt, MAX_BACKOFF)
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:

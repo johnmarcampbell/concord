@@ -111,12 +111,17 @@ class Fetcher:
         policy: RateLimitPolicy | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_transient_retries: int = MAX_5XX_RETRIES,
+        follow_redirects: bool = False,
     ) -> None:
         self._client = client
         self._source = source
         self._policy = policy if policy is not None else RateLimitPolicy()
         self._sleep = sleep
         self._max_transient_retries = max_transient_retries
+        # Redirect-following is a per-tier concern: api.congress.gov never
+        # redirects (default off), but the congress.gov text tier does, so the
+        # text client opts in rather than mutating the caller's httpx.Client.
+        self._follow_redirects = follow_redirects
         self._log = logging.getLogger(f"concord.{source}")
 
     def get(self, path: str, *, params: dict[str, Any] | None = None) -> httpx.Response:
@@ -127,7 +132,9 @@ class Fetcher:
         self._policy.before_request()
         while True:
             try:
-                response = self._client.get(path, params=params)
+                response = self._client.get(
+                    path, params=params, follow_redirects=self._follow_redirects
+                )
             except httpx.HTTPError as exc:
                 _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
                 delay = self._next_transient_delay_or_raise(
@@ -151,7 +158,11 @@ class Fetcher:
                 _note_attempt(
                     attempts, status=response.status_code, message=_attempt_message(response)
                 )
-                self._sleep(decision.delay)
+                # A policy that owns its own cooldown wait (e.g. text.py's
+                # AdaptiveThrottle, which sleeps inside penalize) returns a zero
+                # delay; only sleep when the policy defers the wait to the spine.
+                if decision.delay:
+                    self._sleep(decision.delay)
                 continue
 
             status = response.status_code
