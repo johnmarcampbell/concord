@@ -12,7 +12,6 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from concord.models.bills import BILL_SECTIONS
 from concord.web import search as search_mod
 from concord.web._deps import VALID_BILL_TYPES, get_db
 from concord.web._helpers import resolve_top_bills
@@ -84,28 +83,18 @@ def register(app: FastAPI) -> None:
         bt = bill_type.lower()
         if bt not in VALID_BILL_TYPES:
             raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
-        bill = search_mod.get_bill(db, congress=congress, bill_type=bt, bill_number=bill_number)
-        if bill is None:
+        agg = search_mod.BillAggregate.from_natural_key(
+            db, congress=congress, bill_type=bt, bill_number=bill_number
+        )
+        if agg is None:
             return templates.TemplateResponse(
                 request,
                 "404.html",
                 {"granule_id": f"{congress}/{bt}/{bill_number}"},
                 status_code=404,
             )
+        bill = agg.bill
         bill_id = bill["bill_id"]
-        cosponsors = search_mod.cosponsors_for_bill(db, bill_id)
-        actions = search_mod.actions_for_bill(db, bill_id)
-        subjects = search_mod.subjects_for_bill(db, bill_id)
-        titles = search_mod.titles_for_bill(db, bill_id)
-        summaries = search_mod.summaries_for_bill(db, bill_id)
-        vote_history = search_mod.vote_history_for_bill(db, bill_id)
-        # Page completeness, computed from the Bill section catalogue. In
-        # Python rather than Jinja: the template can't be drift-checked
-        # against the catalogue, and Jinja's loop-scoped {% set %} can't
-        # accumulate a max anyway. ISO-8601 strings compare lexically.
-        section_stamps = [bill.get(s.fetched_at_column) for s in BILL_SECTIONS]
-        updated_at = max([bill["fetched_at"], *(s for s in section_stamps if s)])
-        any_missing = any(s is None for s in section_stamps)
         state, enrichment_error = compute_enrichment_state(request.app, bill, bill_id)
         # "done" renders nothing on the profile — the per-section content
         # speaks for itself; every other token gets its fragment.
@@ -117,29 +106,21 @@ def register(app: FastAPI) -> None:
             # Assemble the fact pack unconditionally: it's the deterministic
             # body of the self-contained brief card, shown whether or not an
             # executive summary has been generated yet (ADR 0020).
-            brief_facts = assemble_facts(
-                db,
-                bill,
-                cosponsors=cosponsors,
-                subjects=subjects,
-                actions=actions,
-                vote_count=len(vote_history),
-                summaries=summaries,
-            )
+            brief_facts = assemble_facts(agg)
             brief_view = cached_view(db, brief_facts, model=request.app.state.briefer.model)
         return templates.TemplateResponse(
             request,
             "bills/profile.html",
             {
                 "bill": bill,
-                "updated_at": updated_at,
-                "any_missing": any_missing,
-                "cosponsors": cosponsors,
-                "actions": actions,
-                "subjects": subjects,
-                "titles": titles,
-                "summaries": summaries,
-                "vote_history": vote_history,
+                "updated_at": agg.updated_at,
+                "any_missing": agg.any_missing,
+                "cosponsors": agg.cosponsors,
+                "actions": agg.actions,
+                "subjects": agg.subjects,
+                "titles": agg.titles,
+                "summaries": agg.summaries,
+                "vote_history": agg.vote_history,
                 "enrichment_enabled": request.app.state.enrichment_enabled,
                 "enrichment_state": enrichment_state,
                 "enrichment_error": enrichment_error,
