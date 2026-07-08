@@ -54,7 +54,9 @@ def assemble_facts(agg: search_mod.BillAggregate) -> BriefFacts:
     latest_summary = agg.summaries[-1] if agg.summaries else None
     party_counts = search_mod.cosponsor_party_counts(agg.cosponsors)
     return build_facts(
-        bill=agg.bill,
+        # build_facts is pure core (concord.brief) over plain values by
+        # design; serialize the typed identity row to a dict at that boundary.
+        bill=agg.bill.model_dump(),
         cosponsors=agg.cosponsors,
         cosponsor_party_counts=party_counts,
         subjects=agg.subjects,

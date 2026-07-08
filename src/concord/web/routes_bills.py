@@ -94,8 +94,11 @@ def register(app: FastAPI) -> None:
                 status_code=404,
             )
         bill = agg.bill
-        bill_id = bill["bill_id"]
-        state, enrichment_error = compute_enrichment_state(request.app, bill, bill_id)
+        bill_id = bill.bill_id
+        # compute_enrichment_state is a small state machine fed by two
+        # different-width queries (here the full row; the status-poll route a
+        # 6-column one), so it stays dict-keyed — serialize the typed row to it.
+        state, enrichment_error = compute_enrichment_state(request.app, bill.model_dump(), bill_id)
         # "done" renders nothing on the profile — the per-section content
         # speaks for itself; every other token gets its fragment.
         enrichment_state = STATE_PARTIALS[state] if state is not None and state != "done" else None

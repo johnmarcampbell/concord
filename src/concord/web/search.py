@@ -987,6 +987,44 @@ def vote_history_for_bill(db: sqlite3.Connection, bill_id: str) -> list[VoteHit]
     return [_vote_hit_from_row(r) for r in rows]
 
 
+class BillRow(BaseModel):
+    """One ``bills`` table row as read for display (ADR 0018 read-view).
+
+    The read-side counterpart to the wire-shape :class:`~concord.models.bills.BillDetail`:
+    ``BillDetail`` mirrors the congress.gov API and is what the loader
+    *writes*; ``BillRow`` is what the web read path *reads back* — the same
+    identity columns plus the derived-store-only fields (the per-section
+    ``*_fetched_at`` freshness stamps, the ``last_enrichment_error``
+    annotation, and the ``sponsor_display_name`` joined from ``members``).
+    """
+
+    bill_id: str
+    congress: int
+    bill_type: str
+    bill_number: int
+    origin_chamber: str
+    title: str
+    introduced_date: str | None
+    policy_area: str | None
+    sponsor_bioguide_id: str | None
+    latest_action_date: str | None
+    latest_action_text: str | None
+    update_date: str
+    fetched_at: str
+    cosponsors_fetched_at: str | None
+    actions_fetched_at: str | None
+    subjects_fetched_at: str | None
+    titles_fetched_at: str | None
+    summaries_fetched_at: str | None
+    last_enrichment_error: str | None
+    sponsor_display_name: str | None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "BillRow":
+        """Build from a ``SELECT b.*, m.display_name AS sponsor_display_name`` row."""
+        return cls(**dict(row))
+
+
 class BillAggregate(BaseModel):
     """Read-side reconstitution of a Bill aggregate (ADR 0009).
 
@@ -996,12 +1034,12 @@ class BillAggregate(BaseModel):
     (:meth:`from_sql`), so the profile GET and brief POST stop
     hand-choreographing six-to-nine queries each.
 
-    Holds the existing read shapes (``dict`` / ``list[dict]`` /
-    ``list[str]`` / ``list[VoteHit]``) rather than re-modeling every
-    section row; only the aggregate itself and ``vote_history`` are typed.
+    The identity row is the typed :class:`BillRow`; the section rows stay as
+    the existing ``dict`` / ``list[dict]`` / ``list[str]`` shapes (only
+    ``vote_history`` is further typed) rather than re-modeling every row.
     """
 
-    bill: dict[str, Any]  # full b.* + sponsor_display_name
+    bill: BillRow
     cosponsors: list[dict[str, Any]]  # each row carries latest-Term `party`
     actions: list[dict[str, Any]]
     subjects: list[str]
@@ -1033,13 +1071,13 @@ class BillAggregate(BaseModel):
         ).fetchone()
         if row is None:
             return None
-        bill = dict(row)
+        bill = BillRow.from_row(row)
         # Freshness roll-up from the Bill section catalogue (ADR 0025):
         # updated_at is the newest stamp across identity + sections;
         # any_missing flags an unscraped section. ISO-8601 strings compare
         # lexically. (Was inline in the profile route.)
-        section_stamps = [bill.get(s.fetched_at_column) for s in BILL_SECTIONS]
-        updated_at = max([bill["fetched_at"], *(s for s in section_stamps if s)])
+        section_stamps = [getattr(bill, s.fetched_at_column) for s in BILL_SECTIONS]
+        updated_at = max([bill.fetched_at, *(s for s in section_stamps if s)])
         any_missing = any(s is None for s in section_stamps)
         return cls(
             bill=bill,

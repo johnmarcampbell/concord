@@ -21,7 +21,7 @@ from concord.models.members import Member, Term
 from concord.models.votes import Vote
 from concord.storage.sqlite import SqliteStorage
 from concord.web.brief import assemble_facts
-from concord.web.search import BillAggregate, VoteHit
+from concord.web.search import BillAggregate, BillRow, VoteHit
 
 # Section fetched_at stamps: actions is deliberately the lexically-largest
 # so the freshness roll-up (updated_at) must pick it over identity + peers.
@@ -177,8 +177,10 @@ class TestFromSql:
         agg = BillAggregate.from_sql(storage.connection, "119-hr-1")
 
         assert agg is not None
-        assert agg.bill["bill_id"] == "119-hr-1"
-        assert agg.bill["sponsor_display_name"] == "Rep. R000001"
+        # The identity row is a typed BillRow, not a bare dict.
+        assert isinstance(agg.bill, BillRow)
+        assert agg.bill.bill_id == "119-hr-1"
+        assert agg.bill.sponsor_display_name == "Rep. R000001"
         assert len(agg.cosponsors) == 3
         assert len(agg.actions) == 2
         assert agg.subjects == ["Energy", "Taxation"]
@@ -259,7 +261,7 @@ class TestFromNaturalKey:
         )
 
         assert agg is not None
-        assert agg.bill["bill_id"] == "119-hr-1"
+        assert agg.bill.bill_id == "119-hr-1"
         assert len(agg.cosponsors) == 3
 
     def test_missing_bill_returns_none(self, tmp_path: Path) -> None:
