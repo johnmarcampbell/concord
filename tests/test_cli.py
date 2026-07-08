@@ -24,6 +24,8 @@ import concord.cli._common as cli_common
 import concord.cli.proceedings as cli_proceedings_module
 import concord.scraper.proceedings as scraper_proceedings_module
 from concord.api import ENV_API_KEY, ApiError, Client
+from concord.cli.bills import _autoselect_unenriched_bills
+from concord.models.bills import BillDetail
 from concord.models.proceedings import Article, Issue, Proceeding
 from concord.pipeline.index_proceedings import IndexResult
 from concord.pipeline.load_proceedings import PullResult
@@ -1448,6 +1450,50 @@ class TestScrapeBillsEnrichCommand:
         )
         assert result.exit_code == 0, result.output
         assert "nothing to do" in _strip(result.output).lower()
+
+    def test_autoselect_includes_partially_enriched_bills(self, tmp_path: Path) -> None:
+        """#136: auto-select uses every Bill section's fetched_at column, not
+        the ``cosponsors_fetched_at`` proxy — so a bill whose enrichment
+        partially failed (cosponsors succeeded, other sections still NULL) is
+        re-selected. The old single-column predicate would have skipped it.
+        """
+        db = tmp_path / "test.db"
+        stamp = "2026-05-25T00:00:00+00:00"
+
+        def _bill(number: int, title: str) -> BillDetail:
+            return BillDetail(
+                bill_id=f"119-hr-{number}",
+                congress=119,
+                bill_type="hr",
+                bill_number=number,
+                origin_chamber="House",
+                title=title,
+                introduced_date=f"2025-01-{number:02d}",
+                update_date="2026-04-01",
+            )
+
+        with SqliteStorage(db, load_vec=False) as storage:
+            # 119-hr-1: every section stamped -> fully enriched -> NOT selected.
+            # (replace_bill_* stamps its fetched_at column even for an empty
+            # section, which is all this predicate cares about.)
+            storage.upsert_bill(_bill(1, "Fully Enriched Act"), fetched_at=stamp)
+            storage.replace_bill_cosponsors("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_actions("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_subjects("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_titles("119-hr-1", [], fetched_at=stamp)
+            storage.replace_bill_summaries("119-hr-1", [], fetched_at=stamp)
+            # 119-hr-2: cosponsors stamped, the other four still NULL. The old
+            # `cosponsors_fetched_at IS NULL` proxy MISSED this; #136 selects it.
+            storage.upsert_bill(_bill(2, "Half Enriched Act"), fetched_at=stamp)
+            storage.replace_bill_cosponsors("119-hr-2", [], fetched_at=stamp)
+            # 119-hr-3: nothing stamped -> un-enriched -> selected.
+            storage.upsert_bill(_bill(3, "Bare Act"), fetched_at=stamp)
+
+        keys = _autoselect_unenriched_bills(db, limit=10)
+
+        assert (119, "hr", 1) not in keys  # fully enriched, correctly skipped
+        assert (119, "hr", 2) in keys  # partial (cosponsors done) — the #136 fix
+        assert (119, "hr", 3) in keys  # fully un-enriched
 
 
 # -- `concord scrape votes` / load / index / run (Phase 3a) -----------------
