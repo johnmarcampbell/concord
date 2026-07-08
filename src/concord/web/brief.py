@@ -42,30 +42,24 @@ _log = logging.getLogger("concord.web.brief")
 _GENERATION_ERROR = "Couldn't generate a brief right now. Please try again."
 
 
-def assemble_facts(
-    db: sqlite3.Connection,
-    bill: dict[str, Any],
-    *,
-    cosponsors: list[dict[str, Any]],
-    subjects: list[str],
-    actions: list[dict[str, Any]],
-    vote_count: int,
-    summaries: list[dict[str, Any]],
-) -> BriefFacts:
-    """Build the deterministic Bill Brief fact pack (ADR 0020).
+def assemble_facts(agg: search_mod.BillAggregate) -> BriefFacts:
+    """Build the deterministic Bill Brief fact pack (ADR 0020) from an aggregate.
 
-    Pure assembly over rows the caller already fetched, plus one extra
-    query for the cosponsor party split.
+    A pure projection over an already-fetched
+    :class:`~concord.web.search.BillAggregate` — no database access. Buckets
+    cosponsor party from the aggregate's rows, plucks the latest CRS
+    summary, and counts actions / votes for the pure core
+    :func:`concord.brief.build_facts`.
     """
-    latest_summary = summaries[-1] if summaries else None
-    party_counts = search_mod.cosponsor_party_breakdown(db, bill["bill_id"])
+    latest_summary = agg.summaries[-1] if agg.summaries else None
+    party_counts = search_mod.cosponsor_party_counts(agg.cosponsors)
     return build_facts(
-        bill=bill,
-        cosponsors=cosponsors,
+        bill=agg.bill,
+        cosponsors=agg.cosponsors,
         cosponsor_party_counts=party_counts,
-        subjects=subjects,
-        action_count=len(actions),
-        vote_count=vote_count,
+        subjects=agg.subjects,
+        action_count=len(agg.actions),
+        vote_count=len(agg.vote_history),
         latest_summary=latest_summary,
     )
 
@@ -173,27 +167,14 @@ def register(app: FastAPI) -> None:
         bt = bill_type.lower()
         if bt not in VALID_BILL_TYPES:
             raise HTTPException(status_code=404, detail=f"unknown bill type: {bill_type}")
-        bill = search_mod.get_bill(db, congress=congress, bill_type=bt, bill_number=bill_number)
-        if bill is None:
+        agg = search_mod.BillAggregate.from_natural_key(
+            db, congress=congress, bill_type=bt, bill_number=bill_number
+        )
+        if agg is None:
             raise HTTPException(
                 status_code=404, detail=f"unknown bill: {congress}/{bt}/{bill_number}"
             )
-        bill_id = bill["bill_id"]
-        cosponsors = search_mod.cosponsors_for_bill(db, bill_id)
-        actions = search_mod.actions_for_bill(db, bill_id)
-        subjects = search_mod.subjects_for_bill(db, bill_id)
-        summaries = search_mod.summaries_for_bill(db, bill_id)
-        vote_history = search_mod.vote_history_for_bill(db, bill_id)
-
-        facts = assemble_facts(
-            db,
-            bill,
-            cosponsors=cosponsors,
-            subjects=subjects,
-            actions=actions,
-            vote_count=len(vote_history),
-            summaries=summaries,
-        )
+        facts = assemble_facts(agg)
         with SqliteStorage(request.app.state.db_path, load_vec=False) as storage:
             view, error = get_or_generate_brief(
                 db, storage, request.app.state.briefer, facts=facts, lens=lens.strip()

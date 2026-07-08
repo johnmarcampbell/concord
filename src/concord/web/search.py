@@ -19,6 +19,7 @@ import sqlite_vec  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from concord.embedding import EMBEDDING_DIM, Embedder
+from concord.models.bills import BILL_SECTIONS, bill_id_from_components
 
 #: Per-signal retrieval cap. We pull 200 chunks from each index then let
 #: RRF + group-by reduce to the final result page. Larger than any
@@ -607,30 +608,6 @@ def get_curated_bills(
     return out
 
 
-def get_bill(
-    db: sqlite3.Connection,
-    *,
-    congress: int,
-    bill_type: str,
-    bill_number: int,
-) -> dict[str, Any] | None:
-    """Fetch one Bill row (joined with the sponsor's display name)."""
-    row = db.execute(
-        """
-        SELECT
-            b.*,
-            m.display_name AS sponsor_display_name
-        FROM bills b
-        LEFT JOIN members m ON m.bioguide_id = b.sponsor_bioguide_id
-        WHERE b.congress = ? AND b.bill_type = ? AND b.bill_number = ?
-        """,
-        (congress, bill_type.lower(), bill_number),
-    ).fetchone()
-    if row is None:
-        return None
-    return dict(row)
-
-
 def sponsored_bills_for_member(
     db: sqlite3.Connection,
     bioguide_id: str,
@@ -727,7 +704,13 @@ def count_cosponsored_bills_for_member(
 
 
 def cosponsors_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, Any]]:
-    """Return cosponsor rows joined with the Member's display name when indexed."""
+    """Return cosponsor rows joined with display name and latest-Term party.
+
+    Each row carries ``party`` — the cosponsor's most-recent Term party, or
+    ``None`` when the Member isn't indexed — so the Bill Brief fact pack can
+    ground its coalition-shape claim via :func:`cosponsor_party_counts`
+    without a second query.
+    """
     rows = db.execute(
         """
         SELECT
@@ -735,7 +718,13 @@ def cosponsors_for_bill(db: sqlite3.Connection, bill_id: str) -> list[dict[str, 
             c.sponsorship_date             AS sponsorship_date,
             c.sponsorship_withdrawn_date   AS sponsorship_withdrawn_date,
             c.is_original_cosponsor        AS is_original_cosponsor,
-            m.display_name                 AS display_name
+            m.display_name                 AS display_name,
+            (
+                SELECT t.party FROM member_terms t
+                WHERE t.bioguide_id = c.bioguide_id
+                ORDER BY t.congress DESC
+                LIMIT 1
+            )                              AS party
         FROM bill_cosponsors c
         LEFT JOIN members m ON m.bioguide_id = c.bioguide_id
         WHERE c.bill_id = ?
@@ -811,32 +800,18 @@ def _party_bucket(party: str | None) -> str:
     return "Other"
 
 
-def cosponsor_party_breakdown(db: sqlite3.Connection, bill_id: str) -> dict[str, int]:
-    """Best-effort D/R/I/Other/Unknown counts of a bill's cosponsors.
+def cosponsor_party_counts(cosponsors: list[dict[str, Any]]) -> dict[str, int]:
+    """Best-effort D/R/I/Other/Unknown counts over already-fetched cosponsor rows.
 
-    Joins each cosponsor to their most-recent Term for party. Used by the
-    Bill Brief fact pack (ADR 0020) to ground the coalition-shape claim in
-    real counts rather than letting the model guess. Empty dict when the
-    bill has no cosponsors loaded.
+    Buckets each row's ``party`` (the latest-Term party carried by
+    :func:`cosponsors_for_bill`) via :func:`_party_bucket`. Used by the Bill
+    Brief fact pack (ADR 0020) to ground the coalition-shape claim in real
+    counts rather than letting the model guess. Empty dict when the bill has
+    no cosponsors loaded. Pure — no database access.
     """
-    rows = db.execute(
-        """
-        SELECT
-            c.bioguide_id AS bioguide_id,
-            (
-                SELECT t.party FROM member_terms t
-                WHERE t.bioguide_id = c.bioguide_id
-                ORDER BY t.congress DESC
-                LIMIT 1
-            ) AS party
-        FROM bill_cosponsors c
-        WHERE c.bill_id = ?
-        """,
-        (bill_id,),
-    ).fetchall()
     counts: dict[str, int] = {}
-    for r in rows:
-        bucket = _party_bucket(r["party"])
+    for c in cosponsors:
+        bucket = _party_bucket(c.get("party"))
         counts[bucket] = counts.get(bucket, 0) + 1
     return counts
 
@@ -1010,6 +985,85 @@ def vote_history_for_bill(db: sqlite3.Connection, bill_id: str) -> list[VoteHit]
         (bill_id,),
     ).fetchall()
     return [_vote_hit_from_row(r) for r in rows]
+
+
+class BillAggregate(BaseModel):
+    """Read-side reconstitution of a Bill aggregate (ADR 0009).
+
+    The read counterpart to the Stage-1 loader's write-side rejoin:
+    identity plus the five Bill sections, the bill's vote history, and the
+    derived freshness fields — all fetched by one factory
+    (:meth:`from_sql`), so the profile GET and brief POST stop
+    hand-choreographing six-to-nine queries each.
+
+    Holds the existing read shapes (``dict`` / ``list[dict]`` /
+    ``list[str]`` / ``list[VoteHit]``) rather than re-modeling every
+    section row; only the aggregate itself and ``vote_history`` are typed.
+    """
+
+    bill: dict[str, Any]  # full b.* + sponsor_display_name
+    cosponsors: list[dict[str, Any]]  # each row carries latest-Term `party`
+    actions: list[dict[str, Any]]
+    subjects: list[str]
+    titles: list[dict[str, Any]]
+    summaries: list[dict[str, Any]]
+    vote_history: list[VoteHit]
+    updated_at: str  # newest stamp across identity + sections
+    any_missing: bool  # any section *_fetched_at is NULL
+
+    @classmethod
+    def from_sql(cls, db: sqlite3.Connection, bill_id: str) -> "BillAggregate | None":
+        """Reconstitute one Bill aggregate from the derived store by ``bill_id``.
+
+        Owns every Bill-read query: the identity join (``b.*`` + sponsor
+        display name), the five sections, ``vote_history``, and the derived
+        ``updated_at`` / ``any_missing`` freshness fields. Returns ``None``
+        when no such Bill row exists.
+        """
+        row = db.execute(
+            """
+            SELECT
+                b.*,
+                m.display_name AS sponsor_display_name
+            FROM bills b
+            LEFT JOIN members m ON m.bioguide_id = b.sponsor_bioguide_id
+            WHERE b.bill_id = ?
+            """,
+            (bill_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        bill = dict(row)
+        # Freshness roll-up from the Bill section catalogue (ADR 0025):
+        # updated_at is the newest stamp across identity + sections;
+        # any_missing flags an unscraped section. ISO-8601 strings compare
+        # lexically. (Was inline in the profile route.)
+        section_stamps = [bill.get(s.fetched_at_column) for s in BILL_SECTIONS]
+        updated_at = max([bill["fetched_at"], *(s for s in section_stamps if s)])
+        any_missing = any(s is None for s in section_stamps)
+        return cls(
+            bill=bill,
+            cosponsors=cosponsors_for_bill(db, bill_id),
+            actions=actions_for_bill(db, bill_id),
+            subjects=subjects_for_bill(db, bill_id),
+            titles=titles_for_bill(db, bill_id),
+            summaries=summaries_for_bill(db, bill_id),
+            vote_history=vote_history_for_bill(db, bill_id),
+            updated_at=updated_at,
+            any_missing=any_missing,
+        )
+
+    @classmethod
+    def from_natural_key(
+        cls,
+        db: sqlite3.Connection,
+        *,
+        congress: int,
+        bill_type: str,
+        bill_number: int,
+    ) -> "BillAggregate | None":
+        """Reconstitute by the Bill's natural key — the shape the web routes hold."""
+        return cls.from_sql(db, bill_id_from_components(congress, bill_type, bill_number))
 
 
 def recent_votes_for_member(
