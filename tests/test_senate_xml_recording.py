@@ -95,24 +95,24 @@ class TestErrorRecording:
         assert [a.status for a in event.attempts] == [503]
 
     def test_terminal_503_emits_one_failed_event(self) -> None:
-        handler = _sequenced([httpx.Response(503) for _ in range(3)])
         with (
             _active_recorder() as rec,
-            _client(handler) as client,
-            pytest.raises(SenateXmlError, match="failed after 3 attempts"),
+            _client(lambda _r: httpx.Response(503)) as client,
+            pytest.raises(SenateXmlError, match="gave up after 5 attempts"),
         ):
             client.get_current_senators_xml()
         assert rec.successes == {}
         assert len(rec.events) == 1
         event = rec.events[0]
         assert event.final_status == "failed"
-        assert [a.status for a in event.attempts] == [503] * 3
+        # Converged onto the shared spine: 1 initial try + 5 retries (was 3).
+        assert [a.status for a in event.attempts] == [503] * 6
 
     def test_non_200_emits_failed_event(self) -> None:
         with (
             _active_recorder() as rec,
             _client(lambda _r: httpx.Response(404)) as client,
-            pytest.raises(SenateXmlError, match="returned 404"),
+            pytest.raises(SenateXmlError, match="404"),
         ):
             client.get_roll_call_xml(119, 1, 42)
         assert rec.successes == {}
@@ -143,7 +143,7 @@ class TestHtmlTrapRecording:
         with (
             _active_recorder() as rec,
             _client(lambda _r: _ok_html()) as client,
-            pytest.raises(SenateXmlError, match="HTML response"),
+            pytest.raises(SenateXmlError, match="html-not-xml"),
         ):
             client.get_roll_call_xml(119, 1, 42)
         # The HTML trap is not a success — no bucket bump, one failed event.

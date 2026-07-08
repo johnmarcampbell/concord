@@ -36,18 +36,32 @@ class FetchError(Exception):
 
 
 class Disposition(Enum):
-    """How the fetch spine should treat one HTTP response."""
+    """How the fetch spine should treat one HTTP response.
+
+    ``ALLOW`` falls through to the spine's status-code handling; ``THROTTLE``
+    retries after a cooldown (the rate-limit path); ``REJECT`` fails the fetch
+    terminally even on a 2xx, for a response the policy knows is unusable (e.g.
+    senate.gov's HTML-disguised-as-200 not-found trap).
+    """
 
     ALLOW = auto()
     THROTTLE = auto()
+    REJECT = auto()
 
 
 @dataclass(frozen=True)
 class Decision:
-    """Pure response-policy decision for the next fetch step."""
+    """Pure response-policy decision for the next fetch step.
+
+    ``delay`` is the cooldown a ``THROTTLE`` decision defers to the spine (0 if
+    the policy slept it itself). ``message`` labels a ``REJECT`` — it becomes
+    the recorded attempt's message (e.g. a sentinel marker) and seeds the raised
+    :class:`FetchError`.
+    """
 
     disposition: Disposition
     delay: float = 0.0
+    message: str | None = None
 
 
 class RateLimitPolicy:
@@ -62,7 +76,9 @@ class RateLimitPolicy:
     ``delay`` for the spine to sleep (as :class:`RetryAfterPolicy` does), or
     perform the wait itself and return ``delay=0`` when the policy owns its own
     clock (as ``text.py``'s ``AdaptiveThrottlePolicy`` does); the spine only
-    sleeps a non-zero ``delay``.
+    sleeps a non-zero ``delay``. A ``REJECT`` decision fails the fetch
+    terminally even on a 2xx (as ``senate_xml.py``'s ``SenateSentinelPolicy``
+    does for the HTML not-found trap), recording ``message`` on the attempt.
     """
 
     def before_request(self) -> None:
@@ -168,6 +184,16 @@ class Fetcher:
                 if decision.delay:
                     self._sleep(decision.delay)
                 continue
+
+            if decision.disposition is Disposition.REJECT:
+                # The policy vetoed an otherwise-2xx response it knows is
+                # unusable (e.g. senate.gov's HTML not-found trap): record it as
+                # a terminal failure, never a success, carrying the policy's
+                # marker so the cause is legible in the ledger.
+                reason = decision.message or _attempt_message(response)
+                _note_attempt(attempts, status=response.status_code, message=reason)
+                _record_failure(rec, self._source, path, attempts)
+                raise FetchError(f"{reason} from {path}", status_code=response.status_code)
 
             status = response.status_code
             if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:

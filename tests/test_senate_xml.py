@@ -11,12 +11,15 @@ from pathlib import Path
 import httpx
 import pytest
 
+from concord.fetch import Disposition
 from concord.models.votes import SenateVoteDetail
 from concord.senate_xml import (
+    _HTML_TRAP_MARKER,
     DETAIL_URL,
     MENU_URL,
     ROSTER_URL,
     SenateClient,
+    SenateSentinelPolicy,
     SenateXmlError,
     parse_senate_roster,
     parse_vote_menu,
@@ -205,7 +208,7 @@ class TestSenateClient:
 
         with (
             SenateClient(transport=_mock(handler)) as client,
-            pytest.raises(SenateXmlError, match="HTML response"),
+            pytest.raises(SenateXmlError, match="html-not-xml"),
         ):
             client.get_roll_call_xml(119, 1, 9999)
 
@@ -245,6 +248,44 @@ class TestSenateClient:
 
         with (
             SenateClient(transport=_mock(handler), sleep=lambda _: None) as client,
-            pytest.raises(SenateXmlError, match="failed after"),
+            pytest.raises(SenateXmlError, match="gave up after 5 attempts"),
         ):
             client.list_roll_call_numbers(119, 1)
+
+    def test_persistent_5xx_backoff_schedule_is_capped(self) -> None:
+        # Converged onto the shared spine: 1 initial try + 5 retries, with
+        # exponential backoff capped at MAX_BACKOFF=60 (all below the cap here).
+        slept: list[float] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, content=b"")
+
+        with (
+            SenateClient(transport=_mock(handler), sleep=slept.append) as client,
+            pytest.raises(SenateXmlError, match="gave up after 5 attempts"),
+        ):
+            client.list_roll_call_numbers(119, 1)
+        assert slept == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+
+class TestSenateSentinelPolicy:
+    """The adapter that reclassifies senate.gov's HTML-as-200 trap."""
+
+    def test_rejects_2xx_html_as_not_found_sentinel(self) -> None:
+        response = httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"})
+        decision = SenateSentinelPolicy().on_response(ROSTER_URL, response)
+        assert decision.disposition is Disposition.REJECT
+        # The marker rides on the decision so the spine records it on the attempt.
+        assert decision.message == _HTML_TRAP_MARKER
+
+    def test_allows_2xx_xml(self) -> None:
+        response = httpx.Response(200, headers={"content-type": "application/xml"})
+        decision = SenateSentinelPolicy().on_response(ROSTER_URL, response)
+        assert decision.disposition is Disposition.ALLOW
+
+    @pytest.mark.parametrize("status", [404, 429, 503])
+    def test_non_2xx_falls_through_to_the_spine(self, status: int) -> None:
+        # senate has no throttle handling: a 429/404/5xx isn't rejected here, it
+        # falls through so the spine's terminal/retry path handles it.
+        decision = SenateSentinelPolicy().on_response(ROSTER_URL, httpx.Response(status))
+        assert decision.disposition is Disposition.ALLOW
