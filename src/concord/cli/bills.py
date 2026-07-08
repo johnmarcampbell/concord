@@ -11,7 +11,7 @@ import typer
 from concord.api import ENV_API_KEY, ApiError, Client
 from concord.cli._apps import index_app, load_app, run_app, scrape_app
 from concord.cli._common import DEFAULT_DB, Progress, RateTracker, _parse_congresses, _parse_csv
-from concord.models.bills import BILL_SECTION_NAMES
+from concord.models.bills import BILL_SECTION_NAMES, BILL_SECTIONS
 from concord.observability import scrape_run
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.load_bills import load as load_bills
@@ -98,26 +98,39 @@ def _parse_sections(raw: str) -> list[str]:
     return parsed
 
 
+#: A bill is "un-enriched" if ANY Bill section's fetched_at column is NULL,
+#: so partially-enriched bills (e.g. cosponsors succeeded but summaries
+#: failed) are re-selected rather than skipped by a single-column proxy.
+#: Derived from the catalogue (ADR 0025) so a sixth section is covered
+#: automatically. Column names come from BILL_SECTIONS, never user input.
+_UNENRICHED_PREDICATE = " OR ".join(f"{s.fetched_at_column} IS NULL" for s in BILL_SECTIONS)
+_AUTOSELECT_UNENRICHED_SQL = (
+    "SELECT congress, bill_type, bill_number FROM bills "  # noqa: S608 - predicate is catalogue-derived column names, no user input
+    f"WHERE {_UNENRICHED_PREDICATE} "
+    "ORDER BY (introduced_date IS NULL), introduced_date DESC, "
+    "         congress DESC, bill_number ASC "
+    "LIMIT ?"
+)
+
+
 def _autoselect_unenriched_bills(
     db_path: Path,
     *,
     limit: int,
 ) -> list[tuple[int, str, int]]:
-    """Return ``[(congress, bill_type, bill_number)]`` for un-enriched bills, newest first."""
+    """Return ``[(congress, bill_type, bill_number)]`` for un-enriched bills, newest first.
+
+    "Un-enriched" means *any* Bill section is unfetched (:data:`BILL_SECTIONS`,
+    ADR 0025) — a bill whose enrichment partially failed is re-selected so the
+    missing sections get another attempt.
+    """
     if not db_path.exists():
         typer.echo(f"error: database not found: {db_path}", err=True)
         raise typer.Exit(code=2)
 
     conn = sqlite3.connect(db_path)
     try:
-        cursor = conn.execute(
-            "SELECT congress, bill_type, bill_number FROM bills "
-            "WHERE cosponsors_fetched_at IS NULL "
-            "ORDER BY (introduced_date IS NULL), introduced_date DESC, "
-            "         congress DESC, bill_number ASC "
-            "LIMIT ?",
-            (limit,),
-        )
+        cursor = conn.execute(_AUTOSELECT_UNENRICHED_SQL, (limit,))
         return [(int(c), str(t), int(n)) for c, t, n in cursor.fetchall()]
     finally:
         conn.close()
@@ -454,8 +467,10 @@ def scrape_bills_enrich_command(
     """Fetch tier-2 sub-endpoints for selected Bills.
 
     Either pass ``--bill-ids`` (explicit selection) or ``--db`` (auto-
-    selects bills with ``cosponsors_fetched_at IS NULL`` ordered by
-    ``introduced_date DESC``, capped by ``--limit``).
+    selects bills with any un-fetched Bill section — i.e. any section's
+    ``*_fetched_at`` column is NULL, so partially-enriched bills are
+    re-selected — ordered by ``introduced_date DESC``, capped by
+    ``--limit``).
     """
     parsed_sections = _parse_sections(sections)
     if bill_ids is None and db_path is None:
