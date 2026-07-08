@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from concord.models.bills import BILL_SECTIONS_BY_NAME
+from concord.models.bills import BILL_SECTIONS, BILL_SECTIONS_BY_NAME
 from concord.pipeline.index_bills import index as index_bills
 from concord.pipeline.index_bills import reindex_one
 from concord.pipeline.load_bills import load as load_bills
@@ -250,8 +250,14 @@ class TestLoadBillsTier2:
         with SqliteStorage(db, load_vec=False) as storage:
             row = storage.get_bill("119-hr-1")
             assert row is not None
-            assert row["cosponsors_fetched_at"] is not None
-            assert row["actions_fetched_at"] is not None
+            # Every catalogue section's writer must stamp its OWN fetched_at
+            # column. Looping over BILL_SECTIONS (rather than hard-coding two
+            # columns) means a future sixth section, or a writer whose UPDATE
+            # names the wrong column, fails here — not silently (#135, ADR 0025).
+            for section in BILL_SECTIONS:
+                assert row[section.fetched_at_column] is not None, (
+                    f"{section.name} writer did not stamp {section.fetched_at_column}"
+                )
             cosponsors = storage.cosponsors_for_bill("119-hr-1")
             assert len(cosponsors) == 3
             actions = storage.actions_for_bill("119-hr-1")
