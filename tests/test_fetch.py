@@ -194,3 +194,24 @@ class TestPolicyHookPlacement:
             fetcher.get("/daily-congressional-record")
 
         assert policy.before_request_calls == 1
+
+
+class _RejectingPolicy(RateLimitPolicy):
+    def on_response(self, path: str, response: httpx.Response) -> Decision:
+        return Decision(Disposition.REJECT, message="sentinel-marker")
+
+
+class TestRejectDisposition:
+    def test_reject_fails_a_2xx_and_records_the_marker(self) -> None:
+        # A REJECT vetoes an otherwise-successful 2xx: no success is counted, a
+        # failed event carries the policy's marker, and the marker seeds the error.
+        fetcher = _fetcher(lambda _r: _ok(), policy=_RejectingPolicy())
+        with _active_recorder() as rec, pytest.raises(FetchError, match="sentinel-marker") as exc:
+            fetcher.get("/daily-congressional-record")
+        assert exc.value.status_code == 200
+        assert rec.successes == {}
+        assert len(rec.events) == 1
+        event = rec.events[0]
+        assert event.final_status == "failed"
+        assert event.attempts[-1].status == 200
+        assert event.attempts[-1].message == "sentinel-marker"

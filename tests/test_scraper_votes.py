@@ -375,7 +375,7 @@ class TestScrapeSenate:
             html_for_rolls={(119, 1, 8)},
         )
 
-        with client, pytest.raises(SenateXmlError, match="HTML"):
+        with client, pytest.raises(SenateXmlError, match="html-not-xml"):
             scrape_senate(
                 client_xml=client,
                 congresses=[119],

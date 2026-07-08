@@ -32,8 +32,7 @@ import httpx
 
 from concord import __version__
 from concord.errors import SenateXmlError
-from concord.models.runs import Attempt
-from concord.observability import Recorder, active_recorder
+from concord.fetch import Decision, Disposition, Fetcher, FetchError, RateLimitPolicy
 
 _log = logging.getLogger("concord.senate_xml")
 
@@ -54,19 +53,35 @@ DETAIL_URL = (
 #: Current-sitting roster XML.
 ROSTER_URL = "https://www.senate.gov/general/contact_information/senators_cfm.xml"
 
-#: Retry policy: total attempts for transport errors / transient 5xx.
-MAX_RETRIES = 3
-
-#: Exponential backoff base.
-_BACKOFF_BASE = 2.0
-
 #: Inter-request padding for detail fetches (defensive only).
 DETAIL_REQUEST_SLEEP_SECONDS = 0.1
 
-#: HTTP status codes treated specially. Same idiom as :mod:`concord.api`.
-HTTP_OK = 200
-HTTP_SERVER_ERROR_MIN = 500
-HTTP_SERVER_ERROR_MAX = 600  # exclusive upper bound
+#: Synthetic ``message`` marker for the HTML-as-200 trap (the status is a real
+#: 200, so the marker is what distinguishes it from a genuine XML fetch).
+_HTML_TRAP_MARKER = "html-not-xml"
+
+
+class SenateSentinelPolicy(RateLimitPolicy):
+    """Reclassify senate.gov's HTML-disguised-as-200 trap as a network failure.
+
+    senate.gov serves ``200 OK`` with an HTML error page (not a 404) for a
+    roll-call file that doesn't exist yet. That is a not-found *sentinel* — a
+    404 the server mislabels as 200 — so the policy rejects it inside the fetch
+    seam, turning it into a terminal :class:`~concord.fetch.FetchError` recorded
+    as a failed Run Event carrying the :data:`_HTML_TRAP_MARKER`, exactly the
+    ledger outcome the old inline content-type check produced.
+
+    senate.gov has no observed rate limit, so there is no throttle branch: a
+    (never-observed) 429 falls through to the spine's terminal path, preserving
+    the client's historical "any non-200 raises" behaviour. ``before_request``
+    and ``on_success`` stay the inherited no-ops.
+    """
+
+    def on_response(self, _path: str, response: httpx.Response) -> Decision:
+        content_type = response.headers.get("Content-Type", "").lower()
+        if response.is_success and "text/html" in content_type:
+            return Decision(Disposition.REJECT, message=_HTML_TRAP_MARKER)
+        return Decision(Disposition.ALLOW)
 
 
 class SenateClient:
@@ -95,6 +110,12 @@ class SenateClient:
             transport=transport,
             timeout=timeout,
             headers={"User-Agent": user_agent},
+        )
+        self._fetch = Fetcher(
+            self._client,
+            source="senate",
+            policy=SenateSentinelPolicy(),
+            sleep=self._sleep,
         )
 
     def close(self) -> None:
@@ -144,132 +165,19 @@ class SenateClient:
     # -- internals --------------------------------------------------------
 
     def _get_xml(self, url: str) -> bytes:
-        # Observability (ADR 0021): mirror api.py's chokepoint. ``attempts``
-        # accumulates every non-success try (transport failure, 5xx, the
-        # non-200/HTML-trap terminal cases) so a resolved-on-retry fetch can
-        # report what it weathered. ``rec`` is None outside an active scrape,
-        # making the recording a no-op. Retry *behavior* is unchanged.
-        rec = active_recorder()
-        attempts: list[Attempt] = []
+        """Fetch ``url`` and return the raw XML bytes.
 
-        last_exc: Exception | None = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = self._client.get(url)
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                _note_attempt(attempts, transport_class=type(exc).__name__, message=str(exc))
-                _log.warning(
-                    "senate.gov transport error (attempt %d/%d) at %s: %s",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    url,
-                    exc,
-                )
-            else:
-                status = response.status_code
-                if HTTP_SERVER_ERROR_MIN <= status < HTTP_SERVER_ERROR_MAX:
-                    last_exc = SenateXmlError(f"senate.gov returned {status} for {url}")
-                    _note_attempt(attempts, status=status, message=f"senate.gov returned {status}")
-                    _log.warning(
-                        "senate.gov %d (attempt %d/%d) at %s",
-                        status,
-                        attempt + 1,
-                        MAX_RETRIES,
-                        url,
-                    )
-                elif status != HTTP_OK:
-                    _note_attempt(attempts, status=status, message=f"senate.gov returned {status}")
-                    _record_failure(rec, url, attempts)
-                    raise SenateXmlError(f"senate.gov returned {status} for {url}")
-                else:
-                    # 200 OK, but senate.gov serves an HTML error page (not a
-                    # 404) for missing roll-call files. That HTML-as-200 trap is
-                    # a structural failure even though the status was 200 —
-                    # record it before re-raising.
-                    try:
-                        _check_xml_content_type(response, url)
-                    except SenateXmlError:
-                        _record_html_trap(rec, url, attempts)
-                        raise
-                    _record_success(rec, url, attempts)
-                    return response.content
-            if attempt < MAX_RETRIES - 1:
-                self._sleep(_BACKOFF_BASE**attempt)
-        _record_failure(rec, url, attempts)
-        assert last_exc is not None  # noqa: S101
-        raise SenateXmlError(f"senate.gov failed after {MAX_RETRIES} attempts at {url}: {last_exc}")
-
-
-def _check_xml_content_type(response: httpx.Response, url: str) -> None:
-    """Reject HTML responses — senate.gov returns these for missing files."""
-    content_type = response.headers.get("Content-Type", "").lower()
-    if "text/html" in content_type:
-        raise SenateXmlError(f"got HTML response, expected XML, at {url}")
-
-
-# -- observability helpers --------------------------------------------------
-#
-# Module-level (rather than inline blocks) so each recording stays one
-# statement in the retry loop. The route table maps the full senate.gov URL to
-# the right ``senate:*`` bucket, so callers pass ``"senate"`` + the URL.
-
-#: Synthetic ``message`` marker for the HTML-as-200 trap (status is a real 200,
-#: so the marker is what distinguishes it from a genuine fetch).
-_HTML_TRAP_MARKER = "html-not-xml"
-
-
-def _note_attempt(
-    attempts: list[Attempt],
-    *,
-    status: int | None = None,
-    transport_class: str | None = None,
-    message: str,
-) -> None:
-    """Append one non-success :class:`Attempt`; ``n`` derives from list position."""
-    attempts.append(
-        Attempt(
-            n=len(attempts) + 1,
-            status=status,
-            transport_class=transport_class,
-            message=message,
-        )
-    )
-
-
-def _record_success(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
-    """Record a successful XML fetch, plus a resolved Run Event if it retried."""
-    if rec is None:
-        return
-    rec.note_success("senate", url)
-    if attempts:
-        rec.note_request_outcome("senate", url, attempts, resolved=True)
-
-
-def _record_failure(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
-    """Record a terminal XML fetch failure as a failed Run Event (no-op without a recorder)."""
-    if rec is not None:
-        rec.note_request_outcome("senate", url, attempts, resolved=False)
-
-
-def _record_html_trap(rec: Recorder | None, url: str, attempts: list[Attempt]) -> None:
-    """Record the HTML-as-200 trap as a failed Run Event.
-
-    The HTTP status was 200, so a synthetic attempt carrying status 200 and the
-    :data:`_HTML_TRAP_MARKER` makes the "looked OK, was an HTML 404" cause legible.
-
-    Note the deliberate asymmetry with ``text.py``'s "no <pre>" structural
-    failure: there the HTTP request is a genuine success (counted) *and* a
-    separate failed event records the unparseable body, because the content
-    check happens after the chokepoint returns. Here the content check lives
-    inside the chokepoint, so the trap is recorded as a failure *only* — never a
-    success. Both are correct given where each parse check sits; the success
-    counts mean "successful network requests", and an HTML 404 is not one.
-    """
-    if rec is None:
-        return
-    _note_attempt(attempts, status=HTTP_OK, message=_HTML_TRAP_MARKER)
-    rec.note_request_outcome("senate", url, attempts, resolved=False)
+        A thin wrapper over the shared :class:`~concord.fetch.Fetcher`, which
+        owns the retry/backoff loop and Run Event recording (ADR 0021);
+        :class:`SenateSentinelPolicy` reclassifies the HTML not-found trap as a
+        terminal failure inside that seam. The spine's
+        :class:`~concord.fetch.FetchError` is translated back into this module's
+        public :class:`SenateXmlError`.
+        """
+        try:
+            return self._fetch.get(url).content
+        except FetchError as exc:
+            raise SenateXmlError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
